@@ -1,0 +1,45 @@
+# Slack
+slack_bot_token: "xoxb-..."
+slack_app_token: "xapp-..."
+
+# GitLab
+gitlab_url: "https://gitlab.example.com"
+gitlab_token: "glpat-..."
+gitlab_group_id: "my-team"
+
+# LLM
+llm_provider: "anthropic"       # "anthropic" or "openai"
+# llm_model: ""                 # optional override (default: claude-sonnet-4-5-20250929 / gpt-4o)
+anthropic_api_key: "sk-ant-..."
+# openai_api_key: "sk-..."
+
+# Permissions - Slack user IDs allowed to use /fetch-mrs and /generate-report
+manager_slack_ids:
+  - "U01ABC123"
+
+# Team members - Slack user IDs to receive nudge reminders
+team_members:
+  - "U01ABC123"
+  - "U02DEF456"
+  # ... add all 15 developer Slack user IDs
+
+# Day and time to send nudge (local timezone)
+nudge_day: "Friday"    # Monday, Tuesday, ..., Sunday
+nudge_time: "10:00"    # 24h format
+
+# Report categories (order determines section order in the report)
+categories:
+  - "Release and Support"
+  - "Top Focus"
+  - "Infrastructure"
+  - "Data Pipeline"
+  - "Data Automation & Database"
+  - "Cluster Manager"
+  - "Query Service"
+
+# Team name (used in report header and filename)
+team_name: "My Team"
+
+# Storage
+# db_path: "./reportbot.db"
+# report_output_dir: "./reports"
