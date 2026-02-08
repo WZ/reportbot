@@ -1,0 +1,4 @@
+reportbot
+*.db
+reports/
+config.yaml
