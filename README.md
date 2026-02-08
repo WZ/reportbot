@@ -127,7 +127,20 @@ CGO_ENABLED=1 go build -o reportbot .
 
 ```bash
 docker build -t reportbot .
+```
 
+#### Option A: With config.yaml (recommended)
+
+```bash
+docker run -d --name reportbot \
+  -v /path/to/config.yaml:/app/config.yaml:ro \
+  -v reportbot-data:/app/data \
+  reportbot
+```
+
+#### Option B: With environment variables
+
+```bash
 docker run -d --name reportbot \
   -e SLACK_BOT_TOKEN=xoxb-... \
   -e SLACK_APP_TOKEN=xapp-... \
