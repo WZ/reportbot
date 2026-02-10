@@ -73,7 +73,9 @@ func handleSlashCommand(client *socketmode.Client, api *slack.Client, db *sql.DB
 		handleFetchMRs(api, db, cfg, cmd)
 	case "/generate-report":
 		handleGenerateReport(api, db, cfg, cmd)
-	case "/list-items":
+	case "/gen":
+		handleGenerateReport(api, db, cfg, cmd)
+	case "/list":
 		handleListItems(api, db, cfg, cmd)
 	case "/list-missing":
 		handleListMissing(api, db, cfg, cmd)
@@ -987,7 +989,7 @@ func handleHelp(api *slack.Client, cfg Config, cmd slack.SlashCommand) {
 		"/rpt <description> (status) - Alias of /report.",
 		"  Example: /report [mantis_id] Add pagination to user list API (done)",
 		"",
-		"/list-items - List this week's items.",
+		"/list - List this week's items.",
 		"/help - Show this help.",
 	}
 
@@ -996,6 +998,7 @@ func handleHelp(api *slack.Client, cfg Config, cmd slack.SlashCommand) {
 			"",
 			"/fetch-mrs - Fetch merged GitLab MRs for this week.",
 			"/generate-report team|boss - Generate weekly report.",
+			"/gen team|boss - Alias of /generate-report.",
 			"/list-missing - List team members who haven't reported this week.",
 			"/nudge [@name] - Nudge missing members, or a specific user.",
 		)

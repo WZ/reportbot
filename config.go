@@ -26,8 +26,11 @@ type Config struct {
 	LLMExampleCount  int     `yaml:"llm_example_count"`
 	LLMExampleMaxLen int     `yaml:"llm_example_max_chars"`
 	LLMGlossaryPath  string  `yaml:"llm_glossary_path"`
-	AnthropicAPIKey  string  `yaml:"anthropic_api_key"`
-	OpenAIAPIKey     string  `yaml:"openai_api_key"`
+	LLMGuidePath     string  `yaml:"llm_classification_guide_path"`
+	// Backward compatibility for old key name.
+	ReportTemplatePath string `yaml:"report_template_path"`
+	AnthropicAPIKey    string `yaml:"anthropic_api_key"`
+	OpenAIAPIKey       string `yaml:"openai_api_key"`
 
 	DBPath          string `yaml:"db_path"`
 	ReportOutputDir string `yaml:"report_output_dir"`
@@ -70,6 +73,9 @@ func LoadConfig() Config {
 	envOverrideInt(&cfg.LLMExampleCount, "LLM_EXAMPLE_COUNT")
 	envOverrideInt(&cfg.LLMExampleMaxLen, "LLM_EXAMPLE_MAX_CHARS")
 	envOverride(&cfg.LLMGlossaryPath, "LLM_GLOSSARY_PATH")
+	envOverride(&cfg.LLMGuidePath, "LLM_CLASSIFICATION_GUIDE_PATH")
+	// Backward compatibility for old env key.
+	envOverride(&cfg.ReportTemplatePath, "REPORT_TEMPLATE_PATH")
 	envOverride(&cfg.AnthropicAPIKey, "ANTHROPIC_API_KEY")
 	envOverride(&cfg.OpenAIAPIKey, "OPENAI_API_KEY")
 	envOverride(&cfg.DBPath, "DB_PATH")
@@ -106,6 +112,12 @@ func LoadConfig() Config {
 	}
 	if cfg.LLMExampleMaxLen == 0 {
 		cfg.LLMExampleMaxLen = 140
+	}
+	if cfg.LLMGuidePath == "" {
+		cfg.LLMGuidePath = strings.TrimSpace(cfg.ReportTemplatePath)
+	}
+	if cfg.LLMGuidePath == "" {
+		cfg.LLMGuidePath = "./llm_classification_guide.md"
 	}
 	if cfg.DBPath == "" {
 		cfg.DBPath = "./reportbot.db"
