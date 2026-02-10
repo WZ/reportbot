@@ -47,6 +47,9 @@ Developers report completed work via slash commands. The bot also pulls merged/o
 ### 2. Configure
 
 Configuration can be provided via **`config.yaml`** file, **environment variables**, or both. Env vars take precedence over YAML values.
+The repository `config.yaml` and `llm_glossary.yaml` are committed as examples.
+Put environment-specific overrides under `override/` (git-ignored), for example:
+`override/config.yaml` and `override/llm_glossary.yaml`.
 
 #### Option A: config.yaml (recommended)
 
@@ -130,7 +133,7 @@ Note: Category/subcategory headings are sourced from the previous report in `rep
 
 Set `llm_model` in YAML or `LLM_MODEL` env var to override.
 Set `llm_batch_size` / `LLM_BATCH_SIZE`, `llm_confidence_threshold` / `LLM_CONFIDENCE_THRESHOLD`, and `llm_example_count` / `llm_example_max_chars` to tune throughput, confidence gating, and prompt context size.
-Set `llm_glossary_path` / `LLM_GLOSSARY_PATH` to apply glossary memory rules (see `llm_glossary.example.yaml`).
+Set `llm_glossary_path` / `LLM_GLOSSARY_PATH` to apply glossary memory rules (see `llm_glossary.yaml`).
 
 Glossary example (`llm_glossary.yaml`):
 
