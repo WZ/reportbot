@@ -14,7 +14,7 @@ services:
       GITLAB_TOKEN: "${GITLAB_TOKEN}"
       OPENAI_API_KEY: "${OPENAI_API_KEY}"
     volumes:
-      - /Users/wli02/Documents/workspace_work/WZ/reportbot/config.yaml:/app/config.yaml:ro
-      - /Users/wli02/Documents/workspace_work/WZ/reportbot/reportbot-data:/app/data
-      - /Users/wli02/Documents/workspace_work/WZ/reportbot/reportbot-reports:/app/reports
-      - /Users/wli02/Documents/workspace_work/WZ/reportbot/llm_glossary.yaml:/app/llm_glossary.yaml:ro
+      - ./config.yaml:/app/config.yaml:ro
+      - ./reportbot-data:/app/data
+      - ./reportbot-reports:/app/reports
+      - ./llm_glossary.yaml:/app/llm_glossary.yaml:ro
