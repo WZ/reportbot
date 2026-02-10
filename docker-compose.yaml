@@ -14,7 +14,7 @@ services:
       GITLAB_TOKEN: "${GITLAB_TOKEN}"
       OPENAI_API_KEY: "${OPENAI_API_KEY}"
     volumes:
-      - ./config.yaml:/app/config.yaml:ro
       - ./reportbot-data:/app/data
       - ./reportbot-reports:/app/reports
-      - ./llm_glossary.yaml:/app/llm_glossary.yaml:ro
+      - ./override/config.yaml:/app/config.yaml:ro
+      - ./override/llm_glossary.yaml:/app/llm_glossary.yaml:ro
