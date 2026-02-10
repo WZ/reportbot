@@ -2,14 +2,17 @@
 
 A Slack bot that helps a development team track weekly work items and generate categorized markdown reports.
 
-Developers report completed work via slash commands. The bot also pulls merged GitLab merge requests automatically. An LLM (Anthropic Claude or OpenAI) classifies items into report categories.
+Developers report completed work via slash commands. The bot also pulls merged/open GitLab merge requests automatically. An LLM (Anthropic Claude or OpenAI) classifies items into sections derived from the previous report.
 
 ## Features
 
 - `/report` — Developers report work items via Slack
-- `/fetch-mrs` — Pull merged GitLab MRs for the current calendar week
-- `/generate-report` — AI-categorize items and generate a markdown report
+- `/fetch-mrs` — Pull merged and open GitLab MRs for the current calendar week
+- `/generate-report` — Generate a team markdown file (or boss `.eml` draft) and upload it to Slack
 - `/list-items` — View this week's items
+- `/list-missing` — Managers: list team members who have not reported this week
+- `/nudge [@name]` — Managers: send reminder DMs (missing members by default)
+- `/help` — Show all commands and example usage
 - Two report modes: **team** (author per line) and **boss** (authors grouped by category)
 - Manager-only permissions for report generation and MR fetching
 - **Weekly nudge** — Automatically DMs team members on a configurable day to remind them to report
@@ -25,14 +28,18 @@ Developers report completed work via slash commands. The bot also pulls merged G
    - `commands`
    - `files:write`
    - `im:write` (for Friday nudge DMs)
+   - `users:read` (to resolve full names for managers/team members)
 4. Under **Slash Commands**, create these four commands:
 
    | Command | Description |
    |---|---|
    | `/report` | Report a completed work item |
-   | `/fetch-mrs` | Fetch merged GitLab MRs for this week |
+   | `/fetch-mrs` | Fetch merged and open GitLab MRs for this week |
    | `/generate-report` | Generate the weekly report |
    | `/list-items` | List this week's work items |
+   | `/list-missing` | List team members missing reports |
+   | `/nudge [@name]` | Send reminder DMs |
+   | `/help` | Show help and usage |
 
 5. Install the app to your workspace
 
@@ -60,31 +67,36 @@ gitlab_group_id: "my-team"
 
 # LLM
 llm_provider: "anthropic"       # "anthropic" or "openai"
+llm_batch_size: 50              # optional: items per LLM classification batch
+llm_confidence_threshold: 0.70  # optional: route below-threshold to Undetermined
+llm_example_count: 20           # optional: prior-report examples included in prompt
+llm_example_max_chars: 140      # optional: max chars per example snippet
+llm_glossary_path: "./llm_glossary.yaml"    # optional glossary memory file
 anthropic_api_key: "sk-ant-..."
 
-# Permissions
-manager_slack_ids:
-  - "U01ABC123"
+# Permissions (Slack full names)
+manager:
+  - "Member One"
 
-# Team members (Slack user IDs) - receive nudge reminders
+# Team members (Slack full names) - receive nudge reminders
 team_members:
-  - "U01ABC123"
-  - "U02DEF456"
+  - "Member One"
+  - "Member Two"
 
-# Day and time to send nudge (local timezone)
+# Day and time to send nudge (configured timezone)
 nudge_day: "Friday"
 nudge_time: "10:00"
+monday_cutoff_time: "12:00"  # Monday before this time uses previous week
+
+# Timezone for week range and nudge scheduling (IANA format)
+timezone: "America/Los_Angeles"
 
 # Team name (used in report header and filename)
 team_name: "Example Team"
 
-# Report categories (order = section order in report)
-categories:
-  - "Backend"
-  - "Frontend"
-  - "Infrastructure"
-  - "Bug Fixes"
-  - "Documentation"
+# Report channel (Slack channel ID for reminders)
+report_channel_id: "C01234567"
+
 ```
 
 Set `CONFIG_PATH` env var to load from a different path (default: `./config.yaml`).
@@ -99,10 +111,18 @@ export GITLAB_TOKEN=glpat-...
 export GITLAB_GROUP_ID=my-team
 export LLM_PROVIDER=anthropic
 export ANTHROPIC_API_KEY=sk-ant-...
-export MANAGER_SLACK_IDS=U01ABC123      # Comma-separated Slack user IDs
+export LLM_BATCH_SIZE=50
+export LLM_CONFIDENCE_THRESHOLD=0.70
+export LLM_EXAMPLE_COUNT=20
+export LLM_EXAMPLE_MAX_CHARS=140
+export LLM_GLOSSARY_PATH=./llm_glossary.yaml
+export MANAGER="Member One,Member Two"   # Comma-separated Slack full names
+export REPORT_CHANNEL_ID=C01234567
+export MONDAY_CUTOFF_TIME=12:00
+export TIMEZONE=America/Los_Angeles
 ```
 
-Note: Categories cannot be configured via env vars — use `config.yaml` for that.
+Note: Category/subcategory headings are sourced from the previous report in `report_output_dir`.
 
 #### LLM Provider Defaults
 
@@ -112,6 +132,24 @@ Note: Categories cannot be configured via env vars — use `config.yaml` for tha
 | `openai` | `gpt-4o` |
 
 Set `llm_model` in YAML or `LLM_MODEL` env var to override.
+Set `llm_batch_size` / `LLM_BATCH_SIZE`, `llm_confidence_threshold` / `LLM_CONFIDENCE_THRESHOLD`, and `llm_example_count` / `llm_example_max_chars` to tune throughput, confidence gating, and prompt context size.
+Set `llm_glossary_path` / `LLM_GLOSSARY_PATH` to apply glossary memory rules (see `llm_glossary.example.yaml`).
+
+Glossary example (`llm_glossary.yaml`):
+
+```yaml
+terms:
+  - phrase: "tenant pending"
+    section: "Cluster Manager"
+  - phrase: "kudu backup"
+    section: "Top Focus > HA Log Sync Enhancement"
+
+status_hints:
+  - phrase: "in qa"
+    status: "in testing"
+  - phrase: "qa passed"
+    status: "done"
+```
 
 ### 3. Build & Run
 
@@ -134,7 +172,9 @@ docker build -t reportbot .
 ```bash
 docker run -d --name reportbot \
   -v /path/to/config.yaml:/app/config.yaml:ro \
+  -v /path/to/llm_glossary.yaml:/app/llm_glossary.yaml:ro \
   -v reportbot-data:/app/data \
+  -v reports:/app/reports \
   reportbot
 ```
 
@@ -149,8 +189,12 @@ docker run -d --name reportbot \
   -e GITLAB_GROUP_ID=my-team \
   -e LLM_PROVIDER=anthropic \
   -e ANTHROPIC_API_KEY=sk-ant-... \
-  -e MANAGER_SLACK_IDS=U01ABC123 \
-  -v reportbot-data:/app \
+  -e MANAGER="Member One,Member Two" \
+  -e REPORT_CHANNEL_ID=C01234567 \
+  -e MONDAY_CUTOFF_TIME=12:00 \
+  -e TIMEZONE=America/Los_Angeles \
+  -v reportbot-data:/app/data \
+  -v reports:/app/reports \
   reportbot
 ```
 
@@ -167,6 +211,14 @@ Any developer can report items:
 /report Migrate auth service to Redis session store (in progress)
 /report Fix flaky integration tests in CI (in testing)
 ```
+
+Managers can report on behalf of a team member:
+
+```
+/report {Member One} Research for agentic AI (in progress)
+```
+
+Delegated names support fuzzy matching against `team_members` (for example `{Member}` -> `Member Full Name`).
 
 Status is auto-extracted from the trailing parenthetical. Defaults to `done` if omitted.
 
@@ -185,8 +237,8 @@ Duplicates are skipped automatically based on MR URL.
 Manager only. Two modes:
 
 ```
-/generate-report team    # Author name on each line (default)
-/generate-report boss    # Authors grouped in category header
+/generate-report team    # Generate team markdown (.md) and upload file to Slack (default)
+/generate-report boss    # Generate boss email draft (.eml) and upload file to Slack
 ```
 
 **Team mode** output:
@@ -207,7 +259,7 @@ Manager only. Two modes:
 - Optimize database query for dashboard metrics (done)
 ```
 
-The report is posted to the Slack channel and saved to `REPORT_OUTPUT_DIR`.
+Generated files are saved to `REPORT_OUTPUT_DIR` and uploaded to the Slack channel as files.
 
 ### Listing Items
 
@@ -221,27 +273,24 @@ Anyone can view this week's items:
 
 Every week on `nudge_day` (default Friday) at `nudge_time` (default 10:00 AM local), the bot DMs each user in `team_members` reminding them to report. To disable, leave `team_members` empty.
 
+On Monday before `monday_cutoff_time` (default `12:00`) in configured `timezone`, report commands use the previous calendar week.
+
 Accepts any day name: `Monday`, `Tuesday`, ..., `Sunday`.
 
 Requires the `im:write` bot token scope in your Slack app.
 
 ## Permissions
 
-Manager commands (`/fetch-mrs`, `/generate-report`) are restricted to Slack user IDs listed in `MANAGER_SLACK_IDS`.
+Manager commands (`/fetch-mrs`, `/generate-report`, `/list-missing`) are restricted to Slack full names listed in `manager`.
+Manager commands include: `/fetch-mrs`, `/generate-report`, `/list-missing`, `/nudge`.
 
-To find your Slack user ID: click your profile picture → **Profile** → click the **⋮** menu → **Copy member ID**.
+## Report Structure
 
-## Report Categories
+Report sections and sub-sections are sourced from the previous generated team report. Their order is preserved exactly.
 
-Items are auto-classified by the LLM into configured categories. Defaults:
+`/generate-report team` writes the team-mode markdown report to `report_output_dir`.
 
-- Backend
-- Frontend
-- Infrastructure
-- Bug Fixes
-- Documentation
-
-Customize categories in `config.yaml` under the `categories` key. The order in the list determines the section order in the generated report.
+`/generate-report boss` is derived from the generated team report for the same week and posted to Slack without writing a separate boss file.
 
 ## Project Structure
 

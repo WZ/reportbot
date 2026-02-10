@@ -17,7 +17,4 @@ WORKDIR /app
 COPY --from=builder /app/reportbot .
 RUN mkdir -p /app/reports
 
-ENV DB_PATH=/app/reportbot.db
-ENV REPORT_OUTPUT_DIR=/app/reports
-
 ENTRYPOINT ["./reportbot"]

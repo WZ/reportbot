@@ -25,6 +25,17 @@ func StartNudgeScheduler(cfg Config, api *slack.Client) {
 		return
 	}
 
+	memberIDs, unresolved, err := resolveUserIDs(api, cfg.TeamMembers)
+	if err != nil {
+		log.Printf("Error resolving team_members: %v", err)
+		if len(memberIDs) == 0 {
+			return
+		}
+	}
+	if len(unresolved) > 0 {
+		log.Printf("Unresolved team_members: %s", strings.Join(unresolved, ", "))
+	}
+
 	weekday, ok := dayMap[strings.ToLower(cfg.NudgeDay)]
 	if !ok {
 		log.Printf("Invalid nudge_day '%s', using Friday", cfg.NudgeDay)
@@ -47,7 +58,7 @@ func StartNudgeScheduler(cfg Config, api *slack.Client) {
 			log.Printf("Next nudge at %s (in %s)", next.Format("Mon Jan 2 15:04"), wait.Round(time.Minute))
 
 			time.Sleep(wait)
-			sendNudges(api, cfg.TeamMembers)
+			sendNudges(api, cfg, memberIDs, cfg.ReportChannelID)
 		}
 	}()
 }
@@ -64,12 +75,17 @@ func nextWeekday(now time.Time, day time.Weekday, hour, min int) time.Time {
 	return time.Date(now.Year(), now.Month(), now.Day()+int(daysUntil), hour, min, 0, 0, now.Location())
 }
 
-func sendNudges(api *slack.Client, memberIDs []string) {
-	monday, nextMonday := CurrentWeekRange()
+func sendNudges(api *slack.Client, cfg Config, memberIDs []string, reportChannelID string) {
+	monday, nextMonday := ReportWeekRange(cfg, time.Now())
+	channelRef := ""
+	if reportChannelID != "" {
+		channelRef = fmt.Sprintf(" Please report in <#%s>.", reportChannelID)
+	}
 	msg := fmt.Sprintf(
-		"Hey! Friendly reminder to report your work items for this week (%s - %s) using `/report`.\n"+
-			"Example: `/report Add pagination to user list API (done)`",
+		"Hey! Friendly reminder to report your work items for this week (%s - %s) using `/report`.%s\n"+
+			"Example: `/report [mantis_id] Add pagination to user list API (done)`",
 		monday.Format("Jan 2"), nextMonday.AddDate(0, 0, -1).Format("Jan 2"),
+		channelRef,
 	)
 
 	for _, userID := range memberIDs {

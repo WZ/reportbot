@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -14,6 +15,9 @@ type gitlabMRResponse struct {
 	Title    string `json:"title"`
 	WebURL   string `json:"web_url"`
 	MergedAt string `json:"merged_at"`
+	UpdatedAt string `json:"updated_at"`
+	CreatedAt string `json:"created_at"`
+	State     string `json:"state"`
 	Author   struct {
 		Username string `json:"username"`
 		Name     string `json:"name"`
@@ -24,16 +28,18 @@ type gitlabMRResponse struct {
 	} `json:"references"`
 }
 
-func FetchMergedMRs(cfg Config, from, to time.Time) ([]GitLabMR, error) {
+func FetchMRs(cfg Config, from, to time.Time) ([]GitLabMR, error) {
 	since := from.Format("2006-01-02T15:04:05Z")
 	groupID := url.PathEscape(cfg.GitLabGroupID)
 
 	var allMRs []GitLabMR
 	page := 1
+	log.Printf("gitlab fetch start group=%s since=%s", cfg.GitLabGroupID, since)
 
 	for {
-		apiURL := fmt.Sprintf("%s/api/v4/groups/%s/merge_requests?state=merged&updated_after=%s&per_page=100&page=%d",
+		apiURL := fmt.Sprintf("%s/api/v4/groups/%s/merge_requests?state=all&updated_after=%s&per_page=100&page=%d",
 			strings.TrimRight(cfg.GitLabURL, "/"), groupID, since, page)
+		log.Printf("gitlab fetch page=%d", page)
 
 		req, err := http.NewRequest("GET", apiURL, nil)
 		if err != nil {
@@ -64,9 +70,31 @@ func FetchMergedMRs(cfg Config, from, to time.Time) ([]GitLabMR, error) {
 		for _, mr := range mrs {
 			mergedAt, err := time.Parse(time.RFC3339, mr.MergedAt)
 			if err != nil {
-				continue
+				mergedAt = time.Time{}
 			}
-			if mergedAt.Before(from) || !mergedAt.Before(to) {
+
+			updatedAt, err := time.Parse(time.RFC3339, mr.UpdatedAt)
+			if err != nil {
+				updatedAt = time.Time{}
+			}
+
+			createdAt, err := time.Parse(time.RFC3339, mr.CreatedAt)
+			if err != nil {
+				createdAt = time.Time{}
+			}
+
+			state := strings.ToLower(strings.TrimSpace(mr.State))
+			switch state {
+			case "merged":
+				if mergedAt.Before(from) || !mergedAt.Before(to) {
+					continue
+				}
+			case "opened":
+				// For open MRs, include ones updated during the week window.
+				if updatedAt.IsZero() || updatedAt.Before(from) || !updatedAt.Before(to) {
+					continue
+				}
+			default:
 				continue
 			}
 
@@ -78,6 +106,9 @@ func FetchMergedMRs(cfg Config, from, to time.Time) ([]GitLabMR, error) {
 				AuthorName:  mr.Author.Name,
 				WebURL:      mr.WebURL,
 				MergedAt:    mergedAt,
+				UpdatedAt:   updatedAt,
+				CreatedAt:   createdAt,
+				State:       state,
 				Labels:      mr.Labels,
 				ProjectPath: projectPath,
 			})
@@ -89,6 +120,7 @@ func FetchMergedMRs(cfg Config, from, to time.Time) ([]GitLabMR, error) {
 		page++
 	}
 
+	log.Printf("gitlab fetch done total=%d", len(allMRs))
 	return allMRs, nil
 }
 
