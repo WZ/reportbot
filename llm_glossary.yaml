@@ -1,51 +1,38 @@
-# LLM Glossary Memory
-# -------------------
+# LLM Glossary Memory Example
+#
 # Purpose:
-# - Provide deterministic phrase-based overrides for section placement and status normalization.
-# - Reduce ambiguity for team/domain-specific terms.
+# - Add deterministic phrase-to-section hints.
+# - Normalize status keywords before/alongside LLM classification.
 #
-# How it works:
-# - terms: if item description contains "phrase" (case-insensitive), section is forced to "section".
-# - status_hints: if item description contains "phrase", status is forced to "status".
-# - If multiple phrases match, the first match in this file wins.
-# - Section value can be:
-#   1) full label (example: "Top Focus > HA Log Sync Enhancement")
-#   2) category label (example: "Infrastructure")
-#   3) section id if known (example: "S1_2")
-#
-# Status values supported:
-# - done
-# - in testing
-# - in progress
-# - other
+# Behavior:
+# - Matching is case-insensitive.
+# - First match wins within each list.
+# - Keep this file short and high-signal.
 #
 # Setup:
-# - Set `llm_glossary_path` in config.yaml (or `LLM_GLOSSARY_PATH` env var).
-# - Leave unset to disable glossary memory.
+# - Set llm_glossary_path in config.yaml to this file path.
+# - Leave llm_glossary_path empty to disable glossary memory.
 
 terms:
-  # Infrastructure
-  - phrase: "consul readiness"
-    section: "Infrastructure"
-  - phrase: "ptp"
-    section: "Infrastructure"
-  - phrase: "chrony"
-    section: "Infrastructure"
-  - phrase: "routing"
-    section: "Infrastructure"
-  - phrase: "subnet"
-    section: "Infrastructure"
-  - phrase: "ssh"
-    section: "Infrastructure"
+  # phrase: text to search in work item description
+  # section: target section label from your report template
+  - phrase: "kudu backup"
+    section: "Top Focus > HA Log Sync Enhancement"
 
-  # Data Pipeline
-  - phrase: "pipeline health check"
-    section: "Data Pipeline"
-  - phrase: "hyperscale logs lag"
-    section: "Data Pipeline"
-  - phrase: "kafka"
-    section: "Data Pipeline"
-  - phrase: "etl performance"
-    section: "Data Pipeline"
+  - phrase: "adom pending"
+    section: "Cluster Manager"
 
-  # 
+  - phrase: "api server metrics"
+    section: "Observability"
+
+status_hints:
+  # phrase: text to search in work item description
+  # status: normalized status in report output
+  - phrase: "qa passed"
+    status: "done"
+
+  - phrase: "in qa"
+    status: "in testing"
+
+  - phrase: "wip"
+    status: "in progress"
