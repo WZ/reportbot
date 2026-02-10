@@ -1,0 +1,58 @@
+# ReportBot Configuration Example
+# Copy this file and replace placeholder values for your environment.
+# Environment variables can override any field in this file.
+
+# Slack app tokens
+slack_bot_token: "xoxb-your-bot-token"
+slack_app_token: "xapp-your-app-token"
+
+# GitLab access
+gitlab_url: "https://gitlab.example.com"
+gitlab_token: "glpat-your-gitlab-token"
+gitlab_group_id: "my-team-group"
+
+# LLM provider
+# supported values: anthropic, openai
+llm_provider: "anthropic"
+llm_model: "" # optional; uses provider default when empty
+llm_batch_size: 50
+llm_confidence_threshold: 0.70
+llm_example_count: 20
+llm_example_max_chars: 140
+
+# Optional glossary memory file for phrase/status hints
+llm_glossary_path: "./llm_glossary.yaml"
+
+# LLM API keys (set the one that matches llm_provider)
+anthropic_api_key: "sk-ant-your-key"
+openai_api_key: ""
+
+# Data and output paths
+db_path: "./reportbot.db"
+report_output_dir: "./reportbot-reports"
+
+# Channel ID used for report reminders and links
+report_channel_id: "C01234567"
+
+# Manager full names (as shown in Slack)
+manager:
+  - "Alice Smith"
+
+# Team member full names (as shown in Slack)
+team_members:
+  - "Alice Smith"
+  - "Bob Lee"
+
+# Weekly nudge schedule in configured timezone
+nudge_day: "Friday"
+nudge_time: "10:00"
+
+# If command is run on Monday before this time, use previous week
+monday_cutoff_time: "12:00"
+
+# Timezone used by week boundary and scheduler
+# Use IANA format, for example: America/Los_Angeles
+timezone: "America/Los_Angeles"
+
+# Team name used in report titles and filenames
+team_name: "My Team"

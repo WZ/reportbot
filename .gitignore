@@ -1,8 +1,7 @@
 reportbot
 *.db
 reports/
-config.yaml
 env
 .env
 .env.*
-llm_glossary.yaml
+override/
