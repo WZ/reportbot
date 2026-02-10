@@ -35,6 +35,8 @@ terms:
     section: "Infrastructure"
   - phrase: "subnet"
     section: "Infrastructure"
+  - phrase: "ssh"
+    section: "Infrastructure"
 
   # Data Pipeline
   - phrase: "pipeline health check"
@@ -45,3 +47,5 @@ terms:
     section: "Data Pipeline"
   - phrase: "etl performance"
     section: "Data Pipeline"
+
+  # 

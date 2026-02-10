@@ -5,3 +5,4 @@ config.yaml
 env
 .env
 .env.*
+llm_glossary.yaml
