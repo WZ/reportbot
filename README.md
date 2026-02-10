@@ -6,7 +6,7 @@ Developers report completed work via slash commands. The bot also pulls merged/o
 
 ## Features
 
-- `/report` — Developers report work items via Slack
+- `/report` (or `/rpt`) — Developers report work items via Slack
 - `/fetch-mrs` — Pull merged and open GitLab MRs for the current calendar week
 - `/generate-report` — Generate a team markdown file (or boss `.eml` draft) and upload it to Slack
 - `/list-items` — View this week's items
@@ -29,11 +29,12 @@ Developers report completed work via slash commands. The bot also pulls merged/o
    - `files:write`
    - `im:write` (for Friday nudge DMs)
    - `users:read` (to resolve full names for managers/team members)
-4. Under **Slash Commands**, create these four commands:
+4. Under **Slash Commands**, create these commands:
 
    | Command | Description |
    |---|---|
-   | `/report` | Report a completed work item |
+   | `/report` | Report a work item |
+   | `/rpt` | Alias of `/report` |
    | `/fetch-mrs` | Fetch merged and open GitLab MRs for this week |
    | `/generate-report` | Generate the weekly report |
    | `/list-items` | List this week's work items |
@@ -49,11 +50,7 @@ Configuration can be provided via **`config.yaml`** file, **environment variable
 
 #### Option A: config.yaml (recommended)
 
-Copy the example and edit:
-
-```bash
-cp config.yaml.example config.yaml
-```
+Create `config.yaml` and edit:
 
 ```yaml
 # Slack
@@ -208,7 +205,7 @@ Any developer can report items:
 
 ```
 /report Add pagination to user list API (done)
-/report Migrate auth service to Redis session store (in progress)
+/rpt Migrate auth service to Redis session store (in progress)
 /report Fix flaky integration tests in CI (in testing)
 ```
 
@@ -269,6 +266,12 @@ Anyone can view this week's items:
 /list-items
 ```
 
+`/list-items` now includes inline actions:
+- Members can edit/delete only their own items.
+- Managers can edit/delete all items.
+- Delete uses a confirmation modal.
+- Edit opens a modal to update item text (status can stay in trailing `(done|in progress|in testing|...)` in the edited text).
+
 ### Weekly Nudge
 
 Every week on `nudge_day` (default Friday) at `nudge_time` (default 10:00 AM local), the bot DMs each user in `team_members` reminding them to report. To disable, leave `team_members` empty.
@@ -298,7 +301,6 @@ Report sections and sub-sections are sourced from the previous generated team re
 reportbot/
   main.go         Entry point
   config.go       YAML + env var loading, permission check
-  config.yaml.example  Example config file
   models.go       WorkItem, GitLabMR types, calendar week helper
   db.go           SQLite schema and CRUD operations
   llm.go          LLM integration (Anthropic + OpenAI), categorization
