@@ -61,15 +61,16 @@ func buildEML(subject, body string) string {
 }
 
 func generateBoundary() string {
+	timestamp := time.Now().UnixNano()
 	// Generate 8 random bytes for uniqueness
 	randomBytes := make([]byte, 8)
 	if _, err := rand.Read(randomBytes); err != nil {
 		// Fallback to timestamp only if random generation fails
-		return fmt.Sprintf("reportbot-%d", time.Now().UnixNano())
+		return fmt.Sprintf("reportbot-%d", timestamp)
 	}
 	randomHex := hex.EncodeToString(randomBytes)
 	// Combine prefix, timestamp, and random hex for collision-resistant boundary
-	return fmt.Sprintf("reportbot-%d-%s", time.Now().UnixNano(), randomHex)
+	return fmt.Sprintf("reportbot-%d-%s", timestamp, randomHex)
 }
 
 func sanitizeFilename(s string) string {
