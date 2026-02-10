@@ -18,3 +18,4 @@ services:
       - ./reportbot-reports:/app/reports
       - ./override/config.yaml:/app/config.yaml:ro
       - ./override/llm_glossary.yaml:/app/llm_glossary.yaml:ro
+      - ./llm_classification_guide.md:/app/llm_classification_guide.md:ro
