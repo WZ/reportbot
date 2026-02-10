@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,6 +17,22 @@ import (
 
 var statusRegex = regexp.MustCompile(`\(([^)]+)\)\s*$`)
 var delegatedAuthorRegex = regexp.MustCompile(`^\{([^{}]+)\}\s*`)
+
+const (
+	listItemsPageSize     = 15
+	actionDeleteItem      = "list_items_delete"
+	actionEditItemOpen    = "list_items_edit_open"
+	actionPagePrev        = "list_items_page_prev"
+	actionPageNext        = "list_items_page_next"
+	actionRowMenu         = "list_items_row_menu"
+	modalEditCallbackID   = "list_items_edit_modal"
+	modalDeleteCallbackID = "list_items_delete_modal"
+	modalMetaPrefix       = "item:"
+	editBlockDescription  = "edit_description"
+	editActionDescription = "description_input"
+	editBlockStatus       = "edit_status"
+	editActionStatus      = "status_input"
+)
 
 func StartSlackBot(cfg Config, db *sql.DB, api *slack.Client) error {
 	client := socketmode.New(api)
@@ -31,6 +48,13 @@ func StartSlackBot(cfg Config, db *sql.DB, api *slack.Client) error {
 				log.Printf("Slash command received: %s from user=%s channel=%s", cmd.Command, cmd.UserID, cmd.ChannelID)
 				client.Ack(*evt.Request)
 				go handleSlashCommand(client, api, db, cfg, cmd)
+			case socketmode.EventTypeInteractive:
+				callback, ok := evt.Data.(slack.InteractionCallback)
+				if !ok {
+					continue
+				}
+				client.Ack(*evt.Request)
+				go handleInteraction(api, db, cfg, callback)
 			}
 		}
 	}()
@@ -42,6 +66,8 @@ func StartSlackBot(cfg Config, db *sql.DB, api *slack.Client) error {
 func handleSlashCommand(client *socketmode.Client, api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashCommand) {
 	switch cmd.Command {
 	case "/report":
+		handleReport(api, db, cfg, cmd)
+	case "/rpt":
 		handleReport(api, db, cfg, cmd)
 	case "/fetch-mrs":
 		handleFetchMRs(api, db, cfg, cmd)
@@ -317,25 +343,52 @@ func formatTokenCount(tokens int64) string {
 }
 
 func handleListItems(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashCommand) {
+	renderListItems(api, db, cfg, cmd.ChannelID, cmd.UserID, 0)
+}
+
+func renderListItems(api *slack.Client, db *sql.DB, cfg Config, channelID, userID string, page int) {
 	monday, nextMonday := ReportWeekRange(cfg, time.Now())
 	items, err := GetItemsByDateRange(db, monday, nextMonday)
 	if err != nil {
-		postEphemeral(api, cmd, fmt.Sprintf("Error: %v", err))
+		postEphemeralTo(api, channelID, userID, fmt.Sprintf("Error: %v", err))
 		return
 	}
 
 	if len(items) == 0 {
-		postEphemeral(api, cmd, fmt.Sprintf("No items for this week (%s - %s)",
+		postEphemeralTo(api, channelID, userID, fmt.Sprintf("No items for this week (%s - %s)",
 			monday.Format("Jan 2"), nextMonday.AddDate(0, 0, -1).Format("Jan 2")))
 		log.Printf("list-items empty")
 		return
 	}
 
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("*Items for %s - %s* (%d total)\n\n",
-		monday.Format("Jan 2"), nextMonday.AddDate(0, 0, -1).Format("Jan 2"), len(items)))
+	if page < 0 {
+		page = 0
+	}
+	start := page * listItemsPageSize
+	if start >= len(items) {
+		page = (len(items) - 1) / listItemsPageSize
+		start = page * listItemsPageSize
+	}
+	end := start + listItemsPageSize
+	if end > len(items) {
+		end = len(items)
+	}
 
-	for _, item := range items {
+	blocks := []slack.Block{
+		slack.NewHeaderBlock(
+			slack.NewTextBlockObject(slack.PlainTextType,
+				fmt.Sprintf("Items for %s - %s (%d total)",
+					monday.Format("Jan 2"),
+					nextMonday.AddDate(0, 0, -1).Format("Jan 2"),
+					len(items)),
+				false, false,
+			),
+		),
+	}
+
+	isManager, _ := isManagerUser(api, cfg, userID)
+	user, _ := api.GetUserInfo(userID)
+	for _, item := range items[start:end] {
 		source := ""
 		if item.Source == "gitlab" {
 			source = " [GitLab]"
@@ -344,12 +397,62 @@ func handleListItems(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashC
 		if item.Category != "" {
 			category = fmt.Sprintf(" _%s_", item.Category)
 		}
-		sb.WriteString(fmt.Sprintf("- *%s*: %s (%s)%s%s\n",
-			item.Author, item.Description, item.Status, source, category))
+		text := fmt.Sprintf("*%s*: %s (%s)%s%s",
+			item.Author, item.Description, item.Status, source, category)
+		if canManageItem(item, isManager, user) {
+			editOpt := slack.NewOptionBlockObject(
+				fmt.Sprintf("edit:%d", item.ID),
+				slack.NewTextBlockObject(slack.PlainTextType, "Edit", false, false),
+				nil,
+			)
+			deleteOpt := slack.NewOptionBlockObject(
+				fmt.Sprintf("delete:%d", item.ID),
+				slack.NewTextBlockObject(slack.PlainTextType, "Delete", false, false),
+				nil,
+			)
+			menu := slack.NewOverflowBlockElement(actionRowMenu, editOpt, deleteOpt)
+			blocks = append(blocks, slack.NewSectionBlock(
+				slack.NewTextBlockObject(slack.MarkdownType, text, false, false),
+				nil,
+				slack.NewAccessory(menu),
+			))
+		} else {
+			blocks = append(blocks, slack.NewSectionBlock(
+				slack.NewTextBlockObject(slack.MarkdownType, text, false, false),
+				nil,
+				nil,
+			))
+		}
 	}
 
-	postEphemeral(api, cmd, sb.String())
-	log.Printf("list-items count=%d", len(items))
+	if len(items) > listItemsPageSize {
+		var nav []slack.BlockElement
+		if page > 0 {
+			nav = append(nav, slack.NewButtonBlockElement(
+				actionPagePrev,
+				strconv.Itoa(page-1),
+				slack.NewTextBlockObject(slack.PlainTextType, "Prev", false, false),
+			))
+		}
+		if end < len(items) {
+			nav = append(nav, slack.NewButtonBlockElement(
+				actionPageNext,
+				strconv.Itoa(page+1),
+				slack.NewTextBlockObject(slack.PlainTextType, "Next", false, false),
+			))
+		}
+		if len(nav) > 0 {
+			blocks = append(blocks, slack.NewActionBlock("list_items_nav", nav...))
+		}
+	}
+
+	_, err = api.PostEphemeral(channelID, userID, slack.MsgOptionBlocks(blocks...))
+	if err != nil {
+		log.Printf("Error posting list-items blocks: %v", err)
+		postEphemeralTo(api, channelID, userID, "Error rendering list items.")
+		return
+	}
+	log.Printf("list-items count=%d page=%d", len(items), page)
 }
 
 func handleListMissing(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashCommand) {
@@ -444,10 +547,334 @@ func handleListMissing(api *slack.Client, db *sql.DB, cfg Config, cmd slack.Slas
 }
 
 func postEphemeral(api *slack.Client, cmd slack.SlashCommand, text string) {
-	_, err := api.PostEphemeral(cmd.ChannelID, cmd.UserID, slack.MsgOptionText(text, false))
+	postEphemeralTo(api, cmd.ChannelID, cmd.UserID, text)
+}
+
+func postEphemeralTo(api *slack.Client, channelID, userID, text string) {
+	_, err := api.PostEphemeral(channelID, userID, slack.MsgOptionText(text, false))
 	if err != nil {
 		log.Printf("Error posting ephemeral: %v", err)
 	}
+}
+
+func handleInteraction(api *slack.Client, db *sql.DB, cfg Config, cb slack.InteractionCallback) {
+	switch cb.Type {
+	case slack.InteractionTypeBlockActions:
+		handleBlockActions(api, db, cfg, cb)
+	case slack.InteractionTypeViewSubmission:
+		handleViewSubmission(api, db, cfg, cb)
+	}
+}
+
+func handleBlockActions(api *slack.Client, db *sql.DB, cfg Config, cb slack.InteractionCallback) {
+	if len(cb.ActionCallback.BlockActions) == 0 {
+		return
+	}
+	act := cb.ActionCallback.BlockActions[0]
+	channelID := cb.Channel.ID
+	if channelID == "" {
+		channelID = cb.Container.ChannelID
+	}
+	userID := cb.User.ID
+
+	switch act.ActionID {
+	case actionPagePrev, actionPageNext:
+		page, err := strconv.Atoi(strings.TrimSpace(act.Value))
+		if err != nil {
+			page = 0
+		}
+		renderListItems(api, db, cfg, channelID, userID, page)
+	case actionDeleteItem:
+		itemID, err := strconv.ParseInt(strings.TrimSpace(act.Value), 10, 64)
+		if err != nil {
+			postEphemeralTo(api, channelID, userID, "Invalid item id.")
+			return
+		}
+		deleteItemAction(api, db, cfg, channelID, userID, itemID)
+	case actionEditItemOpen:
+		itemID, err := strconv.ParseInt(strings.TrimSpace(act.Value), 10, 64)
+		if err != nil {
+			postEphemeralTo(api, channelID, userID, "Invalid item id.")
+			return
+		}
+		openEditModal(api, db, cfg, cb.TriggerID, channelID, userID, itemID)
+	case actionRowMenu:
+		val := strings.TrimSpace(act.SelectedOption.Value)
+		if val == "" {
+			val = strings.TrimSpace(act.Value)
+		}
+		if strings.HasPrefix(val, "edit:") {
+			itemID, err := strconv.ParseInt(strings.TrimPrefix(val, "edit:"), 10, 64)
+			if err != nil {
+				postEphemeralTo(api, channelID, userID, "Invalid item id.")
+				return
+			}
+			openEditModal(api, db, cfg, cb.TriggerID, channelID, userID, itemID)
+			return
+		}
+		if strings.HasPrefix(val, "delete:") {
+			itemID, err := strconv.ParseInt(strings.TrimPrefix(val, "delete:"), 10, 64)
+			if err != nil {
+				postEphemeralTo(api, channelID, userID, "Invalid item id.")
+				return
+			}
+			openDeleteModal(api, db, cfg, cb.TriggerID, channelID, userID, itemID)
+			return
+		}
+	}
+}
+
+func handleViewSubmission(api *slack.Client, db *sql.DB, cfg Config, cb slack.InteractionCallback) {
+	if cb.View.CallbackID == modalDeleteCallbackID {
+		userID := cb.User.ID
+		meta := strings.TrimSpace(cb.View.PrivateMetadata)
+		parts := strings.Split(meta, "|")
+		if len(parts) != 2 || !strings.HasPrefix(parts[0], modalMetaPrefix) {
+			return
+		}
+		channelID := strings.TrimSpace(parts[1])
+		itemID, err := strconv.ParseInt(strings.TrimPrefix(parts[0], modalMetaPrefix), 10, 64)
+		if err != nil {
+			return
+		}
+		deleteItemAction(api, db, cfg, channelID, userID, itemID)
+		return
+	}
+
+	if cb.View.CallbackID != modalEditCallbackID {
+		return
+	}
+	userID := cb.User.ID
+	meta := strings.TrimSpace(cb.View.PrivateMetadata)
+	parts := strings.Split(meta, "|")
+	if len(parts) != 2 || !strings.HasPrefix(parts[0], modalMetaPrefix) {
+		return
+	}
+	channelID := strings.TrimSpace(parts[1])
+	itemID, err := strconv.ParseInt(strings.TrimPrefix(parts[0], modalMetaPrefix), 10, 64)
+	if err != nil {
+		return
+	}
+	if cb.View.State == nil {
+		return
+	}
+	values := cb.View.State.Values
+	if values == nil {
+		return
+	}
+	descAction := values[editBlockDescription][editActionDescription]
+	statusAction := values[editBlockStatus][editActionStatus]
+	description := strings.TrimSpace(descAction.Value)
+	status := strings.TrimSpace(statusAction.SelectedOption.Value)
+	if status == "" {
+		status = "done"
+	}
+
+	item, err := GetWorkItemByID(db, itemID)
+	if err != nil {
+		log.Printf("edit modal load item error id=%d: %v", itemID, err)
+		return
+	}
+	monday, nextMonday := ReportWeekRange(cfg, time.Now())
+	if !itemInRange(item, monday, nextMonday) {
+		return
+	}
+	isManager, _ := isManagerUser(api, cfg, userID)
+	user, _ := api.GetUserInfo(userID)
+	if !canManageItem(item, isManager, user) {
+		return
+	}
+	if description == "" {
+		return
+	}
+
+	if err := UpdateWorkItemTextAndStatus(db, itemID, description, status); err != nil {
+		log.Printf("edit modal update error id=%d: %v", itemID, err)
+		return
+	}
+
+	if channelID == "" {
+		channelID = cb.Container.ChannelID
+	}
+	if channelID == "" {
+		channelID = cb.Channel.ID
+	}
+	renderListItems(api, db, cfg, channelID, userID, 0)
+}
+
+func deleteItemAction(api *slack.Client, db *sql.DB, cfg Config, channelID, userID string, itemID int64) {
+	item, err := GetWorkItemByID(db, itemID)
+	if err != nil {
+		postEphemeralTo(api, channelID, userID, "Item not found.")
+		return
+	}
+	monday, nextMonday := ReportWeekRange(cfg, time.Now())
+	if !itemInRange(item, monday, nextMonday) {
+		postEphemeralTo(api, channelID, userID, "You can only modify this week's items.")
+		return
+	}
+
+	isManager, _ := isManagerUser(api, cfg, userID)
+	user, _ := api.GetUserInfo(userID)
+	if !canManageItem(item, isManager, user) {
+		postEphemeralTo(api, channelID, userID, "You are not allowed to delete this item.")
+		return
+	}
+
+	if err := DeleteWorkItemByID(db, itemID); err != nil {
+		postEphemeralTo(api, channelID, userID, fmt.Sprintf("Delete failed: %v", err))
+		return
+	}
+	renderListItems(api, db, cfg, channelID, userID, 0)
+}
+
+func openEditModal(api *slack.Client, db *sql.DB, cfg Config, triggerID, channelID, userID string, itemID int64) {
+	item, err := GetWorkItemByID(db, itemID)
+	if err != nil {
+		postEphemeralTo(api, channelID, userID, "Item not found.")
+		return
+	}
+	monday, nextMonday := ReportWeekRange(cfg, time.Now())
+	if !itemInRange(item, monday, nextMonday) {
+		postEphemeralTo(api, channelID, userID, "You can only modify this week's items.")
+		return
+	}
+
+	isManager, _ := isManagerUser(api, cfg, userID)
+	user, _ := api.GetUserInfo(userID)
+	if !canManageItem(item, isManager, user) {
+		postEphemeralTo(api, channelID, userID, "You are not allowed to edit this item.")
+		return
+	}
+
+	descInput := slack.NewPlainTextInputBlockElement(
+		slack.NewTextBlockObject(slack.PlainTextType, "Description", false, false),
+		editActionDescription,
+	).WithInitialValue(item.Description)
+	statusOptions := []*slack.OptionBlockObject{
+		slack.NewOptionBlockObject("done", slack.NewTextBlockObject(slack.PlainTextType, "done", false, false), nil),
+		slack.NewOptionBlockObject("in testing", slack.NewTextBlockObject(slack.PlainTextType, "in testing", false, false), nil),
+		slack.NewOptionBlockObject("in progress", slack.NewTextBlockObject(slack.PlainTextType, "in progress", false, false), nil),
+		// Allow preserving uncommon statuses.
+		slack.NewOptionBlockObject("other", slack.NewTextBlockObject(slack.PlainTextType, "other", false, false), nil),
+	}
+	statusSelect := slack.NewOptionsSelectBlockElement(
+		slack.OptTypeStatic,
+		slack.NewTextBlockObject(slack.PlainTextType, "Status", false, false),
+		editActionStatus,
+		statusOptions...,
+	)
+	cur := normalizeStatus(item.Status)
+	if cur == "" {
+		cur = "done"
+	}
+	found := false
+	for _, o := range statusOptions {
+		if o.Value == cur {
+			statusSelect.InitialOption = o
+			found = true
+			break
+		}
+	}
+	if !found {
+		statusSelect.InitialOption = statusOptions[len(statusOptions)-1]
+	}
+
+	view := slack.ModalViewRequest{
+		Type:            slack.VTModal,
+		Title:           slack.NewTextBlockObject(slack.PlainTextType, "Edit item", false, false),
+		Close:           slack.NewTextBlockObject(slack.PlainTextType, "Cancel", false, false),
+		Submit:          slack.NewTextBlockObject(slack.PlainTextType, "Save", false, false),
+		CallbackID:      modalEditCallbackID,
+		PrivateMetadata: fmt.Sprintf("%s%d|%s", modalMetaPrefix, itemID, channelID),
+		Blocks: slack.Blocks{BlockSet: []slack.Block{
+			slack.NewInputBlock(
+				editBlockDescription,
+				slack.NewTextBlockObject(slack.PlainTextType, "Description", false, false),
+				nil,
+				descInput,
+			),
+			slack.NewInputBlock(
+				editBlockStatus,
+				slack.NewTextBlockObject(slack.PlainTextType, "Status", false, false),
+				nil,
+				statusSelect,
+			),
+		}},
+	}
+	if _, err := api.OpenView(triggerID, view); err != nil {
+		postEphemeralTo(api, channelID, userID, fmt.Sprintf("Unable to open edit dialog: %v", err))
+	}
+}
+
+func openDeleteModal(api *slack.Client, db *sql.DB, cfg Config, triggerID, channelID, userID string, itemID int64) {
+	item, err := GetWorkItemByID(db, itemID)
+	if err != nil {
+		postEphemeralTo(api, channelID, userID, "Item not found.")
+		return
+	}
+	monday, nextMonday := ReportWeekRange(cfg, time.Now())
+	if !itemInRange(item, monday, nextMonday) {
+		postEphemeralTo(api, channelID, userID, "You can only modify this week's items.")
+		return
+	}
+	isManager, _ := isManagerUser(api, cfg, userID)
+	user, _ := api.GetUserInfo(userID)
+	if !canManageItem(item, isManager, user) {
+		postEphemeralTo(api, channelID, userID, "You are not allowed to delete this item.")
+		return
+	}
+
+	view := slack.ModalViewRequest{
+		Type:            slack.VTModal,
+		Title:           slack.NewTextBlockObject(slack.PlainTextType, "Delete item", false, false),
+		Close:           slack.NewTextBlockObject(slack.PlainTextType, "Cancel", false, false),
+		Submit:          slack.NewTextBlockObject(slack.PlainTextType, "Delete", false, false),
+		CallbackID:      modalDeleteCallbackID,
+		PrivateMetadata: fmt.Sprintf("%s%d|%s", modalMetaPrefix, itemID, channelID),
+		Blocks: slack.Blocks{BlockSet: []slack.Block{
+			slack.NewSectionBlock(
+				slack.NewTextBlockObject(
+					slack.MarkdownType,
+					fmt.Sprintf("Delete this item?\n\n*%s*: %s (%s)", item.Author, item.Description, item.Status),
+					false,
+					false,
+				),
+				nil,
+				nil,
+			),
+		}},
+	}
+	if _, err := api.OpenView(triggerID, view); err != nil {
+		postEphemeralTo(api, channelID, userID, fmt.Sprintf("Unable to open delete confirmation: %v", err))
+	}
+}
+
+func itemInRange(item WorkItem, from, to time.Time) bool {
+	return !item.ReportedAt.Before(from) && item.ReportedAt.Before(to)
+}
+
+func canManageItem(item WorkItem, isManager bool, user *slack.User) bool {
+	if isManager {
+		return true
+	}
+	if user == nil {
+		return false
+	}
+	candidates := []string{
+		strings.TrimSpace(user.Profile.DisplayName),
+		strings.TrimSpace(user.RealName),
+		strings.TrimSpace(user.Name),
+	}
+	for _, c := range candidates {
+		if c == "" {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(item.Author), c) || nameMatches(c, item.Author) || nameMatches(item.Author, c) {
+			return true
+		}
+	}
+	return false
 }
 
 func handleNudge(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashCommand) {
@@ -557,6 +984,7 @@ func handleHelp(api *slack.Client, cfg Config, cmd slack.SlashCommand) {
 		"ReportBot Commands",
 		"",
 		"/report <description> (status) - Report a work item.",
+		"/rpt <description> (status) - Alias of /report.",
 		"  Example: /report [mantis_id] Add pagination to user list API (done)",
 		"",
 		"/list-items - List this week's items.",

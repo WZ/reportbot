@@ -111,6 +111,35 @@ func GetItemsByDateRange(db *sql.DB, from, to time.Time) ([]WorkItem, error) {
 	return items, rows.Err()
 }
 
+func GetWorkItemByID(db *sql.DB, id int64) (WorkItem, error) {
+	var item WorkItem
+	err := db.QueryRow(
+		`SELECT id, description, author, source, source_ref, category, status, ticket_ids, reported_at, created_at
+		 FROM work_items WHERE id = ?`,
+		id,
+	).Scan(
+		&item.ID, &item.Description, &item.Author, &item.Source,
+		&item.SourceRef, &item.Category, &item.Status, &item.TicketIDs,
+		&item.ReportedAt, &item.CreatedAt,
+	)
+	return item, err
+}
+
+func UpdateWorkItemTextAndStatus(db *sql.DB, id int64, description, status string) error {
+	_, err := db.Exec(
+		`UPDATE work_items
+		 SET description = ?, status = ?
+		 WHERE id = ?`,
+		description, status, id,
+	)
+	return err
+}
+
+func DeleteWorkItemByID(db *sql.DB, id int64) error {
+	_, err := db.Exec(`DELETE FROM work_items WHERE id = ?`, id)
+	return err
+}
+
 func GetPendingSlackItemsByAuthorAndDateRange(db *sql.DB, author string, from, to time.Time) ([]WorkItem, error) {
 	rows, err := db.Query(
 		`SELECT id, description, author, source, source_ref, category, status, ticket_ids, reported_at, created_at
