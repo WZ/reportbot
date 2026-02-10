@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"html"
 	"os"
@@ -31,7 +33,7 @@ func WriteEmailDraftFile(body, outputDir string, reportDate time.Time, subjectPr
 }
 
 func buildEML(subject, body string) string {
-	const boundary = "reportbot-alt"
+	boundary := generateBoundary()
 	headers := []string{
 		"MIME-Version: 1.0",
 		fmt.Sprintf("Content-Type: multipart/alternative; boundary=%q", boundary),
@@ -56,6 +58,18 @@ func buildEML(subject, body string) string {
 	out.WriteString(htmlBody)
 	out.WriteString("\r\n--" + boundary + "--\r\n")
 	return out.String()
+}
+
+func generateBoundary() string {
+	// Generate 8 random bytes for uniqueness
+	randomBytes := make([]byte, 8)
+	if _, err := rand.Read(randomBytes); err != nil {
+		// Fallback to timestamp only if random generation fails
+		return fmt.Sprintf("reportbot-%d", time.Now().UnixNano())
+	}
+	randomHex := hex.EncodeToString(randomBytes)
+	// Combine prefix, timestamp, and random hex for collision-resistant boundary
+	return fmt.Sprintf("reportbot-%d-%s", time.Now().UnixNano(), randomHex)
 }
 
 func sanitizeFilename(s string) string {
