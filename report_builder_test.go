@@ -16,8 +16,8 @@ func TestBuildReportsFromLast_FirstEverFallback(t *testing.T) {
 	}
 
 	items := []WorkItem{
-		{ID: 1, Author: "Alex Stone", Description: "Implement X", Status: "in progress"},
-		{ID: 2, Author: "Blair Kim", Description: "Fix Y", Status: "done"},
+		{ID: 1, Author: "Taylor Stone", Description: "Implement X", Status: "in progress"},
+		{ID: 2, Author: "Jordan Kim", Description: "Fix Y", Status: "done"},
 	}
 
 	team, boss, _, err := BuildReportsFromLast(cfg, items, mustDate(t, "20260209"))
@@ -28,13 +28,13 @@ func TestBuildReportsFromLast_FirstEverFallback(t *testing.T) {
 	if !strings.Contains(team, "#### Undetermined") {
 		t.Fatalf("team report should include Undetermined section:\n%s", team)
 	}
-	if !strings.Contains(team, "**Blair Kim** - Fix Y (done)") {
+	if !strings.Contains(team, "**Jordan Kim** - Fix Y (done)") {
 		t.Fatalf("team report should include author per item:\n%s", team)
 	}
-	if !strings.Contains(boss, "Undetermined (") || !strings.Contains(boss, "Alex Stone") || !strings.Contains(boss, "Blair Kim") {
+	if !strings.Contains(boss, "Undetermined (") || !strings.Contains(boss, "Taylor Stone") || !strings.Contains(boss, "Jordan Kim") {
 		t.Fatalf("boss report should include authors at category heading:\n%s", boss)
 	}
-	if strings.Contains(boss, "**Blair Kim**") {
+	if strings.Contains(boss, "**Jordan Kim**") {
 		t.Fatalf("boss report should not include author prefixes in items:\n%s", boss)
 	}
 }
@@ -46,8 +46,8 @@ func TestBuildReportsFromLast_MergeSortAndDoneRemoval(t *testing.T) {
 #### Top Focus
 
 - **Feature A**
-  - **Alice** - Old done item (done)
-  - **Alice** - Ongoing item (in progress)
+  - **Pat One** - Old done item (done)
+  - **Pat One** - Ongoing item (in progress)
 `
 	if err := os.WriteFile(filepath.Join(dir, "TEAMX_20260202.md"), []byte(prev), 0644); err != nil {
 		t.Fatalf("write previous report: %v", err)
@@ -73,9 +73,9 @@ func TestBuildReportsFromLast_MergeSortAndDoneRemoval(t *testing.T) {
 	defer func() { classifySectionsFn = orig }()
 
 	items := []WorkItem{
-		{ID: 11, Author: "Bob", Description: "Old done item", Status: "done"},
-		{ID: 12, Author: "Carol", Description: "New testing item", Status: "in test"},
-		{ID: 13, Author: "Dave", Description: "New progress item", Status: "in progress"},
+		{ID: 11, Author: "Pat Two", Description: "Old done item", Status: "done"},
+		{ID: 12, Author: "Pat Three", Description: "New testing item", Status: "in test"},
+		{ID: 13, Author: "Pat Four", Description: "New progress item", Status: "in progress"},
 	}
 
 	team, boss, _, err := BuildReportsFromLast(cfg, items, mustDate(t, "20260209"))
@@ -93,13 +93,13 @@ func TestBuildReportsFromLast_MergeSortAndDoneRemoval(t *testing.T) {
 	if !(idxDone < idxTesting && idxTesting < idxOldProgress && idxOldProgress < idxNewProgress) {
 		t.Fatalf("status ordering is incorrect in team report:\n%s", team)
 	}
-	if strings.Contains(team, "**Alice** - Old done item (done)") {
+	if strings.Contains(team, "**Pat One** - Old done item (done)") {
 		t.Fatalf("old done item from previous report should have been removed before merge:\n%s", team)
 	}
-	if !strings.Contains(boss, "Top Focus (") || !strings.Contains(boss, "Alice") || !strings.Contains(boss, "Bob") || !strings.Contains(boss, "Carol") || !strings.Contains(boss, "Dave") {
+	if !strings.Contains(boss, "Top Focus (") || !strings.Contains(boss, "Pat One") || !strings.Contains(boss, "Pat Two") || !strings.Contains(boss, "Pat Three") || !strings.Contains(boss, "Pat Four") {
 		t.Fatalf("boss category heading should include authors:\n%s", boss)
 	}
-	if strings.Contains(boss, "**Bob** -") {
+	if strings.Contains(boss, "**Pat Two** -") {
 		t.Fatalf("boss report should not include author prefixes in item lines:\n%s", boss)
 	}
 }
@@ -111,7 +111,7 @@ func TestBuildReportsFromLast_LLMConfidenceAndDuplicate(t *testing.T) {
 #### Top Focus
 
 - **Feature A**
-  - **Alice** - Existing ongoing item (in progress)
+  - **Pat One** - Existing ongoing item (in progress)
 `
 	if err := os.WriteFile(filepath.Join(dir, "TEAMX_20260202.md"), []byte(prev), 0644); err != nil {
 		t.Fatalf("write previous report: %v", err)
@@ -154,8 +154,8 @@ func TestBuildReportsFromLast_LLMConfidenceAndDuplicate(t *testing.T) {
 	defer func() { classifySectionsFn = orig }()
 
 	items := []WorkItem{
-		{ID: 21, Author: "Bob", Description: "Refined wording of existing ongoing item", Status: "in progress"},
-		{ID: 22, Author: "Carol", Description: "Low confidence placement", Status: "in progress"},
+		{ID: 21, Author: "Pat Two", Description: "Refined wording of existing ongoing item", Status: "in progress"},
+		{ID: 22, Author: "Pat Three", Description: "Low confidence placement", Status: "in progress"},
 	}
 
 	team, _, _, err := BuildReportsFromLast(cfg, items, mustDate(t, "20260209"))
@@ -186,7 +186,7 @@ func TestBuildReportsFromLast_PreservesPrefixBlocks(t *testing.T) {
 #### Top Focus
 
 - **Feature A**
-  - **Alice** - Existing ongoing item (in progress)
+  - **Pat One** - Existing ongoing item (in progress)
 `
 	if err := os.WriteFile(filepath.Join(dir, "TEAMX_20260202.md"), []byte(prev), 0644); err != nil {
 		t.Fatalf("write previous report: %v", err)
@@ -211,7 +211,7 @@ func TestBuildReportsFromLast_PreservesPrefixBlocks(t *testing.T) {
 	}
 	defer func() { classifySectionsFn = orig }()
 
-	team, _, _, err := BuildReportsFromLast(cfg, []WorkItem{{ID: 31, Author: "Bob", Description: "New item", Status: "in progress"}}, mustDate(t, "20260209"))
+	team, _, _, err := BuildReportsFromLast(cfg, []WorkItem{{ID: 31, Author: "Pat Two", Description: "New item", Status: "in progress"}}, mustDate(t, "20260209"))
 	if err != nil {
 		t.Fatalf("BuildReportsFromLast failed: %v", err)
 	}
@@ -226,12 +226,12 @@ func TestBuildReportsFromLast_PreservesPrefixBlocks(t *testing.T) {
 
 func TestFormatItemDescriptionCapitalization(t *testing.T) {
 	itemWithAuthor := TemplateItem{
-		Author:      "alex stone",
-		Description: `set heavyInfologClickHouseJdbcTemplate to "not required"`,
+		Author:      "taylor stone",
+		Description: `set heavyInfoLogDbTemplate to "not required"`,
 		Status:      "in progress",
 	}
 	gotTeam := formatTeamItem(itemWithAuthor)
-	wantTeam := `**Alex Stone** - Set heavyInfologClickHouseJdbcTemplate to "not required" (in progress)`
+	wantTeam := `**Taylor Stone** - Set heavyInfoLogDbTemplate to "not required" (in progress)`
 	if gotTeam != wantTeam {
 		t.Fatalf("unexpected team item:\nwant: %s\ngot:  %s", wantTeam, gotTeam)
 	}
@@ -246,16 +246,31 @@ func TestFormatItemDescriptionCapitalization(t *testing.T) {
 	if gotBoss != wantBoss {
 		t.Fatalf("unexpected boss item:\nwant: %s\ngot:  %s", wantBoss, gotBoss)
 	}
+
+	if got := synthesizeName("River Chen (Alias)"); got != "River Chen" {
+		t.Fatalf("expected alias removed from name, got: %s", got)
+	}
 }
 
 func TestMergeCategoryHeadingAuthors(t *testing.T) {
 	got := mergeCategoryHeadingAuthors(
-		"Data Services (Dana, Morgan) (Dana Lee, Riley Park)",
-		[]string{"Dana Lee", "Riley Park"},
+		"Data Services (Casey, Quinn) (Casey Lane, Skyler Park)",
+		[]string{"Casey Lane", "Skyler Park"},
 	)
-	want := "Data Services (Dana Lee, Riley Park, Morgan)"
+	want := "Data Services (Casey Lane, Skyler Park, Quinn)"
 	if got != want {
 		t.Fatalf("unexpected merged heading:\nwant: %s\ngot:  %s", want, got)
+	}
+}
+
+func TestMergeCategoryHeadingAuthors_StripsAliases(t *testing.T) {
+	got := mergeCategoryHeadingAuthors(
+		"Query Service (River Chen (Alias), Devon Hart)",
+		[]string{"River Chen (Alias)", "Devon Hart"},
+	)
+	want := "Query Service (River Chen, Devon Hart)"
+	if got != want {
+		t.Fatalf("unexpected merged heading with aliases:\nwant: %s\ngot:  %s", want, got)
 	}
 }
 
@@ -266,14 +281,14 @@ func TestBuildReportsFromLast_PreservesMidTopHeading(t *testing.T) {
 #### Top Focus
 
 - **Feature A**
-  - **Alice** - Existing ongoing item (in progress)
+  - **Pat One** - Existing ongoing item (in progress)
 
 ### Product Beta
 
 #### Release and Support
 
 - **Support Cases**
-  - **Bob** - Existing support item (in progress)
+  - **Pat Two** - Existing support item (in progress)
 `
 	if err := os.WriteFile(filepath.Join(dir, "TEAMX_20260202.md"), []byte(prev), 0644); err != nil {
 		t.Fatalf("write previous report: %v", err)
@@ -298,7 +313,7 @@ func TestBuildReportsFromLast_PreservesMidTopHeading(t *testing.T) {
 	}
 	defer func() { classifySectionsFn = orig }()
 
-	team, _, _, err := BuildReportsFromLast(cfg, []WorkItem{{ID: 99, Author: "Carl", Description: "New item", Status: "in progress"}}, mustDate(t, "20260209"))
+	team, _, _, err := BuildReportsFromLast(cfg, []WorkItem{{ID: 99, Author: "Pat Five", Description: "New item", Status: "in progress"}}, mustDate(t, "20260209"))
 	if err != nil {
 		t.Fatalf("BuildReportsFromLast failed: %v", err)
 	}
