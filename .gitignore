@@ -2,3 +2,6 @@ reportbot
 *.db
 reports/
 config.yaml
+env
+.env
+.env.*

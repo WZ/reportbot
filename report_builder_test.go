@@ -1,0 +1,321 @@
+package main
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestBuildReportsFromLast_FirstEverFallback(t *testing.T) {
+	dir := t.TempDir()
+	cfg := Config{
+		ReportOutputDir: dir,
+		TeamName:        "TEAMX",
+	}
+
+	items := []WorkItem{
+		{ID: 1, Author: "Alex Stone", Description: "Implement X", Status: "in progress"},
+		{ID: 2, Author: "Blair Kim", Description: "Fix Y", Status: "done"},
+	}
+
+	team, boss, _, err := BuildReportsFromLast(cfg, items, mustDate(t, "20260209"))
+	if err != nil {
+		t.Fatalf("BuildReportsFromLast failed: %v", err)
+	}
+
+	if !strings.Contains(team, "#### Undetermined") {
+		t.Fatalf("team report should include Undetermined section:\n%s", team)
+	}
+	if !strings.Contains(team, "**Blair Kim** - Fix Y (done)") {
+		t.Fatalf("team report should include author per item:\n%s", team)
+	}
+	if !strings.Contains(boss, "Undetermined (") || !strings.Contains(boss, "Alex Stone") || !strings.Contains(boss, "Blair Kim") {
+		t.Fatalf("boss report should include authors at category heading:\n%s", boss)
+	}
+	if strings.Contains(boss, "**Blair Kim**") {
+		t.Fatalf("boss report should not include author prefixes in items:\n%s", boss)
+	}
+}
+
+func TestBuildReportsFromLast_MergeSortAndDoneRemoval(t *testing.T) {
+	dir := t.TempDir()
+	prev := `### TEAMX 20260202
+
+#### Top Focus
+
+- **Feature A**
+  - **Alice** - Old done item (done)
+  - **Alice** - Ongoing item (in progress)
+`
+	if err := os.WriteFile(filepath.Join(dir, "TEAMX_20260202.md"), []byte(prev), 0644); err != nil {
+		t.Fatalf("write previous report: %v", err)
+	}
+
+	cfg := Config{
+		ReportOutputDir: dir,
+		TeamName:        "TEAMX",
+	}
+
+	orig := classifySectionsFn
+	classifySectionsFn = func(_ Config, items []WorkItem, _ []sectionOption, _ []existingItemContext) (map[int64]LLMSectionDecision, LLMUsage, error) {
+		out := make(map[int64]LLMSectionDecision)
+		for _, item := range items {
+			out[item.ID] = LLMSectionDecision{
+				SectionID:        "S0_0",
+				NormalizedStatus: normalizeStatus(item.Status),
+				Confidence:       0.95,
+			}
+		}
+		return out, LLMUsage{}, nil
+	}
+	defer func() { classifySectionsFn = orig }()
+
+	items := []WorkItem{
+		{ID: 11, Author: "Bob", Description: "Old done item", Status: "done"},
+		{ID: 12, Author: "Carol", Description: "New testing item", Status: "in test"},
+		{ID: 13, Author: "Dave", Description: "New progress item", Status: "in progress"},
+	}
+
+	team, boss, _, err := BuildReportsFromLast(cfg, items, mustDate(t, "20260209"))
+	if err != nil {
+		t.Fatalf("BuildReportsFromLast failed: %v", err)
+	}
+
+	idxDone := strings.Index(team, "Old done item (done)")
+	idxTesting := strings.Index(team, "New testing item (in testing)")
+	idxOldProgress := strings.Index(team, "Ongoing item (in progress)")
+	idxNewProgress := strings.Index(team, "New progress item (in progress)")
+	if !(idxDone >= 0 && idxTesting >= 0 && idxOldProgress >= 0 && idxNewProgress >= 0) {
+		t.Fatalf("missing expected items in team report:\n%s", team)
+	}
+	if !(idxDone < idxTesting && idxTesting < idxOldProgress && idxOldProgress < idxNewProgress) {
+		t.Fatalf("status ordering is incorrect in team report:\n%s", team)
+	}
+	if strings.Contains(team, "**Alice** - Old done item (done)") {
+		t.Fatalf("old done item from previous report should have been removed before merge:\n%s", team)
+	}
+	if !strings.Contains(boss, "Top Focus (") || !strings.Contains(boss, "Alice") || !strings.Contains(boss, "Bob") || !strings.Contains(boss, "Carol") || !strings.Contains(boss, "Dave") {
+		t.Fatalf("boss category heading should include authors:\n%s", boss)
+	}
+	if strings.Contains(boss, "**Bob** -") {
+		t.Fatalf("boss report should not include author prefixes in item lines:\n%s", boss)
+	}
+}
+
+func TestBuildReportsFromLast_LLMConfidenceAndDuplicate(t *testing.T) {
+	dir := t.TempDir()
+	prev := `### TEAMX 20260202
+
+#### Top Focus
+
+- **Feature A**
+  - **Alice** - Existing ongoing item (in progress)
+`
+	if err := os.WriteFile(filepath.Join(dir, "TEAMX_20260202.md"), []byte(prev), 0644); err != nil {
+		t.Fatalf("write previous report: %v", err)
+	}
+
+	cfg := Config{
+		ReportOutputDir: dir,
+		TeamName:        "TEAMX",
+	}
+
+	orig := classifySectionsFn
+	classifySectionsFn = func(_ Config, items []WorkItem, _ []sectionOption, existing []existingItemContext) (map[int64]LLMSectionDecision, LLMUsage, error) {
+		out := make(map[int64]LLMSectionDecision)
+		var dupKey string
+		for _, ex := range existing {
+			if strings.Contains(ex.Description, "Existing ongoing item") {
+				dupKey = ex.Key
+				break
+			}
+		}
+		for _, item := range items {
+			switch item.ID {
+			case 21:
+				out[item.ID] = LLMSectionDecision{
+					SectionID:        "S0_0",
+					NormalizedStatus: "in test",
+					DuplicateOf:      dupKey,
+					Confidence:       0.95,
+				}
+			case 22:
+				out[item.ID] = LLMSectionDecision{
+					SectionID:        "S0_0",
+					NormalizedStatus: "done",
+					Confidence:       0.40,
+				}
+			}
+		}
+		return out, LLMUsage{}, nil
+	}
+	defer func() { classifySectionsFn = orig }()
+
+	items := []WorkItem{
+		{ID: 21, Author: "Bob", Description: "Refined wording of existing ongoing item", Status: "in progress"},
+		{ID: 22, Author: "Carol", Description: "Low confidence placement", Status: "in progress"},
+	}
+
+	team, _, _, err := BuildReportsFromLast(cfg, items, mustDate(t, "20260209"))
+	if err != nil {
+		t.Fatalf("BuildReportsFromLast failed: %v", err)
+	}
+
+	if !strings.Contains(team, "(in testing)") {
+		t.Fatalf("duplicate merge should update status via normalized_status:\n%s", team)
+	}
+	if strings.Count(team, "(in testing)") != 1 {
+		t.Fatalf("duplicate should not create a second testing item:\n%s", team)
+	}
+	if !strings.Contains(team, "#### Undetermined") || !strings.Contains(team, "Low confidence placement") {
+		t.Fatalf("low-confidence decision should route to Undetermined:\n%s", team)
+	}
+	if !strings.Contains(team, "Low confidence placement (in progress)") {
+		t.Fatalf("low-confidence decision should keep incoming status:\n%s", team)
+	}
+}
+
+func TestBuildReportsFromLast_PreservesPrefixBlocks(t *testing.T) {
+	dir := t.TempDir()
+	prev := `### Product Alpha - 20260130
+
+- **Observability stack design (in progress)**
+
+#### Top Focus
+
+- **Feature A**
+  - **Alice** - Existing ongoing item (in progress)
+`
+	if err := os.WriteFile(filepath.Join(dir, "TEAMX_20260202.md"), []byte(prev), 0644); err != nil {
+		t.Fatalf("write previous report: %v", err)
+	}
+
+	cfg := Config{
+		ReportOutputDir: dir,
+		TeamName:        "TEAMX",
+	}
+
+	orig := classifySectionsFn
+	classifySectionsFn = func(_ Config, items []WorkItem, _ []sectionOption, _ []existingItemContext) (map[int64]LLMSectionDecision, LLMUsage, error) {
+		out := make(map[int64]LLMSectionDecision)
+		for _, item := range items {
+			out[item.ID] = LLMSectionDecision{
+				SectionID:        "S0_0",
+				NormalizedStatus: normalizeStatus(item.Status),
+				Confidence:       0.95,
+			}
+		}
+		return out, LLMUsage{}, nil
+	}
+	defer func() { classifySectionsFn = orig }()
+
+	team, _, _, err := BuildReportsFromLast(cfg, []WorkItem{{ID: 31, Author: "Bob", Description: "New item", Status: "in progress"}}, mustDate(t, "20260209"))
+	if err != nil {
+		t.Fatalf("BuildReportsFromLast failed: %v", err)
+	}
+
+	if !strings.Contains(team, "### Product Alpha - 20260130") {
+		t.Fatalf("expected prefix block heading to be preserved:\n%s", team)
+	}
+	if !strings.Contains(team, "Observability stack design") {
+		t.Fatalf("expected prefix block body to be preserved:\n%s", team)
+	}
+}
+
+func TestFormatItemDescriptionCapitalization(t *testing.T) {
+	itemWithAuthor := TemplateItem{
+		Author:      "alex stone",
+		Description: `set heavyInfologClickHouseJdbcTemplate to "not required"`,
+		Status:      "in progress",
+	}
+	gotTeam := formatTeamItem(itemWithAuthor)
+	wantTeam := `**Alex Stone** - Set heavyInfologClickHouseJdbcTemplate to "not required" (in progress)`
+	if gotTeam != wantTeam {
+		t.Fatalf("unexpected team item:\nwant: %s\ngot:  %s", wantTeam, gotTeam)
+	}
+
+	itemWithTicket := TemplateItem{
+		Description: "improve data balance check warning messages",
+		TicketIDs:   "1238836",
+		Status:      "in progress",
+	}
+	gotBoss := formatBossItem(itemWithTicket)
+	wantBoss := "[1238836] Improve data balance check warning messages (in progress)"
+	if gotBoss != wantBoss {
+		t.Fatalf("unexpected boss item:\nwant: %s\ngot:  %s", wantBoss, gotBoss)
+	}
+}
+
+func TestMergeCategoryHeadingAuthors(t *testing.T) {
+	got := mergeCategoryHeadingAuthors(
+		"Data Services (Dana, Morgan) (Dana Lee, Riley Park)",
+		[]string{"Dana Lee", "Riley Park"},
+	)
+	want := "Data Services (Dana Lee, Riley Park, Morgan)"
+	if got != want {
+		t.Fatalf("unexpected merged heading:\nwant: %s\ngot:  %s", want, got)
+	}
+}
+
+func TestBuildReportsFromLast_PreservesMidTopHeading(t *testing.T) {
+	dir := t.TempDir()
+	prev := `### Product Alpha
+
+#### Top Focus
+
+- **Feature A**
+  - **Alice** - Existing ongoing item (in progress)
+
+### Product Beta
+
+#### Release and Support
+
+- **Support Cases**
+  - **Bob** - Existing support item (in progress)
+`
+	if err := os.WriteFile(filepath.Join(dir, "TEAMX_20260202.md"), []byte(prev), 0644); err != nil {
+		t.Fatalf("write previous report: %v", err)
+	}
+
+	cfg := Config{
+		ReportOutputDir: dir,
+		TeamName:        "TEAMX",
+	}
+
+	orig := classifySectionsFn
+	classifySectionsFn = func(_ Config, items []WorkItem, _ []sectionOption, _ []existingItemContext) (map[int64]LLMSectionDecision, LLMUsage, error) {
+		out := make(map[int64]LLMSectionDecision)
+		for _, item := range items {
+			out[item.ID] = LLMSectionDecision{
+				SectionID:        "S0_0",
+				NormalizedStatus: normalizeStatus(item.Status),
+				Confidence:       0.95,
+			}
+		}
+		return out, LLMUsage{}, nil
+	}
+	defer func() { classifySectionsFn = orig }()
+
+	team, _, _, err := BuildReportsFromLast(cfg, []WorkItem{{ID: 99, Author: "Carl", Description: "New item", Status: "in progress"}}, mustDate(t, "20260209"))
+	if err != nil {
+		t.Fatalf("BuildReportsFromLast failed: %v", err)
+	}
+
+	if !strings.Contains(team, "### Product Alpha") {
+		t.Fatalf("expected first top heading to be preserved:\n%s", team)
+	}
+	if !strings.Contains(team, "### Product Beta") {
+		t.Fatalf("expected mid top heading to be preserved:\n%s", team)
+	}
+}
+
+func mustDate(t *testing.T, ymd string) time.Time {
+	t.Helper()
+	d, err := time.Parse("20060102", ymd)
+	if err != nil {
+		t.Fatalf("invalid date %s: %v", ymd, err)
+	}
+	return d
+}

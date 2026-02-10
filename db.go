@@ -111,6 +111,60 @@ func GetItemsByDateRange(db *sql.DB, from, to time.Time) ([]WorkItem, error) {
 	return items, rows.Err()
 }
 
+func GetPendingSlackItemsByAuthorAndDateRange(db *sql.DB, author string, from, to time.Time) ([]WorkItem, error) {
+	rows, err := db.Query(
+		`SELECT id, description, author, source, source_ref, category, status, ticket_ids, reported_at, created_at
+		 FROM work_items
+		 WHERE author = ? AND source = 'slack' AND reported_at >= ? AND reported_at < ?
+		   AND lower(trim(status)) <> 'done'
+		 ORDER BY reported_at DESC`,
+		author, from, to,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var items []WorkItem
+	for rows.Next() {
+		var item WorkItem
+		err := rows.Scan(
+			&item.ID, &item.Description, &item.Author, &item.Source,
+			&item.SourceRef, &item.Category, &item.Status, &item.TicketIDs,
+			&item.ReportedAt, &item.CreatedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func GetSlackAuthorsByDateRange(db *sql.DB, from, to time.Time) (map[string]bool, error) {
+	rows, err := db.Query(
+		`SELECT DISTINCT author FROM work_items
+		 WHERE reported_at >= ? AND reported_at < ? AND source = 'slack'`,
+		from, to,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	authors := make(map[string]bool)
+	for rows.Next() {
+		var author string
+		if err := rows.Scan(&author); err != nil {
+			return nil, err
+		}
+		if author != "" {
+			authors[author] = true
+		}
+	}
+	return authors, rows.Err()
+}
+
 func UpdateCategories(db *sql.DB, categorized map[int64]string) error {
 	tx, err := db.Begin()
 	if err != nil {

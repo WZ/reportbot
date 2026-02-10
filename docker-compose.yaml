@@ -1,0 +1,20 @@
+# export SLACK_BOT_TOKEN=xxxx
+# export SLACK_APP_TOKEN=xxxx
+# export GITLAB_TOKEN=xxxx
+# export OPENAI_API_KEY=xxxx
+# docker-compose --project-name reportbot up
+# docker-compose --project-name reportbot down
+services:
+  reportbot:
+    container_name: reportbot
+    image: reportbot
+    environment:
+      SLACK_BOT_TOKEN: "${SLACK_BOT_TOKEN}"
+      SLACK_APP_TOKEN: "${SLACK_APP_TOKEN}"
+      GITLAB_TOKEN: "${GITLAB_TOKEN}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY}"
+    volumes:
+      - /Users/wli02/Documents/workspace_work/WZ/reportbot/config.yaml:/app/config.yaml:ro
+      - /Users/wli02/Documents/workspace_work/WZ/reportbot/reportbot-data:/app/data
+      - /Users/wli02/Documents/workspace_work/WZ/reportbot/reportbot-reports:/app/reports
+      - /Users/wli02/Documents/workspace_work/WZ/reportbot/llm_glossary.yaml:/app/llm_glossary.yaml:ro
