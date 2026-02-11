@@ -16,12 +16,6 @@
 terms:
   # phrase: text to search in work item description
   # section: target section label from your report template
-  - phrase: "kudu backup"
-    section: "Top Focus > HA Log Sync Enhancement"
-
-  - phrase: "adom pending"
-    section: "Cluster Manager"
-
   - phrase: "api server metrics"
     section: "Observability"
 

@@ -8,8 +8,8 @@ Developers report completed work via slash commands. The bot also pulls merged/o
 
 - `/report` (or `/rpt`) — Developers report work items via Slack
 - `/fetch-mrs` — Pull merged and open GitLab MRs for the current calendar week
-- `/generate-report` — Generate a team markdown file (or boss `.eml` draft) and upload it to Slack
-- `/list-items` — View this week's items
+- `/generate-report` (or `/gen`) — Generate a team markdown file (or boss `.eml` draft) and upload it to Slack
+- `/list` — View this week's items
 - `/list-missing` — Managers: list team members who have not reported this week
 - `/nudge [@name]` — Managers: send reminder DMs (missing members by default)
 - `/help` — Show all commands and example usage
@@ -37,7 +37,8 @@ Developers report completed work via slash commands. The bot also pulls merged/o
    | `/rpt` | Alias of `/report` |
    | `/fetch-mrs` | Fetch merged and open GitLab MRs for this week |
    | `/generate-report` | Generate the weekly report |
-   | `/list-items` | List this week's work items |
+   | `/gen` | Alias of `/generate-report` |
+   | `/list` | List this week's work items |
    | `/list-missing` | List team members missing reports |
    | `/nudge [@name]` | Send reminder DMs |
    | `/help` | Show help and usage |
@@ -239,6 +240,7 @@ Manager only. Two modes:
 ```
 /generate-report team    # Generate team markdown (.md) and upload file to Slack (default)
 /generate-report boss    # Generate boss email draft (.eml) and upload file to Slack
+/gen team                # Alias of /generate-report team
 ```
 
 **Team mode** output:
@@ -266,10 +268,10 @@ Generated files are saved to `REPORT_OUTPUT_DIR` and uploaded to the Slack chann
 Anyone can view this week's items:
 
 ```
-/list-items
+/list
 ```
 
-`/list-items` now includes inline actions:
+`/list` now includes inline actions:
 - Members can edit/delete only their own items.
 - Managers can edit/delete all items.
 - Delete uses a confirmation modal.

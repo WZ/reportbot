@@ -73,7 +73,9 @@ func handleSlashCommand(client *socketmode.Client, api *slack.Client, db *sql.DB
 		handleFetchMRs(api, db, cfg, cmd)
 	case "/generate-report":
 		handleGenerateReport(api, db, cfg, cmd)
-	case "/list-items":
+	case "/gen":
+		handleGenerateReport(api, db, cfg, cmd)
+	case "/list":
 		handleListItems(api, db, cfg, cmd)
 	case "/list-missing":
 		handleListMissing(api, db, cfg, cmd)
@@ -270,7 +272,7 @@ func handleGenerateReport(api *slack.Client, db *sql.DB, cfg Config, cmd slack.S
 		return
 	}
 
-	teamReport, bossReport, llmUsage, err := BuildReportsFromLast(cfg, items, monday)
+	merged, llmUsage, err := BuildReportsFromLast(cfg, items, monday)
 	if err != nil {
 		postEphemeral(api, cmd, fmt.Sprintf("Error building report: %v", err))
 		log.Printf("report build error: %v", err)
@@ -280,18 +282,22 @@ func handleGenerateReport(api *slack.Client, db *sql.DB, cfg Config, cmd slack.S
 	var filePath string
 	var fileTitle string
 	if mode == "boss" {
+		bossReport := renderBossMarkdown(merged)
 		filePath, err = WriteEmailDraftFile(bossReport, cfg.ReportOutputDir, monday, cfg.TeamName)
 		fileTitle = fmt.Sprintf("%s report email draft", cfg.TeamName)
+		log.Printf("generate-report boss-report-length=%d file=%s", len(bossReport), filePath)
 	} else {
+		teamReport := renderTeamMarkdown(merged)
 		filePath, err = WriteReportFile(teamReport, cfg.ReportOutputDir, monday, cfg.TeamName)
 		fileTitle = fmt.Sprintf("%s team report", cfg.TeamName)
+		log.Printf("generate-report team-report-length=%d file=%s", len(teamReport), filePath)
 	}
 	if err != nil {
 		log.Printf("Error writing report file: %v", err)
 		postEphemeral(api, cmd, fmt.Sprintf("Error writing report file: %v", err))
 		return
 	}
-	log.Printf("generate-report team-report-length=%d boss-report-length=%d file=%s mode=%s", len(teamReport), len(bossReport), filePath, mode)
+	log.Printf("generate-report file=%s mode=%s", filePath, mode)
 
 	fi, err := os.Stat(filePath)
 	if err != nil {
@@ -987,7 +993,7 @@ func handleHelp(api *slack.Client, cfg Config, cmd slack.SlashCommand) {
 		"/rpt <description> (status) - Alias of /report.",
 		"  Example: /report [mantis_id] Add pagination to user list API (done)",
 		"",
-		"/list-items - List this week's items.",
+		"/list - List this week's items.",
 		"/help - Show this help.",
 	}
 
@@ -996,6 +1002,7 @@ func handleHelp(api *slack.Client, cfg Config, cmd slack.SlashCommand) {
 			"",
 			"/fetch-mrs - Fetch merged GitLab MRs for this week.",
 			"/generate-report team|boss - Generate weekly report.",
+			"/gen team|boss - Alias of /generate-report.",
 			"/list-missing - List team members who haven't reported this week.",
 			"/nudge [@name] - Nudge missing members, or a specific user.",
 		)
