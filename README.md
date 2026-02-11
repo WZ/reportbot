@@ -6,16 +6,36 @@ Developers report completed work via slash commands. The bot also pulls merged/o
 
 ## Features
 
+### Commands
+
 - `/report` (or `/rpt`) — Developers report work items via Slack
 - `/fetch-mrs` — Pull merged and open GitLab MRs for the current calendar week
 - `/generate-report` (or `/gen`) — Generate a team markdown file (or boss `.eml` draft) and upload it to Slack
-- `/list` — View this week's items
+- `/list` — View this week's items with inline edit/delete actions
 - `/check` — Managers: list team members who have not reported this week
 - `/nudge [@name]` — Managers: send reminder DMs (missing members by default)
+- `/retrospective` — Managers: analyze recent corrections and suggest glossary/guide improvements
 - `/help` — Show all commands and example usage
+
+### Report Generation
+
 - Two report modes: **team** (author per line) and **boss** (authors grouped by category)
 - Manager-only permissions for report generation and MR fetching
 - **Weekly nudge** — Automatically DMs team members on a configurable day to remind them to report
+- **Welcome message** — New channel members receive an intro message explaining how to use the bot
+
+### Agentic AI (Closed-Loop Classification)
+
+The LLM classifier improves itself over time through a feedback loop:
+
+- **Parallel batch classification** — Items are classified concurrently via goroutines (~3x speedup)
+- **Classification history** — Every LLM decision is persisted with confidence scores for auditability
+- **Correction capture** — Manager corrections (via edit modal or uncertainty buttons) are stored and fed back into future prompts
+- **Auto-growing glossary** — When the same correction appears 2+ times, a deterministic glossary rule is created automatically
+- **Uncertainty sampling** — Low-confidence items are surfaced to the manager with interactive section buttons after report generation
+- **Retrospective analysis** — `/retrospective` uses the LLM to find correction patterns and suggest glossary terms or guide updates
+
+See [docs/agentic-features-overview.md](docs/agentic-features-overview.md) for a detailed overview.
 
 ## Quick Start
 
@@ -29,7 +49,9 @@ Developers report completed work via slash commands. The bot also pulls merged/o
    - `files:write`
    - `im:write` (for Friday nudge DMs)
    - `users:read` (to resolve full names for managers/team members)
-4. Under **Slash Commands**, create these commands:
+4. Under **Event Subscriptions**, subscribe to these bot events:
+   - `member_joined_channel` (sends welcome message to new members)
+5. Under **Slash Commands**, create these commands:
 
    | Command | Description |
    |---|---|
@@ -40,10 +62,11 @@ Developers report completed work via slash commands. The bot also pulls merged/o
    | `/gen` | Alias of `/generate-report` |
    | `/list` | List this week's work items |
    | `/check` | List team members missing reports |
-   | `/nudge [@name]` | Send reminder DMs |
+   | `/nudge` | Send reminder DMs |
+   | `/retrospective` | Analyze corrections and suggest improvements |
    | `/help` | Show help and usage |
 
-5. Install the app to your workspace
+6. Install the app to your workspace
 
 ### 2. Configure
 
@@ -289,8 +312,7 @@ Requires the `im:write` bot token scope in your Slack app.
 
 ## Permissions
 
-Manager commands (`/fetch-mrs`, `/generate-report`, `/check`) are restricted to Slack full names listed in `manager`.
-Manager commands include: `/fetch-mrs`, `/generate-report`, `/check`, `/nudge`.
+Manager commands (`/fetch-mrs`, `/generate-report`, `/check`, `/nudge`, `/retrospective`) are restricted to Slack full names listed in `manager`.
 
 ## Report Structure
 
@@ -304,14 +326,17 @@ Report sections and sub-sections are sourced from the previous generated team re
 
 ```
 reportbot/
-  main.go         Entry point
-  config.go       YAML + env var loading, permission check
-  models.go       WorkItem, GitLabMR types, calendar week helper
-  db.go           SQLite schema and CRUD operations
-  llm.go          LLM integration (Anthropic + OpenAI), categorization
-  gitlab.go       GitLab API client for fetching merged MRs
-  report.go       Markdown report generation (team/boss modes)
-  slack.go        Slack Socket Mode bot and slash command handlers
-  nudge.go        Weekly reminder scheduler and DM sender
-  Dockerfile      Multi-stage Docker build
+  main.go              Entry point
+  config.go            YAML + env var loading, permission check
+  models.go            WorkItem, GitLabMR types, calendar week helper
+  db.go                SQLite schema and CRUD (work_items, classification_history, corrections)
+  llm.go               LLM integration (Anthropic + OpenAI), parallel batch classification, retrospective analysis
+  glossary.go          Glossary loading, auto-growth from corrections
+  gitlab.go            GitLab API client for fetching merged MRs
+  report.go            Markdown/EML report file generation
+  report_builder.go    Template parsing, LLM classification pipeline, merge logic
+  slack.go             Slack Socket Mode bot, slash commands, correction capture, uncertainty sampling
+  nudge.go             Weekly reminder scheduler and DM sender
+  Dockerfile           Multi-stage Docker build
+  docs/                Architecture diagrams and feature documentation
 ```
