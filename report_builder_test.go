@@ -20,10 +20,14 @@ func TestBuildReportsFromLast_FirstEverFallback(t *testing.T) {
 		{ID: 2, Author: "Jordan Kim", Description: "Fix Y", Status: "done"},
 	}
 
-	team, boss, _, err := BuildReportsFromLast(cfg, items, mustDate(t, "20260209"))
+	merged, _, err := BuildReportsFromLast(cfg, items, mustDate(t, "20260209"))
 	if err != nil {
 		t.Fatalf("BuildReportsFromLast failed: %v", err)
 	}
+
+	team := renderTeamMarkdown(merged)
+
+	boss := renderBossMarkdown(merged)
 
 	if !strings.Contains(team, "#### Undetermined") {
 		t.Fatalf("team report should include Undetermined section:\n%s", team)
@@ -78,10 +82,14 @@ func TestBuildReportsFromLast_MergeSortAndDoneRemoval(t *testing.T) {
 		{ID: 13, Author: "Pat Four", Description: "New progress item", Status: "in progress"},
 	}
 
-	team, boss, _, err := BuildReportsFromLast(cfg, items, mustDate(t, "20260209"))
+	merged, _, err := BuildReportsFromLast(cfg, items, mustDate(t, "20260209"))
 	if err != nil {
 		t.Fatalf("BuildReportsFromLast failed: %v", err)
 	}
+
+	team := renderTeamMarkdown(merged)
+
+	boss := renderBossMarkdown(merged)
 
 	idxDone := strings.Index(team, "Old done item (done)")
 	idxTesting := strings.Index(team, "New testing item (in testing)")
@@ -158,10 +166,12 @@ func TestBuildReportsFromLast_LLMConfidenceAndDuplicate(t *testing.T) {
 		{ID: 22, Author: "Pat Three", Description: "Low confidence placement", Status: "in progress"},
 	}
 
-	team, _, _, err := BuildReportsFromLast(cfg, items, mustDate(t, "20260209"))
+	merged, _, err := BuildReportsFromLast(cfg, items, mustDate(t, "20260209"))
 	if err != nil {
 		t.Fatalf("BuildReportsFromLast failed: %v", err)
 	}
+
+	team := renderTeamMarkdown(merged)
 
 	if !strings.Contains(team, "(in testing)") {
 		t.Fatalf("duplicate merge should update status via normalized_status:\n%s", team)
@@ -211,10 +221,12 @@ func TestBuildReportsFromLast_PreservesPrefixBlocks(t *testing.T) {
 	}
 	defer func() { classifySectionsFn = orig }()
 
-	team, _, _, err := BuildReportsFromLast(cfg, []WorkItem{{ID: 31, Author: "Pat Two", Description: "New item", Status: "in progress"}}, mustDate(t, "20260209"))
+	merged, _, err := BuildReportsFromLast(cfg, []WorkItem{{ID: 31, Author: "Pat Two", Description: "New item", Status: "in progress"}}, mustDate(t, "20260209"))
 	if err != nil {
 		t.Fatalf("BuildReportsFromLast failed: %v", err)
 	}
+
+	team := renderTeamMarkdown(merged)
 
 	if !strings.Contains(team, "### Product Alpha - 20260130") {
 		t.Fatalf("expected prefix block heading to be preserved:\n%s", team)
@@ -313,10 +325,12 @@ func TestBuildReportsFromLast_PreservesMidTopHeading(t *testing.T) {
 	}
 	defer func() { classifySectionsFn = orig }()
 
-	team, _, _, err := BuildReportsFromLast(cfg, []WorkItem{{ID: 99, Author: "Pat Five", Description: "New item", Status: "in progress"}}, mustDate(t, "20260209"))
+	merged, _, err := BuildReportsFromLast(cfg, []WorkItem{{ID: 99, Author: "Pat Five", Description: "New item", Status: "in progress"}}, mustDate(t, "20260209"))
 	if err != nil {
 		t.Fatalf("BuildReportsFromLast failed: %v", err)
 	}
+
+	team := renderTeamMarkdown(merged)
 
 	if !strings.Contains(team, "### Product Alpha") {
 		t.Fatalf("expected first top heading to be preserved:\n%s", team)

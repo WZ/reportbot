@@ -63,10 +63,10 @@ var (
 
 var classifySectionsFn = CategorizeItemsToSections
 
-func BuildReportsFromLast(cfg Config, items []WorkItem, reportDate time.Time) (string, string, LLMUsage, error) {
+func BuildReportsFromLast(cfg Config, items []WorkItem, reportDate time.Time) (*ReportTemplate, LLMUsage, error) {
 	template, status, err := loadTemplateForGeneration(cfg.ReportOutputDir, cfg.TeamName, reportDate)
 	if err != nil {
-		return "", "", LLMUsage{}, err
+		return nil, LLMUsage{}, err
 	}
 	stripCurrentTeamTitleFromPrefix(template, cfg.TeamName)
 
@@ -80,7 +80,7 @@ func BuildReportsFromLast(cfg Config, items []WorkItem, reportDate time.Time) (s
 		existing := buildExistingItemContext(merged, options)
 		decisions, llmUsage, err = classifySectionsFn(cfg, items, options, existing)
 		if err != nil {
-			return "", "", llmUsage, err
+			return nil, llmUsage, err
 		}
 	}
 
@@ -92,9 +92,7 @@ func BuildReportsFromLast(cfg Config, items []WorkItem, reportDate time.Time) (s
 	mergeIncomingItems(merged, items, options, decisions, confidenceThreshold)
 	reorderTemplateItems(merged)
 
-	team := renderTeamMarkdown(merged)
-	boss := renderBossMarkdown(merged)
-	return team, boss, llmUsage, nil
+	return merged, llmUsage, nil
 }
 
 func loadTemplateForGeneration(outputDir, teamName string, reportDate time.Time) (*ReportTemplate, loadStatus, error) {
