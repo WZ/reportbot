@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
@@ -62,6 +63,7 @@ func CategorizeItemsToSections(
 	items []WorkItem,
 	options []sectionOption,
 	existing []existingItemContext,
+	corrections []ClassificationCorrection,
 ) (map[int64]LLMSectionDecision, LLMUsage, error) {
 	if len(items) == 0 {
 		return nil, LLMUsage{}, nil
@@ -71,8 +73,6 @@ func CategorizeItemsToSections(
 	if batchSize < 1 {
 		batchSize = 50
 	}
-	all := make(map[int64]LLMSectionDecision, len(items))
-	totalUsage := LLMUsage{}
 	glossary, err := loadGlossaryIfConfigured(cfg)
 	if err != nil {
 		return nil, LLMUsage{}, err
@@ -80,45 +80,75 @@ func CategorizeItemsToSections(
 	glossarySectionMap := resolveGlossarySectionMap(glossary, options)
 	templateGuidance := loadTemplateGuidance(cfg.LLMGuidePath)
 
+	// Pre-slice all batches.
+	var batches [][]WorkItem
 	for start := 0; start < len(items); start += batchSize {
 		end := start + batchSize
 		if end > len(items) {
 			end = len(items)
 		}
-		batch := items[start:end]
-		systemPrompt, userPrompt := buildSectionPrompts(cfg, options, batch, existing, templateGuidance)
+		batches = append(batches, items[start:end])
+	}
 
-		var responseText string
-		var usage LLMUsage
-		var err error
+	type batchResult struct {
+		decisions map[int64]LLMSectionDecision
+		usage     LLMUsage
+		err       error
+	}
+	results := make([]batchResult, len(batches))
 
-		switch cfg.LLMProvider {
-		case "openai":
-			model := cfg.LLMModel
-			if model == "" {
-				model = defaultOpenAIModel
+	var wg sync.WaitGroup
+	for i, batch := range batches {
+		wg.Add(1)
+		go func(idx int, batch []WorkItem) {
+			defer wg.Done()
+			systemPrompt, userPrompt := buildSectionPrompts(cfg, options, batch, existing, templateGuidance, corrections)
+
+			var responseText string
+			var usage LLMUsage
+			var callErr error
+
+			switch cfg.LLMProvider {
+			case "openai":
+				model := cfg.LLMModel
+				if model == "" {
+					model = defaultOpenAIModel
+				}
+				log.Printf("llm section-classify provider=openai model=%s items=%d sections=%d batch=%d", model, len(batch), len(options), idx)
+				responseText, usage, callErr = callOpenAI(cfg.OpenAIAPIKey, model, systemPrompt, userPrompt)
+			default:
+				model := cfg.LLMModel
+				if model == "" {
+					model = defaultAnthropicModel
+				}
+				log.Printf("llm section-classify provider=anthropic model=%s items=%d sections=%d batch=%d", model, len(batch), len(options), idx)
+				responseText, usage, callErr = callAnthropic(cfg.AnthropicAPIKey, model, systemPrompt, userPrompt)
 			}
-			log.Printf("llm section-classify provider=openai model=%s items=%d sections=%d batch=%d-%d", model, len(batch), len(options), start, end)
-			responseText, usage, err = callOpenAI(cfg.OpenAIAPIKey, model, systemPrompt, userPrompt)
-		default:
-			model := cfg.LLMModel
-			if model == "" {
-				model = defaultAnthropicModel
-			}
-			log.Printf("llm section-classify provider=anthropic model=%s items=%d sections=%d batch=%d-%d", model, len(batch), len(options), start, end)
-			responseText, usage, err = callAnthropic(cfg.AnthropicAPIKey, model, systemPrompt, userPrompt)
-		}
-		if err != nil {
-			return nil, totalUsage, err
-		}
-		totalUsage.Add(usage)
 
-		parsed, err := parseSectionClassifiedResponse(responseText)
-		if err != nil {
-			return nil, totalUsage, err
+			if callErr != nil {
+				results[idx] = batchResult{usage: usage, err: callErr}
+				return
+			}
+
+			parsed, parseErr := parseSectionClassifiedResponse(responseText)
+			if parseErr != nil {
+				results[idx] = batchResult{usage: usage, err: parseErr}
+				return
+			}
+			applyGlossaryOverrides(batch, parsed, glossary, glossarySectionMap)
+			results[idx] = batchResult{decisions: parsed, usage: usage}
+		}(i, batch)
+	}
+	wg.Wait()
+
+	all := make(map[int64]LLMSectionDecision, len(items))
+	totalUsage := LLMUsage{}
+	for _, r := range results {
+		totalUsage.Add(r.usage)
+		if r.err != nil {
+			return nil, totalUsage, r.err
 		}
-		applyGlossaryOverrides(batch, parsed, glossary, glossarySectionMap)
-		for id, decision := range parsed {
+		for id, decision := range r.decisions {
 			all[id] = decision
 		}
 	}
@@ -126,7 +156,7 @@ func CategorizeItemsToSections(
 	return all, totalUsage, nil
 }
 
-func buildSectionPrompts(cfg Config, options []sectionOption, items []WorkItem, existing []existingItemContext, templateGuidance string) (string, string) {
+func buildSectionPrompts(cfg Config, options []sectionOption, items []WorkItem, existing []existingItemContext, templateGuidance string, corrections []ClassificationCorrection) (string, string) {
 	var sectionLines strings.Builder
 	for _, option := range options {
 		sectionLines.WriteString(fmt.Sprintf("- %s: %s\n", option.ID, option.Label))
@@ -172,6 +202,11 @@ func buildSectionPrompts(cfg Config, options []sectionOption, items []WorkItem, 
 		templateBlock = "\nTemplate guidance (semantic hints only; still choose section_id only from the list above):\n" + templateGuidance + "\n"
 	}
 
+	correctionsNote := ""
+	if len(corrections) > 0 {
+		correctionsNote = "\nA 'Past corrections' section shows previous misclassifications. Avoid repeating them."
+	}
+
 	systemPrompt := fmt.Sprintf(`You classify software work items into one section.
 Choose exactly one section_id for each item from:
 %s
@@ -182,13 +217,41 @@ Also:
 - extract ticket IDs if present (e.g. [1247202] or bare ticket numbers)
 - if this item is the same underlying work as an existing item, set duplicate_of to that existing key (Kxx); otherwise empty string
 - set confidence between 0 and 1.
-%s
+%s%s
 
 Respond with JSON only (no markdown):
-[{"id": 1, "section_id": "S0_2", "normalized_status": "in progress", "ticket_ids": "1247202", "duplicate_of": "K3", "confidence": 0.91}, ...]`, sectionLines.String(), templateBlock)
+[{"id": 1, "section_id": "S0_2", "normalized_status": "in progress", "ticket_ids": "1247202", "duplicate_of": "K3", "confidence": 0.91}, ...]`, sectionLines.String(), templateBlock, correctionsNote)
+
+	correctionsBlock := ""
+	if len(corrections) > 0 {
+		var cb strings.Builder
+		cb.WriteString("\nPast corrections (learn from these — avoid repeating these mistakes):\n")
+		limit := 20
+		if len(corrections) < limit {
+			limit = len(corrections)
+		}
+		for i := 0; i < limit; i++ {
+			c := corrections[i]
+			desc := strings.TrimSpace(c.Description)
+			if len(desc) > 120 {
+				desc = desc[:120] + "..."
+			}
+			origLabel := c.OriginalSectionID
+			if c.OriginalLabel != "" {
+				origLabel = fmt.Sprintf("%s (%s)", c.OriginalSectionID, c.OriginalLabel)
+			}
+			corrLabel := c.CorrectedSectionID
+			if c.CorrectedLabel != "" {
+				corrLabel = fmt.Sprintf("%s (%s)", c.CorrectedSectionID, c.CorrectedLabel)
+			}
+			cb.WriteString(fmt.Sprintf("- \"%s\" was classified as %s, corrected to %s\n", desc, origLabel, corrLabel))
+		}
+		correctionsBlock = cb.String()
+	}
 
 	userPrompt := "Examples from previous reports:\n" + examplesBlock +
 		"\nExisting items (for duplicate_of):\n" + existingBlock +
+		correctionsBlock +
 		"\nClassify these items:\n\n" + itemLines.String()
 	return systemPrompt, userPrompt
 }
@@ -470,4 +533,100 @@ func callOpenAI(apiKey, model, systemPrompt, userPrompt string) (string, LLMUsag
 
 	log.Printf("llm openai response size=%d tokens_in=%d tokens_out=%d", len(openAIResp.Choices[0].Message.Content), usage.InputTokens, usage.OutputTokens)
 	return openAIResp.Choices[0].Message.Content, usage, nil
+}
+
+// --- Retrospective Analysis ---
+
+type RetroSuggestion struct {
+	Title     string `json:"title"`
+	Reasoning string `json:"reasoning"`
+	Action    string `json:"action"` // "glossary_term" or "guide_update"
+	Phrase    string `json:"phrase"`
+	Section   string `json:"section"`
+	GuideText string `json:"guide_text"`
+}
+
+func analyzeCorrections(cfg Config, corrections []ClassificationCorrection, options []sectionOption) ([]RetroSuggestion, LLMUsage, error) {
+	if len(corrections) == 0 {
+		return nil, LLMUsage{}, nil
+	}
+
+	var sectionLines strings.Builder
+	for _, opt := range options {
+		sectionLines.WriteString(fmt.Sprintf("- %s: %s\n", opt.ID, opt.Label))
+	}
+
+	var corrLines strings.Builder
+	for _, c := range corrections {
+		desc := strings.TrimSpace(c.Description)
+		if len(desc) > 150 {
+			desc = desc[:150] + "..."
+		}
+		origLabel := c.OriginalSectionID
+		if c.OriginalLabel != "" {
+			origLabel = fmt.Sprintf("%s (%s)", c.OriginalSectionID, c.OriginalLabel)
+		}
+		corrLabel := c.CorrectedSectionID
+		if c.CorrectedLabel != "" {
+			corrLabel = fmt.Sprintf("%s (%s)", c.CorrectedSectionID, c.CorrectedLabel)
+		}
+		corrLines.WriteString(fmt.Sprintf("- \"%s\": %s -> %s\n", desc, origLabel, corrLabel))
+	}
+
+	systemPrompt := fmt.Sprintf(`You analyze classification correction patterns to suggest improvements.
+
+Available sections:
+%s
+
+Analyze the corrections below and find patterns (phrases or topics that were repeatedly misclassified).
+Only suggest patterns that appear 2+ times. Max 5 suggestions.
+
+For each suggestion, choose an action:
+- "glossary_term": A keyword/phrase that should always map to a specific section. Provide "phrase" and "section" (section_id).
+- "guide_update": A rule to add to the classification guide. Provide "guide_text" with the rule text.
+
+Respond with JSON only (no markdown):
+[{"title": "...", "reasoning": "...", "action": "glossary_term", "phrase": "...", "section": "S1_2", "guide_text": ""}, ...]`, sectionLines.String())
+
+	userPrompt := "Recent classification corrections:\n" + corrLines.String()
+
+	var responseText string
+	var usage LLMUsage
+	var err error
+
+	switch cfg.LLMProvider {
+	case "openai":
+		model := cfg.LLMModel
+		if model == "" {
+			model = defaultOpenAIModel
+		}
+		log.Printf("llm retrospective provider=openai model=%s corrections=%d", model, len(corrections))
+		responseText, usage, err = callOpenAI(cfg.OpenAIAPIKey, model, systemPrompt, userPrompt)
+	default:
+		model := cfg.LLMModel
+		if model == "" {
+			model = defaultAnthropicModel
+		}
+		log.Printf("llm retrospective provider=anthropic model=%s corrections=%d", model, len(corrections))
+		responseText, usage, err = callAnthropic(cfg.AnthropicAPIKey, model, systemPrompt, userPrompt)
+	}
+	if err != nil {
+		return nil, usage, err
+	}
+
+	responseText = strings.TrimSpace(responseText)
+	responseText = strings.TrimPrefix(responseText, "```json")
+	responseText = strings.TrimPrefix(responseText, "```")
+	responseText = strings.TrimSuffix(responseText, "```")
+	responseText = strings.TrimSpace(responseText)
+
+	var suggestions []RetroSuggestion
+	if err := json.Unmarshal([]byte(responseText), &suggestions); err != nil {
+		return nil, usage, fmt.Errorf("parsing retrospective response: %w (response: %s)", err, responseText)
+	}
+
+	if len(suggestions) > 5 {
+		suggestions = suggestions[:5]
+	}
+	return suggestions, usage, nil
 }
