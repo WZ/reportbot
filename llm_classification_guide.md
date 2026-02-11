@@ -50,9 +50,10 @@ Purpose: define stable report structure and section semantics so classification 
 #### Undetermined
 - {{items}}
 
-## Section IDs (Stable)
+## Section mapping reference
 
-Use these IDs in LLM classification responses; renderer maps IDs to headings above.
+The renderer will provide a `section_id` for each section in the prompt.
+In all classification responses, copy that `section_id` value exactly; do not invent new IDs or reuse the mnemonic labels below unless they are explicitly given as `section_id`.
 
 - PA_OBS = Product Alpha > Observability stack design
 - PA_LOG = Product Alpha > Cross-system data integration layer (log forwarding)
