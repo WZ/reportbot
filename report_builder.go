@@ -58,15 +58,15 @@ var (
 	statusSuffixRe    = regexp.MustCompile(`\(([^)]+)\)\s*$`)
 	ticketPrefixRe    = regexp.MustCompile(`^\[([^\]]+)\]\s+`)
 	authorPrefixRe    = regexp.MustCompile(`^\*\*(.+?)\*\*\s*-\s*`)
-	trailingParenRe   = regexp.MustCompile(`\s*\(([^()]*)\)\s*$`)
+	nameAliasParenRe  = regexp.MustCompile(`\([^)]*\)|（[^）]*）`)
 )
 
 var classifySectionsFn = CategorizeItemsToSections
 
-func BuildReportsFromLast(cfg Config, items []WorkItem, reportDate time.Time) (string, string, LLMUsage, error) {
+func BuildReportsFromLast(cfg Config, items []WorkItem, reportDate time.Time) (*ReportTemplate, LLMUsage, error) {
 	template, status, err := loadTemplateForGeneration(cfg.ReportOutputDir, cfg.TeamName, reportDate)
 	if err != nil {
-		return "", "", LLMUsage{}, err
+		return nil, LLMUsage{}, err
 	}
 	stripCurrentTeamTitleFromPrefix(template, cfg.TeamName)
 
@@ -80,7 +80,7 @@ func BuildReportsFromLast(cfg Config, items []WorkItem, reportDate time.Time) (s
 		existing := buildExistingItemContext(merged, options)
 		decisions, llmUsage, err = classifySectionsFn(cfg, items, options, existing)
 		if err != nil {
-			return "", "", llmUsage, err
+			return nil, llmUsage, err
 		}
 	}
 
@@ -92,9 +92,7 @@ func BuildReportsFromLast(cfg Config, items []WorkItem, reportDate time.Time) (s
 	mergeIncomingItems(merged, items, options, decisions, confidenceThreshold)
 	reorderTemplateItems(merged)
 
-	team := renderTeamMarkdown(merged, reportDate, cfg.TeamName)
-	boss := renderBossMarkdown(merged, reportDate, cfg.TeamName)
-	return team, boss, llmUsage, nil
+	return merged, llmUsage, nil
 }
 
 func loadTemplateForGeneration(outputDir, teamName string, reportDate time.Time) (*ReportTemplate, loadStatus, error) {
@@ -535,7 +533,29 @@ func itemIdentityKey(item TemplateItem) string {
 	return strings.ToLower(strings.TrimSpace(item.Description))
 }
 
-func renderTeamMarkdown(t *ReportTemplate, reportDate time.Time, teamName string) string {
+func renderTeamMarkdown(t *ReportTemplate) string {
+	return renderMarkdown(
+		t,
+		func(cat TemplateCategory) string { return cat.Name },
+		formatTeamItem,
+	)
+}
+
+func renderBossMarkdown(t *ReportTemplate) string {
+	return renderMarkdown(
+		t,
+		func(cat TemplateCategory) string {
+			return mergeCategoryHeadingAuthors(cat.Name, categoryAuthors(cat))
+		},
+		formatBossItem,
+	)
+}
+
+func renderMarkdown(
+	t *ReportTemplate,
+	categoryHeading func(cat TemplateCategory) string,
+	formatItem func(item TemplateItem) string,
+) string {
 	var buf strings.Builder
 	if prefix := strings.TrimSpace(strings.Join(t.PrefixLines, "\n")); prefix != "" {
 		buf.WriteString(prefix)
@@ -550,7 +570,7 @@ func renderTeamMarkdown(t *ReportTemplate, reportDate time.Time, teamName string
 		if len(cat.Subsections) == 0 {
 			continue
 		}
-		buf.WriteString(fmt.Sprintf("#### %s\n\n", cat.Name))
+		buf.WriteString(fmt.Sprintf("#### %s\n\n", categoryHeading(cat)))
 		for _, sub := range cat.Subsections {
 			if strings.TrimSpace(sub.HeaderLine) != "" {
 				buf.WriteString(strings.TrimSpace(sub.HeaderLine) + "\n")
@@ -560,87 +580,7 @@ func renderTeamMarkdown(t *ReportTemplate, reportDate time.Time, teamName string
 				if strings.TrimSpace(sub.HeaderLine) != "" {
 					prefix = "  - "
 				}
-				buf.WriteString(prefix + formatTeamItem(item) + "\n")
-			}
-			buf.WriteString("\n")
-		}
-	}
-
-	return strings.TrimSpace(buf.String()) + "\n"
-}
-
-func renderBossMarkdown(t *ReportTemplate, reportDate time.Time, teamName string) string {
-	var buf strings.Builder
-	_ = reportDate
-	_ = teamName
-	if prefix := strings.TrimSpace(strings.Join(t.PrefixLines, "\n")); prefix != "" {
-		buf.WriteString(prefix)
-		buf.WriteString("\n\n")
-	}
-
-	for _, cat := range t.Categories {
-		if strings.TrimSpace(cat.MarkerLine) != "" {
-			buf.WriteString(strings.TrimSpace(cat.MarkerLine) + "\n\n")
-			continue
-		}
-		if len(cat.Subsections) == 0 {
-			continue
-		}
-		authors := categoryAuthors(cat)
-		catHeading := mergeCategoryHeadingAuthors(cat.Name, authors)
-		buf.WriteString(fmt.Sprintf("#### %s\n\n", catHeading))
-
-		for _, sub := range cat.Subsections {
-			if strings.TrimSpace(sub.HeaderLine) != "" {
-				buf.WriteString(strings.TrimSpace(sub.HeaderLine) + "\n")
-			}
-			for _, item := range sub.Items {
-				prefix := "- "
-				if strings.TrimSpace(sub.HeaderLine) != "" {
-					prefix = "  - "
-				}
-				buf.WriteString(prefix + formatBossItem(item) + "\n")
-			}
-			buf.WriteString("\n")
-		}
-	}
-
-	return strings.TrimSpace(buf.String()) + "\n"
-}
-
-func renderBossPlainText(t *ReportTemplate, reportDate time.Time, teamName string) string {
-	var buf strings.Builder
-	buf.WriteString(fmt.Sprintf("%s %s\n\n", teamName, reportDate.Format("20060102")))
-	if prefix := strings.TrimSpace(strings.Join(t.PrefixLines, "\n")); prefix != "" {
-		for _, line := range strings.Split(prefix, "\n") {
-			clean := cleanBossLine(line)
-			if clean == "" {
-				buf.WriteString("\n")
-				continue
-			}
-			buf.WriteString(clean + "\n")
-		}
-		buf.WriteString("\n\n")
-	}
-
-	for _, cat := range t.Categories {
-		if strings.TrimSpace(cat.MarkerLine) != "" {
-			buf.WriteString(cleanBossLine(cat.MarkerLine) + "\n\n")
-			continue
-		}
-		if len(cat.Subsections) == 0 {
-			continue
-		}
-		authors := categoryAuthors(cat)
-		catHeading := mergeCategoryHeadingAuthors(cat.Name, authors)
-		buf.WriteString(catHeading + "\n")
-
-		for _, sub := range cat.Subsections {
-			if strings.TrimSpace(sub.HeaderLine) != "" {
-				buf.WriteString(cleanBossLine(sub.HeaderLine) + "\n")
-			}
-			for _, item := range sub.Items {
-				buf.WriteString(formatBossItem(item) + "\n")
+				buf.WriteString(prefix + formatItem(item) + "\n")
 			}
 			buf.WriteString("\n")
 		}
@@ -764,6 +704,7 @@ func synthesizeName(name string) string {
 	if name == "" {
 		return ""
 	}
+	name = nameAliasParenRe.ReplaceAllString(name, " ")
 	parts := strings.Fields(strings.ToLower(name))
 	for i, p := range parts {
 		runes := []rune(p)
@@ -793,23 +734,6 @@ func synthesizeDescription(description string) string {
 	return string(runes)
 }
 
-func cleanBossLine(line string) string {
-	s := strings.TrimSpace(line)
-	if s == "" {
-		return ""
-	}
-	for _, prefix := range []string{"### ", "#### "} {
-		if strings.HasPrefix(s, prefix) {
-			s = strings.TrimSpace(strings.TrimPrefix(s, prefix))
-		}
-	}
-	if strings.HasPrefix(s, "- ") {
-		s = strings.TrimSpace(strings.TrimPrefix(s, "- "))
-	}
-	s = strings.ReplaceAll(s, "**", "")
-	return strings.TrimSpace(s)
-}
-
 func mergeCategoryHeadingAuthors(categoryName string, generatedAuthors []string) string {
 	base, existingAuthors := splitCategoryNameAndAuthors(categoryName)
 	merged := mergeAuthors(generatedAuthors, existingAuthors)
@@ -823,12 +747,12 @@ func splitCategoryNameAndAuthors(categoryName string) (string, []string) {
 	s := strings.TrimSpace(categoryName)
 	var groups [][]string
 	for {
-		m := trailingParenRe.FindStringSubmatch(s)
-		if len(m) != 2 {
+		base, inside, ok := popTrailingParenGroup(s)
+		if !ok {
 			break
 		}
-		inside := strings.TrimSpace(m[1])
-		if !looksLikeAuthorGroup(inside) {
+		inside = strings.TrimSpace(inside)
+		if inside == "" || !looksLikeAuthorGroup(inside) {
 			break
 		}
 		var names []string
@@ -841,13 +765,45 @@ func splitCategoryNameAndAuthors(categoryName string) (string, []string) {
 		if len(names) > 0 {
 			groups = append([][]string{names}, groups...)
 		}
-		s = strings.TrimSpace(strings.TrimSuffix(s, m[0]))
+		s = strings.TrimSpace(base)
 	}
 	var existing []string
 	for _, g := range groups {
 		existing = append(existing, g...)
 	}
 	return s, existing
+}
+
+func popTrailingParenGroup(s string) (base string, inside string, ok bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "", "", false
+	}
+	runes := []rune(s)
+	end := len(runes) - 1
+	if runes[end] != ')' {
+		return "", "", false
+	}
+	depth := 0
+	start := -1
+	for i := end; i >= 0; i-- {
+		switch runes[i] {
+		case ')':
+			depth++
+		case '(':
+			depth--
+			if depth == 0 {
+				start = i
+				i = -1
+			}
+		}
+	}
+	if start < 0 || start >= end {
+		return "", "", false
+	}
+	base = strings.TrimSpace(string(runes[:start]))
+	inside = string(runes[start+1 : end])
+	return base, inside, true
 }
 
 func looksLikeAuthorGroup(group string) bool {
@@ -924,23 +880,4 @@ func tokenSubset(a, b []string) bool {
 		}
 	}
 	return true
-}
-
-func collapseConsecutiveBlankLines(s string) string {
-	lines := strings.Split(strings.ReplaceAll(s, "\r\n", "\n"), "\n")
-	var out []string
-	prevBlank := false
-	for _, line := range lines {
-		if strings.TrimSpace(line) == "" {
-			if prevBlank {
-				continue
-			}
-			prevBlank = true
-			out = append(out, "")
-			continue
-		}
-		prevBlank = false
-		out = append(out, line)
-	}
-	return strings.Join(out, "\n")
 }
