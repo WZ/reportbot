@@ -77,7 +77,7 @@ func handleSlashCommand(client *socketmode.Client, api *slack.Client, db *sql.DB
 		handleGenerateReport(api, db, cfg, cmd)
 	case "/list":
 		handleListItems(api, db, cfg, cmd)
-	case "/list-missing":
+	case "/check":
 		handleListMissing(api, db, cfg, cmd)
 	case "/nudge":
 		handleNudge(api, db, cfg, cmd)
@@ -89,7 +89,7 @@ func handleSlashCommand(client *socketmode.Client, api *slack.Client, db *sql.DB
 func handleReport(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashCommand) {
 	text := strings.TrimSpace(cmd.Text)
 	if text == "" {
-		postEphemeral(api, cmd, "Usage: /report <description> (status)\nExample: /report [mantis_id] Add pagination to user list API (done)")
+		postEphemeral(api, cmd, "Usage: /report <description> (status)\nExample: /report [mantis_id] Add pagination to user list API (done)\nMultiline: /report Item A (in progress)\\nItem B (done)")
 		return
 	}
 
@@ -116,50 +116,112 @@ func handleReport(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashComm
 		}
 	}
 
-	status := "done"
-	description := reportText
-
-	if match := statusRegex.FindStringSubmatch(reportText); len(match) > 1 {
-		status = strings.TrimSpace(match[1])
-		description = strings.TrimSpace(reportText[:len(reportText)-len(match[0])])
-	}
-
-	item := WorkItem{
-		Description: description,
-		Author:      author,
-		Source:      "slack",
-		Status:      status,
-		ReportedAt:  time.Now(),
-	}
-
-	if err := InsertWorkItem(db, item); err != nil {
-		postEphemeral(api, cmd, fmt.Sprintf("Error saving item: %v", err))
-		log.Printf("report insert error user=%s: %v", cmd.UserID, err)
+	items, parseErr := parseReportItems(reportText, author)
+	if parseErr != nil {
+		postEphemeral(api, cmd, parseErr.Error())
+		log.Printf("report parse error user=%s: %v", cmd.UserID, parseErr)
 		return
+	}
+	if len(items) == 1 {
+		if err := InsertWorkItem(db, items[0]); err != nil {
+			postEphemeral(api, cmd, fmt.Sprintf("Error saving item: %v", err))
+			log.Printf("report insert error user=%s: %v", cmd.UserID, err)
+			return
+		}
+	} else {
+		if _, err := InsertWorkItems(db, items); err != nil {
+			postEphemeral(api, cmd, fmt.Sprintf("Error saving items: %v", err))
+			log.Printf("report batch insert error user=%s: %v", cmd.UserID, err)
+			return
+		}
 	}
 
 	monday, nextMonday := ReportWeekRange(cfg, time.Now())
-	pending, err := GetPendingSlackItemsByAuthorAndDateRange(db, author, monday, nextMonday)
+	weekItems, err := GetSlackItemsByAuthorAndDateRange(db, author, monday, nextMonday)
 	if err != nil {
-		log.Printf("report pending lookup error user=%s author=%s: %v", cmd.UserID, author, err)
-		postEphemeral(api, cmd, fmt.Sprintf("Recorded: %s [%s]", description, status))
+		log.Printf("report weekly items lookup error user=%s author=%s: %v", cmd.UserID, author, err)
+		postEphemeral(api, cmd, fmt.Sprintf("Recorded %d item(s) for %s.", len(items), author))
 		return
 	}
 
-	msg := fmt.Sprintf("Recorded: %s (%s) for %s", description, status, author)
-	if len(pending) > 0 {
-		msg += "\n\nYour not-done items this week:"
+	msg := fmt.Sprintf("Recorded %d item(s) for %s.", len(items), author)
+	previewLimit := 5
+	if len(items) <= previewLimit {
+		for _, it := range items {
+			msg += fmt.Sprintf("\n• %s (%s)", it.Description, normalizeStatus(it.Status))
+		}
+	} else {
+		for i := 0; i < previewLimit; i++ {
+			msg += fmt.Sprintf("\n• %s (%s)", items[i].Description, normalizeStatus(items[i].Status))
+		}
+		msg += fmt.Sprintf("\n• ... and %d more", len(items)-previewLimit)
+	}
+	if len(weekItems) > 0 {
+		msg += "\n\nItems reported this week:"
 		limit := 8
-		for i, p := range pending {
+		for i, p := range weekItems {
 			if i >= limit {
-				msg += fmt.Sprintf("\n- ... and %d more", len(pending)-limit)
+				msg += fmt.Sprintf("\n• ... and %d more", len(weekItems)-limit)
 				break
 			}
-			msg += fmt.Sprintf("\n- %s (%s)", p.Description, normalizeStatus(p.Status))
+			msg += fmt.Sprintf("\n• %s (%s)", p.Description, normalizeStatus(p.Status))
 		}
 	}
 	postEphemeral(api, cmd, msg)
-	log.Printf("report saved user=%s author=%s status=%s", cmd.UserID, author, status)
+	log.Printf("report saved user=%s author=%s count=%d", cmd.UserID, author, len(items))
+}
+
+func parseReportItems(reportText, author string) ([]WorkItem, error) {
+	lines := strings.Split(strings.ReplaceAll(reportText, "\r\n", "\n"), "\n")
+	trimmed := make([]string, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			trimmed = append(trimmed, line)
+		}
+	}
+	if len(trimmed) == 0 {
+		return nil, fmt.Errorf("Usage: /report <description> (status)")
+	}
+
+	sharedStatus := ""
+	if len(trimmed) > 1 {
+		last := trimmed[len(trimmed)-1]
+		if strings.HasPrefix(last, "(") && strings.HasSuffix(last, ")") {
+			candidate := strings.TrimSpace(last[1 : len(last)-1])
+			if candidate != "" {
+				sharedStatus = candidate
+				trimmed = trimmed[:len(trimmed)-1]
+			}
+		}
+	}
+	if len(trimmed) == 0 {
+		return nil, fmt.Errorf("Usage: /report <description> (status)")
+	}
+
+	now := time.Now()
+	items := make([]WorkItem, 0, len(trimmed))
+	for _, line := range trimmed {
+		status := "done"
+		description := line
+		if match := statusRegex.FindStringSubmatch(line); len(match) > 1 {
+			status = strings.TrimSpace(match[1])
+			description = strings.TrimSpace(line[:len(line)-len(match[0])])
+		} else if sharedStatus != "" {
+			status = sharedStatus
+		}
+		if description == "" {
+			return nil, fmt.Errorf("Error: empty report item line.")
+		}
+		items = append(items, WorkItem{
+			Description: description,
+			Author:      author,
+			Source:      "slack",
+			Status:      status,
+			ReportedAt:  now,
+		})
+	}
+	return items, nil
 }
 
 func handleFetchMRs(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashCommand) {
@@ -992,6 +1054,8 @@ func handleHelp(api *slack.Client, cfg Config, cmd slack.SlashCommand) {
 		"/report <description> (status) - Report a work item.",
 		"/rpt <description> (status) - Alias of /report.",
 		"  Example: /report [mantis_id] Add pagination to user list API (done)",
+		"  Multiline: /report Item A (in progress)\\nItem B (done)",
+		"  Shared status: /report Item A\\nItem B\\n(in progress)",
 		"",
 		"/list - List this week's items.",
 		"/help - Show this help.",
@@ -1003,7 +1067,7 @@ func handleHelp(api *slack.Client, cfg Config, cmd slack.SlashCommand) {
 			"/fetch-mrs - Fetch merged GitLab MRs for this week.",
 			"/generate-report team|boss - Generate weekly report.",
 			"/gen team|boss - Alias of /generate-report.",
-			"/list-missing - List team members who haven't reported this week.",
+			"/check - List team members who haven't reported this week.",
 			"/nudge [@name] - Nudge missing members, or a specific user.",
 		)
 	}
