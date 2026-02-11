@@ -10,7 +10,7 @@ Developers report completed work via slash commands. The bot also pulls merged/o
 - `/fetch-mrs` — Pull merged and open GitLab MRs for the current calendar week
 - `/generate-report` (or `/gen`) — Generate a team markdown file (or boss `.eml` draft) and upload it to Slack
 - `/list` — View this week's items
-- `/list-missing` — Managers: list team members who have not reported this week
+- `/check` — Managers: list team members who have not reported this week
 - `/nudge [@name]` — Managers: send reminder DMs (missing members by default)
 - `/help` — Show all commands and example usage
 - Two report modes: **team** (author per line) and **boss** (authors grouped by category)
@@ -39,7 +39,7 @@ Developers report completed work via slash commands. The bot also pulls merged/o
    | `/generate-report` | Generate the weekly report |
    | `/gen` | Alias of `/generate-report` |
    | `/list` | List this week's work items |
-   | `/list-missing` | List team members missing reports |
+   | `/check` | List team members missing reports |
    | `/nudge [@name]` | Send reminder DMs |
    | `/help` | Show help and usage |
 
@@ -289,8 +289,8 @@ Requires the `im:write` bot token scope in your Slack app.
 
 ## Permissions
 
-Manager commands (`/fetch-mrs`, `/generate-report`, `/list-missing`) are restricted to Slack full names listed in `manager`.
-Manager commands include: `/fetch-mrs`, `/generate-report`, `/list-missing`, `/nudge`.
+Manager commands (`/fetch-mrs`, `/generate-report`, `/check`) are restricted to Slack full names listed in `manager`.
+Manager commands include: `/fetch-mrs`, `/generate-report`, `/check`, `/nudge`.
 
 ## Report Structure
 
