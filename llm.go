@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -15,12 +16,12 @@ import (
 )
 
 type sectionClassifiedItem struct {
-	ID               int64   `json:"id"`
-	SectionID        string  `json:"section_id"`
-	NormalizedStatus string  `json:"normalized_status"`
-	TicketIDs        string  `json:"ticket_ids"`
-	DuplicateOf      string  `json:"duplicate_of"`
-	Confidence       float64 `json:"confidence"`
+	ID               int64           `json:"id"`
+	SectionID        string          `json:"section_id"`
+	NormalizedStatus string          `json:"normalized_status"`
+	TicketIDs        json.RawMessage `json:"ticket_ids"`
+	DuplicateOf      string          `json:"duplicate_of"`
+	Confidence       float64         `json:"confidence"`
 }
 
 type existingItemContext struct {
@@ -54,6 +55,7 @@ func (u *LLMUsage) Add(other LLMUsage) {
 
 const defaultAnthropicModel = "claude-sonnet-4-5-20250929"
 const defaultOpenAIModel = "gpt-4o-mini"
+const maxTemplateGuidanceChars = 8000
 
 func CategorizeItemsToSections(
 	cfg Config,
@@ -76,6 +78,7 @@ func CategorizeItemsToSections(
 		return nil, LLMUsage{}, err
 	}
 	glossarySectionMap := resolveGlossarySectionMap(glossary, options)
+	templateGuidance := loadTemplateGuidance(cfg.LLMGuidePath)
 
 	for start := 0; start < len(items); start += batchSize {
 		end := start + batchSize
@@ -83,7 +86,7 @@ func CategorizeItemsToSections(
 			end = len(items)
 		}
 		batch := items[start:end]
-		systemPrompt, userPrompt := buildSectionPrompts(cfg, options, batch, existing)
+		systemPrompt, userPrompt := buildSectionPrompts(cfg, options, batch, existing, templateGuidance)
 
 		var responseText string
 		var usage LLMUsage
@@ -123,7 +126,7 @@ func CategorizeItemsToSections(
 	return all, totalUsage, nil
 }
 
-func buildSectionPrompts(cfg Config, options []sectionOption, items []WorkItem, existing []existingItemContext) (string, string) {
+func buildSectionPrompts(cfg Config, options []sectionOption, items []WorkItem, existing []existingItemContext, templateGuidance string) (string, string) {
 	var sectionLines strings.Builder
 	for _, option := range options {
 		sectionLines.WriteString(fmt.Sprintf("- %s: %s\n", option.ID, option.Label))
@@ -164,6 +167,11 @@ func buildSectionPrompts(cfg Config, options []sectionOption, items []WorkItem, 
 		}
 	}
 
+	templateBlock := ""
+	if strings.TrimSpace(templateGuidance) != "" {
+		templateBlock = "\nTemplate guidance (semantic hints only; still choose section_id only from the list above):\n" + templateGuidance + "\n"
+	}
+
 	systemPrompt := fmt.Sprintf(`You classify software work items into one section.
 Choose exactly one section_id for each item from:
 %s
@@ -174,14 +182,33 @@ Also:
 - extract ticket IDs if present (e.g. [1247202] or bare ticket numbers)
 - if this item is the same underlying work as an existing item, set duplicate_of to that existing key (Kxx); otherwise empty string
 - set confidence between 0 and 1.
+%s
 
 Respond with JSON only (no markdown):
-[{"id": 1, "section_id": "S0_2", "normalized_status": "in progress", "ticket_ids": "1247202", "duplicate_of": "K3", "confidence": 0.91}, ...]`, sectionLines.String())
+[{"id": 1, "section_id": "S0_2", "normalized_status": "in progress", "ticket_ids": "1247202", "duplicate_of": "K3", "confidence": 0.91}, ...]`, sectionLines.String(), templateBlock)
 
 	userPrompt := "Examples from previous reports:\n" + examplesBlock +
 		"\nExisting items (for duplicate_of):\n" + existingBlock +
 		"\nClassify these items:\n\n" + itemLines.String()
 	return systemPrompt, userPrompt
+}
+
+func loadTemplateGuidance(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		// Optional file: no hard failure if missing.
+		log.Printf("llm template guidance skipped path=%s err=%v", path, err)
+		return ""
+	}
+	text := strings.TrimSpace(string(data))
+	if len(text) > maxTemplateGuidanceChars {
+		text = text[:maxTemplateGuidanceChars] + "\n...(truncated)"
+	}
+	return text
 }
 
 func parseSectionClassifiedResponse(responseText string) (map[int64]LLMSectionDecision, error) {
@@ -198,15 +225,61 @@ func parseSectionClassifiedResponse(responseText string) (map[int64]LLMSectionDe
 
 	decisions := make(map[int64]LLMSectionDecision)
 	for _, c := range classified {
+		ticketIDs := parseTicketIDsField(c.TicketIDs)
 		decisions[c.ID] = LLMSectionDecision{
 			SectionID:        strings.TrimSpace(c.SectionID),
 			NormalizedStatus: normalizeStatus(strings.TrimSpace(c.NormalizedStatus)),
-			TicketIDs:        strings.TrimSpace(c.TicketIDs),
+			TicketIDs:        ticketIDs,
 			DuplicateOf:      strings.TrimSpace(c.DuplicateOf),
 			Confidence:       c.Confidence,
 		}
 	}
 	return decisions, nil
+}
+
+func parseTicketIDsField(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+
+	// Primary expected shape: "12345" or "12345,67890"
+	var asString string
+	if err := json.Unmarshal(raw, &asString); err == nil {
+		return strings.TrimSpace(asString)
+	}
+
+	// Also accept model outputs like ["12345"] or [].
+	var asStringSlice []string
+	if err := json.Unmarshal(raw, &asStringSlice); err == nil {
+		var out []string
+		for _, s := range asStringSlice {
+			s = strings.TrimSpace(s)
+			if s != "" {
+				out = append(out, s)
+			}
+		}
+		return strings.Join(out, ",")
+	}
+
+	// Fallback for mixed arrays.
+	var asAnySlice []any
+	if err := json.Unmarshal(raw, &asAnySlice); err == nil {
+		var out []string
+		for _, v := range asAnySlice {
+			switch x := v.(type) {
+			case string:
+				x = strings.TrimSpace(x)
+				if x != "" {
+					out = append(out, x)
+				}
+			case float64:
+				out = append(out, fmt.Sprintf("%.0f", x))
+			}
+		}
+		return strings.Join(out, ",")
+	}
+
+	return ""
 }
 
 func loadGlossaryIfConfigured(cfg Config) (*LLMGlossary, error) {
