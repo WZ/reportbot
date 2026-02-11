@@ -570,6 +570,10 @@ func renderMarkdown(
 		if len(cat.Subsections) == 0 {
 			continue
 		}
+		// Skip categories that have no items in any subsection
+		if !categoryHasItems(cat) {
+			continue
+		}
 		buf.WriteString(fmt.Sprintf("#### %s\n\n", categoryHeading(cat)))
 		for _, sub := range cat.Subsections {
 			if strings.TrimSpace(sub.HeaderLine) != "" {
@@ -587,6 +591,15 @@ func renderMarkdown(
 	}
 
 	return strings.TrimSpace(buf.String()) + "\n"
+}
+
+func categoryHasItems(cat TemplateCategory) bool {
+	for _, sub := range cat.Subsections {
+		if len(sub.Items) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func categoryAuthors(cat TemplateCategory) []string {
