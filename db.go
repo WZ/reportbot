@@ -170,6 +170,35 @@ func GetPendingSlackItemsByAuthorAndDateRange(db *sql.DB, author string, from, t
 	return items, rows.Err()
 }
 
+func GetSlackItemsByAuthorAndDateRange(db *sql.DB, author string, from, to time.Time) ([]WorkItem, error) {
+	rows, err := db.Query(
+		`SELECT id, description, author, source, source_ref, category, status, ticket_ids, reported_at, created_at
+		 FROM work_items
+		 WHERE author = ? AND source = 'slack' AND reported_at >= ? AND reported_at < ?
+		 ORDER BY reported_at DESC`,
+		author, from, to,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var items []WorkItem
+	for rows.Next() {
+		var item WorkItem
+		err := rows.Scan(
+			&item.ID, &item.Description, &item.Author, &item.Source,
+			&item.SourceRef, &item.Category, &item.Status, &item.TicketIDs,
+			&item.ReportedAt, &item.CreatedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
 func GetSlackAuthorsByDateRange(db *sql.DB, from, to time.Time) (map[string]bool, error) {
 	rows, err := db.Query(
 		`SELECT DISTINCT author FROM work_items
