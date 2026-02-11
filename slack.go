@@ -77,7 +77,7 @@ func handleSlashCommand(client *socketmode.Client, api *slack.Client, db *sql.DB
 		handleGenerateReport(api, db, cfg, cmd)
 	case "/list":
 		handleListItems(api, db, cfg, cmd)
-	case "/list-missing":
+	case "/check":
 		handleListMissing(api, db, cfg, cmd)
 	case "/nudge":
 		handleNudge(api, db, cfg, cmd)
@@ -148,23 +148,23 @@ func handleReport(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashComm
 	previewLimit := 5
 	if len(items) <= previewLimit {
 		for _, it := range items {
-			msg += fmt.Sprintf("\n- %s (%s)", it.Description, normalizeStatus(it.Status))
+			msg += fmt.Sprintf("\n• %s (%s)", it.Description, normalizeStatus(it.Status))
 		}
 	} else {
 		for i := 0; i < previewLimit; i++ {
-			msg += fmt.Sprintf("\n- %s (%s)", items[i].Description, normalizeStatus(items[i].Status))
+			msg += fmt.Sprintf("\n• %s (%s)", items[i].Description, normalizeStatus(items[i].Status))
 		}
-		msg += fmt.Sprintf("\n- ... and %d more", len(items)-previewLimit)
+		msg += fmt.Sprintf("\n• ... and %d more", len(items)-previewLimit)
 	}
 	if len(weekItems) > 0 {
 		msg += "\n\nItems reported this week:"
 		limit := 8
 		for i, p := range weekItems {
 			if i >= limit {
-				msg += fmt.Sprintf("\n- ... and %d more", len(weekItems)-limit)
+				msg += fmt.Sprintf("\n• ... and %d more", len(weekItems)-limit)
 				break
 			}
-			msg += fmt.Sprintf("\n- %s (%s)", p.Description, normalizeStatus(p.Status))
+			msg += fmt.Sprintf("\n• %s (%s)", p.Description, normalizeStatus(p.Status))
 		}
 	}
 	postEphemeral(api, cmd, msg)
@@ -1067,7 +1067,7 @@ func handleHelp(api *slack.Client, cfg Config, cmd slack.SlashCommand) {
 			"/fetch-mrs - Fetch merged GitLab MRs for this week.",
 			"/generate-report team|boss - Generate weekly report.",
 			"/gen team|boss - Alias of /generate-report.",
-			"/list-missing - List team members who haven't reported this week.",
+			"/check - List team members who haven't reported this week.",
 			"/nudge [@name] - Nudge missing members, or a specific user.",
 		)
 	}
