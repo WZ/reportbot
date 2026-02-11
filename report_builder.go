@@ -63,10 +63,17 @@ var (
 
 var classifySectionsFn = CategorizeItemsToSections
 
-func BuildReportsFromLast(cfg Config, items []WorkItem, reportDate time.Time) (*ReportTemplate, LLMUsage, error) {
+type BuildResult struct {
+	Template  *ReportTemplate
+	Usage     LLMUsage
+	Decisions map[int64]LLMSectionDecision
+	Options   []sectionOption
+}
+
+func BuildReportsFromLast(cfg Config, items []WorkItem, reportDate time.Time, corrections []ClassificationCorrection) (BuildResult, error) {
 	template, status, err := loadTemplateForGeneration(cfg.ReportOutputDir, cfg.TeamName, reportDate)
 	if err != nil {
-		return nil, LLMUsage{}, err
+		return BuildResult{}, err
 	}
 	stripCurrentTeamTitleFromPrefix(template, cfg.TeamName)
 
@@ -78,9 +85,9 @@ func BuildReportsFromLast(cfg Config, items []WorkItem, reportDate time.Time) (*
 	llmUsage := LLMUsage{}
 	if len(options) > 0 && status != templateFirstEver {
 		existing := buildExistingItemContext(merged, options)
-		decisions, llmUsage, err = classifySectionsFn(cfg, items, options, existing)
+		decisions, llmUsage, err = classifySectionsFn(cfg, items, options, existing, corrections)
 		if err != nil {
-			return nil, llmUsage, err
+			return BuildResult{Usage: llmUsage}, err
 		}
 	}
 
@@ -92,7 +99,12 @@ func BuildReportsFromLast(cfg Config, items []WorkItem, reportDate time.Time) (*
 	mergeIncomingItems(merged, items, options, decisions, confidenceThreshold)
 	reorderTemplateItems(merged)
 
-	return merged, llmUsage, nil
+	return BuildResult{
+		Template:  merged,
+		Usage:     llmUsage,
+		Decisions: decisions,
+		Options:   options,
+	}, nil
 }
 
 func loadTemplateForGeneration(outputDir, teamName string, reportDate time.Time) (*ReportTemplate, loadStatus, error) {
@@ -570,6 +582,10 @@ func renderMarkdown(
 		if len(cat.Subsections) == 0 {
 			continue
 		}
+		// Skip categories that have no items in any subsection
+		if !categoryHasItems(cat) {
+			continue
+		}
 		buf.WriteString(fmt.Sprintf("#### %s\n\n", categoryHeading(cat)))
 		for _, sub := range cat.Subsections {
 			if strings.TrimSpace(sub.HeaderLine) != "" {
@@ -587,6 +603,15 @@ func renderMarkdown(
 	}
 
 	return strings.TrimSpace(buf.String()) + "\n"
+}
+
+func categoryHasItems(cat TemplateCategory) bool {
+	for _, sub := range cat.Subsections {
+		if len(sub.Items) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func categoryAuthors(cat TemplateCategory) []string {
