@@ -6,3 +6,5 @@ env
 .env.*
 override/
 reportbot-reports/
+prod/
+docker-compose-*
