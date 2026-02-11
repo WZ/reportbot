@@ -137,9 +137,9 @@ func handleReport(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashComm
 	}
 
 	monday, nextMonday := ReportWeekRange(cfg, time.Now())
-	pending, err := GetPendingSlackItemsByAuthorAndDateRange(db, author, monday, nextMonday)
+	weekItems, err := GetSlackItemsByAuthorAndDateRange(db, author, monday, nextMonday)
 	if err != nil {
-		log.Printf("report pending lookup error user=%s author=%s: %v", cmd.UserID, author, err)
+		log.Printf("report weekly items lookup error user=%s author=%s: %v", cmd.UserID, author, err)
 		postEphemeral(api, cmd, fmt.Sprintf("Recorded %d item(s) for %s.", len(items), author))
 		return
 	}
@@ -156,12 +156,12 @@ func handleReport(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashComm
 		}
 		msg += fmt.Sprintf("\n- ... and %d more", len(items)-previewLimit)
 	}
-	if len(pending) > 0 {
+	if len(weekItems) > 0 {
 		msg += "\n\nItems reported this week:"
 		limit := 8
-		for i, p := range pending {
+		for i, p := range weekItems {
 			if i >= limit {
-				msg += fmt.Sprintf("\n- ... and %d more", len(pending)-limit)
+				msg += fmt.Sprintf("\n- ... and %d more", len(weekItems)-limit)
 				break
 			}
 			msg += fmt.Sprintf("\n- %s (%s)", p.Description, normalizeStatus(p.Status))
