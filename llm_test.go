@@ -58,7 +58,7 @@ func TestBuildSectionPrompts_UsesExampleLimits(t *testing.T) {
 		{SectionID: "S0_0", Description: "second example"},
 	}
 
-	_, userPrompt := buildSectionPrompts(cfg, options, items, existing, "")
+	_, userPrompt := buildSectionPrompts(cfg, options, items, existing, "", nil)
 
 	if !strings.Contains(userPrompt, "EX|S0_0|1234567890...") {
 		t.Fatalf("expected first example to be truncated by max chars, prompt=%s", userPrompt)
@@ -80,7 +80,7 @@ func TestBuildSectionPrompts_IncludesTemplateGuidance(t *testing.T) {
 		{ID: 1, Description: "Current item"},
 	}
 
-	systemPrompt, _ := buildSectionPrompts(cfg, options, items, nil, "Rule: prefer query section for timescaledb")
+	systemPrompt, _ := buildSectionPrompts(cfg, options, items, nil, "Rule: prefer query section for timescaledb", nil)
 	if !strings.Contains(systemPrompt, "Template guidance") {
 		t.Fatalf("expected template guidance marker in system prompt")
 	}

@@ -20,10 +20,11 @@ func TestBuildReportsFromLast_FirstEverFallback(t *testing.T) {
 		{ID: 2, Author: "Jordan Kim", Description: "Fix Y", Status: "done"},
 	}
 
-	merged, _, err := BuildReportsFromLast(cfg, items, mustDate(t, "20260209"))
+	result, err := BuildReportsFromLast(cfg, items, mustDate(t, "20260209"), nil)
 	if err != nil {
 		t.Fatalf("BuildReportsFromLast failed: %v", err)
 	}
+	merged := result.Template
 
 	team := renderTeamMarkdown(merged)
 
@@ -63,7 +64,7 @@ func TestBuildReportsFromLast_MergeSortAndDoneRemoval(t *testing.T) {
 	}
 
 	orig := classifySectionsFn
-	classifySectionsFn = func(_ Config, items []WorkItem, _ []sectionOption, _ []existingItemContext) (map[int64]LLMSectionDecision, LLMUsage, error) {
+	classifySectionsFn = func(_ Config, items []WorkItem, _ []sectionOption, _ []existingItemContext, _ []ClassificationCorrection) (map[int64]LLMSectionDecision, LLMUsage, error) {
 		out := make(map[int64]LLMSectionDecision)
 		for _, item := range items {
 			out[item.ID] = LLMSectionDecision{
@@ -82,10 +83,11 @@ func TestBuildReportsFromLast_MergeSortAndDoneRemoval(t *testing.T) {
 		{ID: 13, Author: "Pat Four", Description: "New progress item", Status: "in progress"},
 	}
 
-	merged, _, err := BuildReportsFromLast(cfg, items, mustDate(t, "20260209"))
+	result, err := BuildReportsFromLast(cfg, items, mustDate(t, "20260209"), nil)
 	if err != nil {
 		t.Fatalf("BuildReportsFromLast failed: %v", err)
 	}
+	merged := result.Template
 
 	team := renderTeamMarkdown(merged)
 
@@ -131,7 +133,7 @@ func TestBuildReportsFromLast_LLMConfidenceAndDuplicate(t *testing.T) {
 	}
 
 	orig := classifySectionsFn
-	classifySectionsFn = func(_ Config, items []WorkItem, _ []sectionOption, existing []existingItemContext) (map[int64]LLMSectionDecision, LLMUsage, error) {
+	classifySectionsFn = func(_ Config, items []WorkItem, _ []sectionOption, existing []existingItemContext, _ []ClassificationCorrection) (map[int64]LLMSectionDecision, LLMUsage, error) {
 		out := make(map[int64]LLMSectionDecision)
 		var dupKey string
 		for _, ex := range existing {
@@ -166,10 +168,11 @@ func TestBuildReportsFromLast_LLMConfidenceAndDuplicate(t *testing.T) {
 		{ID: 22, Author: "Pat Three", Description: "Low confidence placement", Status: "in progress"},
 	}
 
-	merged, _, err := BuildReportsFromLast(cfg, items, mustDate(t, "20260209"))
+	result, err := BuildReportsFromLast(cfg, items, mustDate(t, "20260209"), nil)
 	if err != nil {
 		t.Fatalf("BuildReportsFromLast failed: %v", err)
 	}
+	merged := result.Template
 
 	team := renderTeamMarkdown(merged)
 
@@ -208,7 +211,7 @@ func TestBuildReportsFromLast_PreservesPrefixBlocks(t *testing.T) {
 	}
 
 	orig := classifySectionsFn
-	classifySectionsFn = func(_ Config, items []WorkItem, _ []sectionOption, _ []existingItemContext) (map[int64]LLMSectionDecision, LLMUsage, error) {
+	classifySectionsFn = func(_ Config, items []WorkItem, _ []sectionOption, _ []existingItemContext, _ []ClassificationCorrection) (map[int64]LLMSectionDecision, LLMUsage, error) {
 		out := make(map[int64]LLMSectionDecision)
 		for _, item := range items {
 			out[item.ID] = LLMSectionDecision{
@@ -221,10 +224,11 @@ func TestBuildReportsFromLast_PreservesPrefixBlocks(t *testing.T) {
 	}
 	defer func() { classifySectionsFn = orig }()
 
-	merged, _, err := BuildReportsFromLast(cfg, []WorkItem{{ID: 31, Author: "Pat Two", Description: "New item", Status: "in progress"}}, mustDate(t, "20260209"))
+	result, err := BuildReportsFromLast(cfg, []WorkItem{{ID: 31, Author: "Pat Two", Description: "New item", Status: "in progress"}}, mustDate(t, "20260209"), nil)
 	if err != nil {
 		t.Fatalf("BuildReportsFromLast failed: %v", err)
 	}
+	merged := result.Template
 
 	team := renderTeamMarkdown(merged)
 
@@ -312,7 +316,7 @@ func TestBuildReportsFromLast_PreservesMidTopHeading(t *testing.T) {
 	}
 
 	orig := classifySectionsFn
-	classifySectionsFn = func(_ Config, items []WorkItem, _ []sectionOption, _ []existingItemContext) (map[int64]LLMSectionDecision, LLMUsage, error) {
+	classifySectionsFn = func(_ Config, items []WorkItem, _ []sectionOption, _ []existingItemContext, _ []ClassificationCorrection) (map[int64]LLMSectionDecision, LLMUsage, error) {
 		out := make(map[int64]LLMSectionDecision)
 		for _, item := range items {
 			out[item.ID] = LLMSectionDecision{
@@ -325,10 +329,11 @@ func TestBuildReportsFromLast_PreservesMidTopHeading(t *testing.T) {
 	}
 	defer func() { classifySectionsFn = orig }()
 
-	merged, _, err := BuildReportsFromLast(cfg, []WorkItem{{ID: 99, Author: "Pat Five", Description: "New item", Status: "in progress"}}, mustDate(t, "20260209"))
+	result, err := BuildReportsFromLast(cfg, []WorkItem{{ID: 99, Author: "Pat Five", Description: "New item", Status: "in progress"}}, mustDate(t, "20260209"), nil)
 	if err != nil {
 		t.Fatalf("BuildReportsFromLast failed: %v", err)
 	}
+	merged := result.Template
 
 	team := renderTeamMarkdown(merged)
 

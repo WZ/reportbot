@@ -28,6 +28,35 @@ func InitDB(path string) (*sql.DB, error) {
 	);
 	CREATE INDEX IF NOT EXISTS idx_work_items_reported_at ON work_items(reported_at);
 	CREATE INDEX IF NOT EXISTS idx_work_items_author ON work_items(author);
+
+	CREATE TABLE IF NOT EXISTS classification_history (
+		id               INTEGER PRIMARY KEY AUTOINCREMENT,
+		work_item_id     INTEGER NOT NULL,
+		section_id       TEXT NOT NULL,
+		section_label    TEXT DEFAULT '',
+		confidence       REAL NOT NULL,
+		normalized_status TEXT DEFAULT '',
+		ticket_ids       TEXT DEFAULT '',
+		duplicate_of     TEXT DEFAULT '',
+		llm_provider     TEXT DEFAULT '',
+		llm_model        TEXT DEFAULT '',
+		classified_at    DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
+	CREATE INDEX IF NOT EXISTS idx_ch_work_item ON classification_history(work_item_id);
+	CREATE INDEX IF NOT EXISTS idx_ch_date ON classification_history(classified_at);
+
+	CREATE TABLE IF NOT EXISTS classification_corrections (
+		id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+		work_item_id         INTEGER NOT NULL,
+		original_section_id  TEXT NOT NULL,
+		original_label       TEXT DEFAULT '',
+		corrected_section_id TEXT NOT NULL,
+		corrected_label      TEXT DEFAULT '',
+		description          TEXT DEFAULT '',
+		corrected_by         TEXT DEFAULT '',
+		corrected_at         DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
+	CREATE INDEX IF NOT EXISTS idx_cc_date ON classification_corrections(corrected_at);
 	`
 	_, err = db.Exec(schema)
 	if err != nil {
@@ -263,4 +292,140 @@ func UpdateTicketIDs(db *sql.DB, ticketMap map[int64]string) error {
 		}
 	}
 	return tx.Commit()
+}
+
+func UpdateWorkItemCategory(db *sql.DB, id int64, category string) error {
+	_, err := db.Exec("UPDATE work_items SET category = ? WHERE id = ?", category, id)
+	return err
+}
+
+// --- Classification History ---
+
+type ClassificationRecord struct {
+	ID               int64
+	WorkItemID       int64
+	SectionID        string
+	SectionLabel     string
+	Confidence       float64
+	NormalizedStatus string
+	TicketIDs        string
+	DuplicateOf      string
+	LLMProvider      string
+	LLMModel         string
+	ClassifiedAt     time.Time
+}
+
+func InsertClassificationHistory(db *sql.DB, records []ClassificationRecord) error {
+	if len(records) == 0 {
+		return nil
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare(
+		`INSERT INTO classification_history
+		 (work_item_id, section_id, section_label, confidence, normalized_status, ticket_ids, duplicate_of, llm_provider, llm_model)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	for _, r := range records {
+		if _, err := stmt.Exec(
+			r.WorkItemID, r.SectionID, r.SectionLabel, r.Confidence,
+			r.NormalizedStatus, r.TicketIDs, r.DuplicateOf,
+			r.LLMProvider, r.LLMModel,
+		); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func GetLatestClassification(db *sql.DB, workItemID int64) (ClassificationRecord, error) {
+	var r ClassificationRecord
+	err := db.QueryRow(
+		`SELECT id, work_item_id, section_id, section_label, confidence,
+		        normalized_status, ticket_ids, duplicate_of, llm_provider, llm_model, classified_at
+		 FROM classification_history
+		 WHERE work_item_id = ?
+		 ORDER BY classified_at DESC LIMIT 1`,
+		workItemID,
+	).Scan(
+		&r.ID, &r.WorkItemID, &r.SectionID, &r.SectionLabel, &r.Confidence,
+		&r.NormalizedStatus, &r.TicketIDs, &r.DuplicateOf,
+		&r.LLMProvider, &r.LLMModel, &r.ClassifiedAt,
+	)
+	return r, err
+}
+
+// --- Classification Corrections ---
+
+type ClassificationCorrection struct {
+	ID                 int64
+	WorkItemID         int64
+	OriginalSectionID  string
+	OriginalLabel      string
+	CorrectedSectionID string
+	CorrectedLabel     string
+	Description        string
+	CorrectedBy        string
+	CorrectedAt        time.Time
+}
+
+func InsertClassificationCorrection(db *sql.DB, c ClassificationCorrection) error {
+	_, err := db.Exec(
+		`INSERT INTO classification_corrections
+		 (work_item_id, original_section_id, original_label, corrected_section_id, corrected_label, description, corrected_by)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		c.WorkItemID, c.OriginalSectionID, c.OriginalLabel,
+		c.CorrectedSectionID, c.CorrectedLabel, c.Description, c.CorrectedBy,
+	)
+	return err
+}
+
+func GetRecentCorrections(db *sql.DB, since time.Time, limit int) ([]ClassificationCorrection, error) {
+	rows, err := db.Query(
+		`SELECT id, work_item_id, original_section_id, original_label,
+		        corrected_section_id, corrected_label, description, corrected_by, corrected_at
+		 FROM classification_corrections
+		 WHERE corrected_at >= ?
+		 ORDER BY corrected_at DESC
+		 LIMIT ?`,
+		since, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []ClassificationCorrection
+	for rows.Next() {
+		var c ClassificationCorrection
+		if err := rows.Scan(
+			&c.ID, &c.WorkItemID, &c.OriginalSectionID, &c.OriginalLabel,
+			&c.CorrectedSectionID, &c.CorrectedLabel, &c.Description,
+			&c.CorrectedBy, &c.CorrectedAt,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+func CountCorrectionsByPhrase(db *sql.DB, description, correctedSectionID string) (int, error) {
+	var count int
+	err := db.QueryRow(
+		`SELECT COUNT(*) FROM classification_corrections
+		 WHERE LOWER(TRIM(description)) = LOWER(TRIM(?))
+		   AND corrected_section_id = ?`,
+		description, correctedSectionID,
+	).Scan(&count)
+	return count, err
 }
