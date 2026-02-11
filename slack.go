@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/slack-go/slack"
+	"github.com/slack-go/slack/slackevents"
 	"github.com/slack-go/slack/socketmode"
 )
 
@@ -56,6 +57,13 @@ func StartSlackBot(cfg Config, db *sql.DB, api *slack.Client) error {
 				log.Printf("Slash command received: %s from user=%s channel=%s", cmd.Command, cmd.UserID, cmd.ChannelID)
 				client.Ack(*evt.Request)
 				go handleSlashCommand(client, api, db, cfg, cmd)
+			case socketmode.EventTypeEventsAPI:
+				eventsAPIEvent, ok := evt.Data.(slackevents.EventsAPIEvent)
+				if !ok {
+					continue
+				}
+				client.Ack(*evt.Request)
+				go handleEventsAPI(api, cfg, eventsAPIEvent)
 			case socketmode.EventTypeInteractive:
 				callback, ok := evt.Data.(slack.InteractionCallback)
 				if !ok {
@@ -93,6 +101,42 @@ func handleSlashCommand(client *socketmode.Client, api *slack.Client, db *sql.DB
 		handleRetrospective(api, db, cfg, cmd)
 	case "/help":
 		handleHelp(api, cfg, cmd)
+	}
+}
+
+func handleEventsAPI(api *slack.Client, cfg Config, event slackevents.EventsAPIEvent) {
+	if event.Type != slackevents.CallbackEvent {
+		return
+	}
+	switch ev := event.InnerEvent.Data.(type) {
+	case *slackevents.MemberJoinedChannelEvent:
+		handleMemberJoined(api, cfg, ev)
+	}
+}
+
+func handleMemberJoined(api *slack.Client, cfg Config, ev *slackevents.MemberJoinedChannelEvent) {
+	log.Printf("member-joined user=%s channel=%s", ev.User, ev.Channel)
+
+	teamName := cfg.TeamName
+	if teamName == "" {
+		teamName = "the team"
+	}
+
+	intro := fmt.Sprintf("Welcome to %s! I'm ReportBot — I help track work items and generate weekly reports.\n\n"+
+		"Here's how to get started:\n"+
+		"• `/report <description> (status)` — Report a work item (e.g. `/report Fix login bug (done)`)\n"+
+		"• `/list` — View this week's items\n"+
+		"• `/help` — See all available commands\n\n"+
+		"You can report multiple items at once with newlines, and set a shared status on the last line.",
+		teamName,
+	)
+
+	_, _, err := api.PostMessage(ev.Channel,
+		slack.MsgOptionText(intro, false),
+		slack.MsgOptionPostEphemeral(ev.User),
+	)
+	if err != nil {
+		log.Printf("member-joined intro error user=%s channel=%s: %v", ev.User, ev.Channel, err)
 	}
 }
 
