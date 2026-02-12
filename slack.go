@@ -975,8 +975,9 @@ func openEditModal(api *slack.Client, db *sql.DB, cfg Config, triggerID, channel
 	// If the current status is a free-text value, add it as a custom option.
 	if cur != "done" && cur != "in testing" && cur != "in progress" {
 		displayStatus := item.Status
-		if len(displayStatus) > 70 {
-			displayStatus = displayStatus[:70] + "..."
+		runes := []rune(displayStatus)
+		if len(runes) > 70 {
+			displayStatus = string(runes[:70]) + "..."
 		}
 		statusOptions = append(statusOptions,
 			slack.NewOptionBlockObject("other", slack.NewTextBlockObject(slack.PlainTextType, displayStatus, false, false), nil),
