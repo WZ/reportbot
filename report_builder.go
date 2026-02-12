@@ -62,7 +62,9 @@ var (
 	nameAliasParenRe  = regexp.MustCompile(`\([^)]*\)|（[^）]*）`)
 )
 
-var classifySectionsFn = CategorizeItemsToSections
+var classifySectionsFn = func(cfg Config, items []WorkItem, options []sectionOption, existing []existingItemContext, corrections []ClassificationCorrection, historicalItems []historicalItem) (map[int64]LLMSectionDecision, LLMUsage, error) {
+	return CategorizeItemsToSections(cfg, items, options, existing, corrections, historicalItems)
+}
 
 type BuildResult struct {
 	Template  *ReportTemplate
@@ -71,7 +73,7 @@ type BuildResult struct {
 	Options   []sectionOption
 }
 
-func BuildReportsFromLast(cfg Config, items []WorkItem, reportDate time.Time, corrections []ClassificationCorrection) (BuildResult, error) {
+func BuildReportsFromLast(cfg Config, items []WorkItem, reportDate time.Time, corrections []ClassificationCorrection, historicalItems []historicalItem) (BuildResult, error) {
 	template, status, err := loadTemplateForGeneration(cfg.ReportOutputDir, cfg.TeamName, reportDate)
 	if err != nil {
 		return BuildResult{}, err
@@ -86,7 +88,7 @@ func BuildReportsFromLast(cfg Config, items []WorkItem, reportDate time.Time, co
 	llmUsage := LLMUsage{}
 	if len(options) > 0 && status != templateFirstEver {
 		existing := buildExistingItemContext(merged, options)
-		decisions, llmUsage, err = classifySectionsFn(cfg, items, options, existing, corrections)
+		decisions, llmUsage, err = classifySectionsFn(cfg, items, options, existing, corrections, historicalItems)
 		if err != nil {
 			return BuildResult{Usage: llmUsage}, err
 		}

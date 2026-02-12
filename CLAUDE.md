@@ -29,29 +29,30 @@ Configuration is layered: `config.yaml` is loaded first, then environment variab
 
 - **Slack**: `slack_bot_token` (xoxb-...), `slack_app_token` (xapp-...)
 - **GitLab**: `gitlab_url`, `gitlab_token`, `gitlab_group_id` (numeric ID or group path)
-- **LLM**: `llm_provider` ("anthropic" or "openai"), `anthropic_api_key` or `openai_api_key`
-- **Permissions**: `manager_slack_ids` (list of Slack user IDs) — controls access to `/fetch-mrs`, `/generate-report`, `/check`, `/nudge`, `/retrospective`
-- **Nudge**: `team_members` (list of Slack full names or user IDs to DM; full names preferred), `nudge_day` (Monday-Sunday), `nudge_time` (HH:MM 24h format)
+- **LLM**: `llm_provider` ("anthropic" or "openai"), `anthropic_api_key` or `openai_api_key`, `llm_critic_enabled` (bool, enables generator-critic second pass)
+- **Permissions**: `manager_slack_ids` (list of Slack user IDs) — controls access to `/fetch-mrs`, `/generate-report`, `/check`, `/retrospective`, `/report-stats`
+- **Nudge**: `team_members` (list of Slack full names or user IDs; used by `/check` and scheduled nudge), `nudge_day` (Monday-Sunday), `nudge_time` (HH:MM 24h format)
 - **Team**: `team_name` (used in report header and filename)
 
 See `config.yaml` and `README.md` for full reference.
 
 ## Architecture
 
-The application has a flat structure with 12 Go source files (+ 3 test files):
+The application has a flat structure with 13 Go source files (+ 4 test files):
 
 - **main.go** — Entry point: loads config, initializes DB, creates Slack client, starts nudge scheduler and Socket Mode bot
 - **config.go** — Config struct, YAML + env loading with validation, `IsManagerID()` permission check
 - **models.go** — Core types (`WorkItem`, `GitLabMR`, `ReportSection`) and `CurrentWeekRange()` calendar week calculator
 - **db.go** — SQLite schema and CRUD: `work_items`, `classification_history`, `classification_corrections` tables
-- **slack.go** — Socket Mode bot, slash command handlers (`/report`, `/fetch-mrs`, `/generate-report`, `/list`, `/check`, `/nudge`, `/retrospective`, `/help`), edit/delete modals, uncertainty sampling, correction capture
+- **slack.go** — Socket Mode bot, slash command handlers (`/report`, `/fetch-mrs`, `/generate-report`, `/list`, `/check`, `/retrospective`, `/report-stats`, `/help`), nudge confirmation modals, edit/delete modals, uncertainty sampling, correction capture
 - **slack_users.go** — User resolution helpers: Slack API lookups, name matching, team member ID resolution
 - **gitlab.go** — GitLab API client: fetches merged and open MRs for a date range with pagination, filters by state and date client-side
-- **llm.go** — AI classification: parallel batch processing, Anthropic (SDK) / OpenAI (HTTP), prompt building with corrections and glossary, retrospective analysis
+- **llm.go** — AI classification: parallel batch processing, Anthropic (SDK) / OpenAI (HTTP), prompt caching, generator-critic loop, prompt building with corrections and glossary, retrospective analysis
+- **llm_examples.go** — TF-IDF index for relevance-based few-shot example selection from classification history
 - **glossary.go** — Glossary loading from YAML, auto-growth from repeated corrections, phrase extraction
 - **report_builder.go** — Template parsing, LLM classification pipeline, merge logic, status ordering, markdown rendering (team + boss modes)
 - **report.go** — Report file writing (markdown `.md` and email draft `.eml`) to disk
-- **nudge.go** — Weekly reminder scheduler: calculates next occurrence of configured weekday/time, DMs all team members
+- **nudge.go** — Scheduled weekly reminder and DM sender (`sendNudges` also used by `/check` nudge buttons)
 
 ## Key Flows
 
@@ -71,11 +72,13 @@ The application has a flat structure with 12 Go source files (+ 3 test files):
 
 ### AI Categorization
 
-`llm.go:CategorizeItemsToSections()` classifies items into report sections using parallel LLM batches. The system prompt lists valid section IDs (derived from the previous report template), instructions for classification, status normalization, ticket extraction, duplicate detection, and confidence scoring. Recent corrections (last 4 weeks) are injected as negative examples. Glossary overrides are applied post-classification. Response format: `[{"id": 142, "section_id": "S0_2", "normalized_status": "in progress", "ticket_ids": "1234", "duplicate_of": "", "confidence": 0.91}]`.
+`llm.go:CategorizeItemsToSections()` classifies items into report sections using parallel LLM batches. Few-shot examples are selected via TF-IDF similarity (`llm_examples.go`) from 12 weeks of classification history, replacing the previous blind "first N items" approach. The system prompt (cached via Anthropic prompt caching) lists valid section IDs (derived from the previous report template), instructions for classification, status normalization, ticket extraction, duplicate detection, and confidence scoring. Recent corrections (last 4 weeks) are injected as negative examples. Glossary overrides are applied post-classification. When `llm_critic_enabled` is set, a second LLM pass reviews all assignments and corrects misclassifications before returning. Response format: `[{"id": 142, "section_id": "S0_2", "normalized_status": "in progress", "ticket_ids": "1234", "duplicate_of": "", "confidence": 0.91}]`.
 
-### Nudge Scheduler
+### Nudge Reminders
 
-`nudge.go:StartNudgeScheduler()` launches a goroutine that calculates the next occurrence of `nudge_day` at `nudge_time` using `nextWeekday()`, sleeps until then, DMs all `team_members`, then repeats. Disabled if `team_members` is empty.
+**Scheduled**: `nudge.go:StartNudgeScheduler()` launches a goroutine that calculates the next occurrence of `nudge_day` at `nudge_time` using `nextWeekday()`, sleeps until then, DMs all `team_members`, then repeats. Disabled if `team_members` is empty.
+
+**On-demand**: `/check` shows missing members as Block Kit sections with per-member "Nudge" buttons and a "Nudge All" button. Clicking opens a confirmation modal; on submit, `nudge.go:sendNudges()` sends the DM.
 
 ## Slack Integration Notes
 
@@ -103,7 +106,8 @@ CGO_ENABLED=1 go test -v ./...
 
 Test files:
 - **report_builder_test.go** — Template parsing, merge/sort, LLM confidence gating, duplicate detection, prefix/heading preservation, item formatting
-- **llm_test.go** — Glossary overrides, prompt building (example limits, template guidance), JSON response parsing (array ticket IDs)
+- **llm_test.go** — Glossary overrides, prompt building (example limits, template guidance), JSON response parsing (array ticket IDs), critic response parsing
+- **llm_examples_test.go** — TF-IDF index building, topK similarity search, batch deduplication, cosine similarity edge cases
 - **models_test.go** — `ReportWeekRange` Monday cutoff logic
 
 Manual testing for Slack integration:
@@ -114,7 +118,7 @@ Manual testing for Slack integration:
 4. Run `/list` → verify item appears
 5. Run `/fetch-mrs` → verify GitLab API call and MR import
 6. Run `/generate-report team` and `/generate-report boss` → compare output formats
-7. Set `nudge_time` to 2 minutes from now, verify DM arrives
+7. Run `/check` → verify missing members list with nudge buttons, click Nudge → verify confirmation modal and DM
 
 ## Common Issues
 
@@ -122,5 +126,5 @@ Manual testing for Slack integration:
 - **SQLite CGO disabled**: Must build with `CGO_ENABLED=1`
 - **Slash commands not visible**: Reinstall Slack app after creating commands
 - **Permission denied on `/fetch-mrs`**: Add user's Slack user ID to `manager_slack_ids` in config
-- **Nudge not firing**: Check logs for "Next nudge at..." message, verify `team_members` is not empty
+- **Scheduled nudge not firing**: Check logs for "Next nudge at..." message, verify `team_members` is not empty
 - **GitLab 401**: Verify `gitlab_token` has `read_api` scope and `gitlab_group_id` is accessible

@@ -12,9 +12,9 @@ Developers report completed work via slash commands. The bot also pulls merged/o
 - `/fetch-mrs` — Pull merged and open GitLab MRs for the current calendar week
 - `/generate-report` (or `/gen`) — Generate a team markdown file (or boss `.eml` draft) and upload it to Slack
 - `/list` — View this week's items with inline edit/delete actions
-- `/check` — Managers: list team members who have not reported this week
-- `/nudge [@name]` — Managers: send reminder DMs (missing members by default)
+- `/check` — Managers: list missing members with inline nudge buttons
 - `/retrospective` — Managers: analyze recent corrections and suggest glossary/guide improvements
+- `/report-stats` — Managers: view classification accuracy dashboard and trends
 - `/help` — Show all commands and example usage
 
 ### Report Generation
@@ -29,11 +29,15 @@ Developers report completed work via slash commands. The bot also pulls merged/o
 The LLM classifier improves itself over time through a feedback loop:
 
 - **Parallel batch classification** — Items are classified concurrently via goroutines (~3x speedup)
+- **Prompt caching** — Anthropic system prompts are cached across parallel batches (~40% cost reduction)
+- **TF-IDF example selection** — Few-shot examples are selected by relevance from 12 weeks of classification history, replacing blind "first N items"
+- **Generator-Critic loop** — Optional second LLM pass reviews all assignments and catches misclassifications before manager review
 - **Classification history** — Every LLM decision is persisted with confidence scores for auditability
 - **Correction capture** — Manager corrections (via edit modal or uncertainty buttons) are stored and fed back into future prompts
 - **Auto-growing glossary** — When the same correction appears 2+ times, a deterministic glossary rule is created automatically
 - **Uncertainty sampling** — Low-confidence items are surfaced to the manager with interactive section buttons after report generation
 - **Retrospective analysis** — `/retrospective` uses the LLM to find correction patterns and suggest glossary terms or guide updates
+- **Accuracy dashboard** — `/report-stats` shows classification metrics, confidence distribution, most-corrected sections, and weekly trends
 
 ```mermaid
 flowchart LR
@@ -46,20 +50,25 @@ flowchart LR
     subgraph Classify["Classify"]
         direction TB
         MEM["Memory<br>───<br>Glossary<br>Guide<br>Corrections"]
-        LLM["LLM<br>Classifier<br>(parallel)"]
+        TFIDF["TF-IDF<br>Example<br>Selection"]
+        LLM["LLM Classifier<br>(parallel, cached)"]
+        CRITIC["Critic<br>(optional 2nd pass)"]
         MEM -.->|enrich| LLM
+        TFIDF -.->|"few-shot<br>examples"| LLM
+        LLM --> CRITIC
     end
 
     subgraph Deliver["Deliver"]
         direction TB
         RPT["Weekly<br>Report"]
         UNC["Uncertainty<br>Prompts"]
+        STATS["/report-stats<br>Dashboard"]
     end
 
     MGR["Manager"]
 
     Input --> LLM
-    LLM --> Deliver
+    CRITIC --> Deliver
     Deliver --> MGR
 
     MGR -->|"corrections"| MEM
@@ -82,7 +91,7 @@ See [docs/agentic-features-overview.md](docs/agentic-features-overview.md) for a
    - `chat:write`
    - `commands`
    - `files:write`
-   - `im:write` (for Friday nudge DMs)
+   - `im:write` (for nudge DMs)
    - `users:read` (to resolve full names for managers/team members)
 4. Under **Event Subscriptions**, subscribe to these bot events:
    - `member_joined_channel` (sends welcome message to new members)
@@ -97,9 +106,9 @@ See [docs/agentic-features-overview.md](docs/agentic-features-overview.md) for a
    | `/generate-report` | Generate the weekly report |
    | `/gen` | Alias of `/generate-report` |
    | `/list` | List this week's work items |
-   | `/check` | List team members missing reports |
-   | `/nudge` | Send reminder DMs |
+   | `/check` | List missing members with nudge buttons |
    | `/retrospective` | Analyze corrections and suggest improvements |
+   | `/report-stats` | View classification accuracy dashboard |
    | `/help` | Show help and usage |
 
 7. Install the app to your workspace
@@ -132,23 +141,24 @@ llm_confidence_threshold: 0.70  # optional: route below-threshold to Undetermine
 llm_example_count: 20           # optional: prior-report examples included in prompt
 llm_example_max_chars: 140      # optional: max chars per example snippet
 llm_glossary_path: "./llm_glossary.yaml"    # optional glossary memory file
+llm_critic_enabled: false   # optional: enable generator-critic second pass
 anthropic_api_key: "sk-ant-..."
 
 # Permissions (Slack user IDs)
 manager_slack_ids:
   - "U01ABC123"
 
-# Team members (Slack full names) - receive nudge reminders
+# Team members (Slack full names) - used by /check and scheduled nudge
 team_members:
   - "Member One"
   - "Member Two"
 
-# Day and time to send nudge (configured timezone)
+# Day and time for scheduled nudge (configured timezone)
 nudge_day: "Friday"
 nudge_time: "10:00"
 monday_cutoff_time: "12:00"  # Monday before this time uses previous week
 
-# Timezone for week range and nudge scheduling (IANA format)
+# Timezone for week range and scheduled nudge (IANA format)
 timezone: "America/Los_Angeles"
 
 # Team name (used in report header and filename)
@@ -176,6 +186,7 @@ export LLM_CONFIDENCE_THRESHOLD=0.70
 export LLM_EXAMPLE_COUNT=20
 export LLM_EXAMPLE_MAX_CHARS=140
 export LLM_GLOSSARY_PATH=./llm_glossary.yaml
+export LLM_CRITIC_ENABLED=true                  # Optional: enable generator-critic loop
 export MANAGER_SLACK_IDS="U01ABC123,U02DEF456"  # Comma-separated Slack user IDs
 export REPORT_CHANNEL_ID=C01234567
 export MONDAY_CUTOFF_TIME=12:00
@@ -189,19 +200,20 @@ Note: Category/subcategory headings are sourced from the previous report in `rep
 | Provider | Default Model |
 |---|---|
 | `anthropic` | `claude-sonnet-4-5-20250929` |
-| `openai` | `gpt-4o` |
+| `openai` | `gpt-5-mini` |
 
 Set `llm_model` in YAML or `LLM_MODEL` env var to override.
 Set `llm_batch_size` / `LLM_BATCH_SIZE`, `llm_confidence_threshold` / `LLM_CONFIDENCE_THRESHOLD`, and `llm_example_count` / `llm_example_max_chars` to tune throughput, confidence gating, and prompt context size.
 Set `llm_glossary_path` / `LLM_GLOSSARY_PATH` to apply glossary memory rules (see `llm_glossary.yaml`).
+Set `llm_critic_enabled` / `LLM_CRITIC_ENABLED` to enable a second LLM pass that reviews classifications for errors.
 
 Glossary example (`llm_glossary.yaml`):
 
 ```yaml
 terms:
-  - phrase: "tenant pending"
+  - phrase: "user pending"
     section: "Cluster Manager"
-  - phrase: "kudu backup"
+  - phrase: "database backup"
     section: "Top Focus > HA Log Sync Enhancement"
 
 status_hints:
@@ -336,9 +348,11 @@ Anyone can view this week's items:
 - Delete uses a confirmation modal.
 - Edit opens a modal with a text field for the description and a dropdown for the status.
 
-### Weekly Nudge
+### Nudge Reminders
 
-Every week on `nudge_day` (default Friday) at `nudge_time` (default 10:00 AM local), the bot DMs each user in `team_members` reminding them to report. To disable, leave `team_members` empty.
+**Scheduled**: Every week on `nudge_day` (default Friday) at `nudge_time` (default 10:00 AM local), the bot DMs each user in `team_members` reminding them to report. To disable, leave `team_members` empty.
+
+**On-demand**: `/check` lists team members who haven't reported this week, with a "Nudge" button next to each member and a "Nudge All" button at the bottom. Clicking opens a confirmation before sending the DM.
 
 On Monday before `monday_cutoff_time` (default `12:00`) in configured `timezone`, report commands use the previous calendar week.
 
@@ -348,7 +362,7 @@ Requires the `im:write` bot token scope in your Slack app.
 
 ## Permissions
 
-Manager commands (`/fetch-mrs`, `/generate-report`, `/check`, `/nudge`, `/retrospective`) are restricted to Slack user IDs listed in `manager_slack_ids`.
+Manager commands (`/fetch-mrs`, `/generate-report`, `/check`, `/retrospective`, `/report-stats`) are restricted to Slack user IDs listed in `manager_slack_ids`.
 
 ## Report Structure
 
@@ -365,14 +379,16 @@ reportbot/
   main.go              Entry point
   config.go            YAML + env var loading, permission check
   models.go            WorkItem, GitLabMR types, calendar week helper
-  db.go                SQLite schema and CRUD (work_items, classification_history, corrections)
-  llm.go               LLM integration (Anthropic + OpenAI), parallel batch classification, retrospective analysis
+  db.go                SQLite schema and CRUD (work_items, classification_history, corrections, stats)
+  llm.go               LLM integration (Anthropic + OpenAI), prompt caching, parallel batch classification, generator-critic loop, retrospective analysis
+  llm_examples.go      TF-IDF index for relevance-based few-shot example selection
   glossary.go          Glossary loading, auto-growth from corrections
   gitlab.go            GitLab API client for fetching merged MRs
   report.go            Markdown/EML report file generation
   report_builder.go    Template parsing, LLM classification pipeline, merge logic
-  slack.go             Slack Socket Mode bot, slash commands, correction capture, uncertainty sampling
-  nudge.go             Weekly reminder scheduler and DM sender
+  slack.go             Slack Socket Mode bot, slash commands, nudge UI, /report-stats, correction capture, uncertainty sampling
+  slack_users.go       User resolution helpers: Slack API lookups, name matching
+  nudge.go             Scheduled weekly reminder and DM sender
   Dockerfile           Multi-stage Docker build
   docs/                Architecture diagrams and feature documentation
 ```

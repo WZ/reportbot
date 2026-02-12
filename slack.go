@@ -43,6 +43,11 @@ const (
 
 	actionRetroApply   = "retro_apply"
 	actionRetroDismiss = "retro_dismiss"
+
+	actionNudgeMember         = "nudge_member"
+	actionNudgeAll            = "nudge_all"
+	modalNudgeConfirmCallback = "nudge_confirm_modal"
+	nudgeMetaPrefix           = "nudge:"
 )
 
 func StartSlackBot(cfg Config, db *sql.DB, api *slack.Client) error {
@@ -97,10 +102,10 @@ func handleSlashCommand(client *socketmode.Client, api *slack.Client, db *sql.DB
 		handleListItems(api, db, cfg, cmd)
 	case "/check":
 		handleListMissing(api, db, cfg, cmd)
-	case "/nudge":
-		handleNudge(api, db, cfg, cmd)
 	case "/retrospective":
 		handleRetrospective(api, db, cfg, cmd)
+	case "/report-stats":
+		handleReportStats(api, db, cfg, cmd)
 	case "/help":
 		handleHelp(api, cfg, cmd)
 	}
@@ -404,7 +409,14 @@ func handleGenerateReport(api *slack.Client, db *sql.DB, cfg Config, cmd slack.S
 		log.Printf("generate-report corrections load error (non-fatal): %v", corrErr)
 	}
 
-	result, err := BuildReportsFromLast(cfg, items, monday, corrections)
+	// Load historical classified items for TF-IDF example selection.
+	twelveWeeksAgo := monday.AddDate(0, 0, -84)
+	historicalItems, histErr := GetClassifiedItemsWithSections(db, twelveWeeksAgo, 500)
+	if histErr != nil {
+		log.Printf("generate-report historical items load error (non-fatal): %v", histErr)
+	}
+
+	result, err := BuildReportsFromLast(cfg, items, monday, corrections, historicalItems)
 	if err != nil {
 		postEphemeral(api, cmd, fmt.Sprintf("Error building report: %v", err))
 		log.Printf("report build error: %v", err)
@@ -678,11 +690,17 @@ func handleListMissing(api *slack.Client, db *sql.DB, cfg Config, cmd slack.Slas
 		reported = append(reported, author)
 	}
 
-	var missing []string
-	for _, userID := range memberIDs {
-		user, err := api.GetUserInfo(userID)
+	type missingMember struct {
+		display string
+		userID  string
+	}
+	var missing []missingMember
+	var missingIDs []string
+	for _, uid := range memberIDs {
+		user, err := api.GetUserInfo(uid)
 		if err != nil {
-			missing = append(missing, fmt.Sprintf("<@%s> (lookup failed)", userID))
+			missing = append(missing, missingMember{display: uid, userID: uid})
+			missingIDs = append(missingIDs, uid)
 			continue
 		}
 
@@ -703,32 +721,68 @@ func handleListMissing(api *slack.Client, db *sql.DB, cfg Config, cmd slack.Slas
 				display = user.Name
 			}
 			if display == "" {
-				display = userID
+				display = uid
 			}
-			missing = append(missing, fmt.Sprintf("%s (<@%s>)", display, userID))
+			missing = append(missing, missingMember{display: display, userID: uid})
+			missingIDs = append(missingIDs, uid)
 		}
 	}
 
-	for _, name := range unresolved {
-		missing = append(missing, fmt.Sprintf("%s (not found)", name))
-	}
-
-	if len(missing) == 0 {
+	if len(missing) == 0 && len(unresolved) == 0 {
 		postEphemeral(api, cmd, fmt.Sprintf("Everyone has reported this week (%s - %s).",
 			monday.Format("Jan 2"), nextMonday.AddDate(0, 0, -1).Format("Jan 2")))
 		log.Printf("list-missing none")
 		return
 	}
 
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("*Missing reports for %s - %s* (%d total)\n\n",
-		monday.Format("Jan 2"), nextMonday.AddDate(0, 0, -1).Format("Jan 2"), len(missing)))
-	for _, m := range missing {
-		sb.WriteString(fmt.Sprintf("- %s\n", m))
+	blocks := []slack.Block{
+		slack.NewHeaderBlock(
+			slack.NewTextBlockObject(slack.PlainTextType,
+				fmt.Sprintf("Missing reports for %s - %s (%d)",
+					monday.Format("Jan 2"),
+					nextMonday.AddDate(0, 0, -1).Format("Jan 2"),
+					len(missing)+len(unresolved)),
+				false, false),
+		),
 	}
 
-	postEphemeral(api, cmd, sb.String())
-	log.Printf("list-missing count=%d", len(missing))
+	for _, m := range missing {
+		text := fmt.Sprintf("%s (<@%s>)", m.display, m.userID)
+		nudgeBtn := slack.NewButtonBlockElement(
+			actionNudgeMember,
+			m.userID,
+			slack.NewTextBlockObject(slack.PlainTextType, "Nudge", false, false),
+		)
+		blocks = append(blocks, slack.NewSectionBlock(
+			slack.NewTextBlockObject(slack.MarkdownType, text, false, false),
+			nil,
+			slack.NewAccessory(nudgeBtn),
+		))
+	}
+
+	for _, name := range unresolved {
+		blocks = append(blocks, slack.NewSectionBlock(
+			slack.NewTextBlockObject(slack.MarkdownType, fmt.Sprintf("%s (not found)", name), false, false),
+			nil, nil,
+		))
+	}
+
+	if len(missingIDs) > 0 {
+		nudgeAllBtn := slack.NewButtonBlockElement(
+			actionNudgeAll,
+			strings.Join(missingIDs, ","),
+			slack.NewTextBlockObject(slack.PlainTextType, "Nudge All", false, false),
+		)
+		blocks = append(blocks, slack.NewDividerBlock(), slack.NewActionBlock("", nudgeAllBtn))
+	}
+
+	_, err = api.PostEphemeral(cmd.ChannelID, cmd.UserID, slack.MsgOptionBlocks(blocks...))
+	if err != nil {
+		log.Printf("Error posting list-missing blocks: %v", err)
+		postEphemeral(api, cmd, "Error rendering missing members list.")
+		return
+	}
+	log.Printf("list-missing count=%d", len(missing)+len(unresolved))
 }
 
 func postEphemeral(api *slack.Client, cmd slack.SlashCommand, text string) {
@@ -794,6 +848,12 @@ func handleBlockActions(api *slack.Client, db *sql.DB, cfg Config, cb slack.Inte
 		}
 		openEditModal(api, db, cfg, cb.TriggerID, channelID, userID, itemID)
 		return
+	case actionNudgeMember:
+		openNudgeConfirmModal(api, cfg, cb.TriggerID, channelID, act.Value)
+		return
+	case actionNudgeAll:
+		openNudgeConfirmModal(api, cfg, cb.TriggerID, channelID, act.Value)
+		return
 	case actionRetroApply:
 		handleRetroApply(api, db, cfg, cb, act)
 		return
@@ -831,6 +891,11 @@ func handleBlockActions(api *slack.Client, db *sql.DB, cfg Config, cb slack.Inte
 }
 
 func handleViewSubmission(api *slack.Client, db *sql.DB, cfg Config, cb slack.InteractionCallback) {
+	if cb.View.CallbackID == modalNudgeConfirmCallback {
+		handleNudgeConfirm(api, cfg, cb)
+		return
+	}
+
 	if cb.View.CallbackID == modalDeleteCallbackID {
 		userID := cb.User.ID
 		meta := strings.TrimSpace(cb.View.PrivateMetadata)
@@ -1182,99 +1247,196 @@ func canManageItem(item WorkItem, isManager bool, user *slack.User) bool {
 	return false
 }
 
-func handleNudge(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashCommand) {
+
+func openNudgeConfirmModal(api *slack.Client, cfg Config, triggerID, channelID, targetIDs string) {
+	var validIDs []string
+	var names []string
+	for _, id := range strings.Split(targetIDs, ",") {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		validIDs = append(validIDs, id)
+		user, err := api.GetUserInfo(id)
+		if err != nil {
+			names = append(names, fmt.Sprintf("<@%s>", id))
+			continue
+		}
+		display := user.Profile.DisplayName
+		if display == "" {
+			display = user.RealName
+		}
+		if display == "" {
+			display = id
+		}
+		names = append(names, display)
+	}
+
+	if len(validIDs) == 0 {
+		return
+	}
+
+	prompt := fmt.Sprintf("Send a nudge reminder DM to *%s*?", strings.Join(names, ", "))
+	if len(validIDs) > 1 {
+		prompt = fmt.Sprintf("Send a nudge reminder DM to *%d members*?\n%s", len(validIDs), strings.Join(names, ", "))
+	}
+
+	view := slack.ModalViewRequest{
+		Type:            slack.VTModal,
+		Title:           slack.NewTextBlockObject(slack.PlainTextType, "Confirm nudge", false, false),
+		Close:           slack.NewTextBlockObject(slack.PlainTextType, "Cancel", false, false),
+		Submit:          slack.NewTextBlockObject(slack.PlainTextType, "Send Nudge", false, false),
+		CallbackID:      modalNudgeConfirmCallback,
+		PrivateMetadata: fmt.Sprintf("%s%s|%s", nudgeMetaPrefix, targetIDs, channelID),
+		Blocks: slack.Blocks{BlockSet: []slack.Block{
+			slack.NewSectionBlock(
+				slack.NewTextBlockObject(slack.MarkdownType, prompt, false, false),
+				nil, nil,
+			),
+		}},
+	}
+	if _, err := api.OpenView(triggerID, view); err != nil {
+		log.Printf("nudge confirm modal error: %v", err)
+	}
+}
+
+func handleNudgeConfirm(api *slack.Client, cfg Config, cb slack.InteractionCallback) {
+	userID := cb.User.ID
+	if !cfg.IsManagerID(userID) {
+		log.Printf("nudge confirm denied user=%s (not manager)", userID)
+		return
+	}
+	meta := strings.TrimSpace(cb.View.PrivateMetadata)
+	parts := strings.SplitN(meta, "|", 2)
+	if len(parts) != 2 || !strings.HasPrefix(parts[0], nudgeMetaPrefix) {
+		return
+	}
+	channelID := strings.TrimSpace(parts[1])
+	if channelID == "" {
+		channelID = cb.Container.ChannelID
+	}
+	if channelID == "" {
+		channelID = cb.Channel.ID
+	}
+
+	targetIDsStr := strings.TrimPrefix(parts[0], nudgeMetaPrefix)
+	var targetIDs []string
+	for _, id := range strings.Split(targetIDsStr, ",") {
+		id = strings.TrimSpace(id)
+		if id != "" {
+			targetIDs = append(targetIDs, id)
+		}
+	}
+
+	if len(targetIDs) == 0 {
+		return
+	}
+
+	sendNudges(api, cfg, targetIDs, cfg.ReportChannelID)
+	postEphemeralTo(api, channelID, userID, fmt.Sprintf("Sent nudge to %d member(s).", len(targetIDs)))
+	log.Printf("nudge sent from /check user=%s count=%d", userID, len(targetIDs))
+}
+
+func handleReportStats(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashCommand) {
 	isManager, err := isManagerUser(api, cfg, cmd.UserID)
 	if err != nil {
 		postEphemeral(api, cmd, fmt.Sprintf("Error checking permissions: %v", err))
-		log.Printf("nudge auth error user=%s: %v", cmd.UserID, err)
+		log.Printf("report-stats auth error user=%s: %v", cmd.UserID, err)
 		return
 	}
 	if !isManager {
 		postEphemeral(api, cmd, "Sorry, only managers can use this command.")
-		log.Printf("nudge denied user=%s", cmd.UserID)
+		log.Printf("report-stats denied user=%s", cmd.UserID)
 		return
 	}
 
-	if len(cfg.TeamMembers) == 0 {
-		postEphemeral(api, cmd, "No team_members configured.")
-		return
-	}
-
-	memberIDs, unresolved, err := resolveUserIDs(api, cfg.TeamMembers)
+	// Load all-time stats.
+	allTimeStats, err := GetClassificationStats(db, time.Time{})
 	if err != nil {
-		postEphemeral(api, cmd, fmt.Sprintf("Error resolving team members: %v", err))
-		log.Printf("nudge resolve error: %v", err)
-		return
-	}
-	if len(unresolved) > 0 {
-		postEphemeral(api, cmd, fmt.Sprintf("Warning: could not resolve: %s", strings.Join(unresolved, ", ")))
-		log.Printf("nudge unresolved: %s", strings.Join(unresolved, ", "))
-	}
-
-	text := strings.TrimSpace(cmd.Text)
-	if text != "" {
-		targetIDs, err := resolveNudgeTargets(api, text)
-		if err != nil {
-			postEphemeral(api, cmd, err.Error())
-			log.Printf("nudge target resolve error: %v", err)
-			return
-		}
-		for _, id := range targetIDs {
-			if !containsString(memberIDs, id) {
-				postEphemeral(api, cmd, "Error: mentioned user is not in team_members.")
-				log.Printf("nudge target not in team_members id=%s", id)
-				return
-			}
-		}
-		sendNudges(api, cfg, targetIDs, cfg.ReportChannelID)
-		postEphemeral(api, cmd, fmt.Sprintf("Sent nudges to %d team member(s).", len(targetIDs)))
-		log.Printf("nudge sent target-count=%d", len(targetIDs))
+		postEphemeral(api, cmd, fmt.Sprintf("Error loading stats: %v", err))
+		log.Printf("report-stats all-time error: %v", err)
 		return
 	}
 
-	// No parameter: nudge only members who haven't reported this week.
-	monday, nextMonday := ReportWeekRange(cfg, time.Now().In(cfg.Location))
-	authors, err := GetSlackAuthorsByDateRange(db, monday, nextMonday)
+	// Load last 4 weeks stats.
+	fourWeeksAgo := time.Now().In(cfg.Location).AddDate(0, 0, -28)
+	recentStats, err := GetClassificationStats(db, fourWeeksAgo)
 	if err != nil {
-		postEphemeral(api, cmd, fmt.Sprintf("Error loading items: %v", err))
-		log.Printf("nudge load error: %v", err)
-		return
+		log.Printf("report-stats recent error (non-fatal): %v", err)
+		recentStats = ClassificationStats{}
 	}
 
-	var reported []string
-	for author := range authors {
-		reported = append(reported, author)
+	// Load per-section corrections.
+	sectionCorr, err := GetCorrectionsBySection(db, fourWeeksAgo)
+	if err != nil {
+		log.Printf("report-stats section corrections error (non-fatal): %v", err)
 	}
 
-	var missingIDs []string
-	for _, userID := range memberIDs {
-		user, err := api.GetUserInfo(userID)
-		if err != nil {
-			continue
+	// Load 8-week trend.
+	eightWeeksAgo := time.Now().In(cfg.Location).AddDate(0, 0, -56)
+	trends, err := GetWeeklyClassificationTrend(db, eightWeeksAgo)
+	if err != nil {
+		log.Printf("report-stats trend error (non-fatal): %v", err)
+	}
+
+	var sb strings.Builder
+	sb.WriteString("*Classification Accuracy Dashboard*\n\n")
+
+	// Overview.
+	sb.WriteString("*All-time Overview*\n")
+	sb.WriteString(fmt.Sprintf("- Classifications: %d\n", allTimeStats.TotalClassifications))
+	sb.WriteString(fmt.Sprintf("- Corrections: %d\n", allTimeStats.TotalCorrections))
+	if allTimeStats.TotalClassifications > 0 {
+		accuracy := 100.0 * float64(allTimeStats.TotalClassifications-allTimeStats.TotalCorrections) / float64(allTimeStats.TotalClassifications)
+		if accuracy < 0 {
+			accuracy = 0
 		}
-		candidates := []string{user.Name, user.RealName, user.Profile.DisplayName}
-		hasReported := false
-		for _, c := range candidates {
-			if c != "" && anyNameMatches(reported, c) {
-				hasReported = true
-				break
+		sb.WriteString(fmt.Sprintf("- Accuracy: %.1f%%\n", accuracy))
+		sb.WriteString(fmt.Sprintf("- Avg confidence: %.2f\n", allTimeStats.AvgConfidence))
+	}
+
+	sb.WriteString(fmt.Sprintf("\n*Last 4 Weeks*\n"))
+	sb.WriteString(fmt.Sprintf("- Classifications: %d\n", recentStats.TotalClassifications))
+	sb.WriteString(fmt.Sprintf("- Corrections: %d\n", recentStats.TotalCorrections))
+	if recentStats.TotalClassifications > 0 {
+		accuracy := 100.0 * float64(recentStats.TotalClassifications-recentStats.TotalCorrections) / float64(recentStats.TotalClassifications)
+		if accuracy < 0 {
+			accuracy = 0
+		}
+		sb.WriteString(fmt.Sprintf("- Accuracy: %.1f%%\n", accuracy))
+		sb.WriteString(fmt.Sprintf("- Avg confidence: %.2f\n", recentStats.AvgConfidence))
+	}
+
+	// Confidence distribution.
+	sb.WriteString(fmt.Sprintf("\n*Confidence Distribution (last 4 weeks)*\n"))
+	sb.WriteString(fmt.Sprintf("- <50%%: %d\n", recentStats.BucketBelow50))
+	sb.WriteString(fmt.Sprintf("- 50-70%%: %d\n", recentStats.Bucket50to70))
+	sb.WriteString(fmt.Sprintf("- 70-90%%: %d\n", recentStats.Bucket70to90))
+	sb.WriteString(fmt.Sprintf("- 90%%+: %d\n", recentStats.Bucket90Plus))
+
+	// Most corrected sections.
+	if len(sectionCorr) > 0 {
+		sb.WriteString(fmt.Sprintf("\n*Most Corrected Sections (last 4 weeks)*\n"))
+		for _, sc := range sectionCorr {
+			label := sc.OriginalSectionID
+			if sc.OriginalLabel != "" {
+				label = fmt.Sprintf("%s (%s)", sc.OriginalSectionID, sc.OriginalLabel)
 			}
-		}
-		if !hasReported {
-			missingIDs = append(missingIDs, userID)
+			sb.WriteString(fmt.Sprintf("- %s: %d corrections\n", label, sc.CorrectionCount))
 		}
 	}
 
-	if len(missingIDs) == 0 {
-		postEphemeral(api, cmd, fmt.Sprintf("Everyone has reported this week (%s - %s).",
-			monday.Format("Jan 2"), nextMonday.AddDate(0, 0, -1).Format("Jan 2")))
-		log.Printf("nudge none missing")
-		return
+	// Weekly trend.
+	if len(trends) > 0 {
+		sb.WriteString(fmt.Sprintf("\n*Weekly Trend (last 8 weeks)*\n"))
+		for _, t := range trends {
+			sb.WriteString(fmt.Sprintf("- %s: %d classified, %d corrected, avg conf %.2f\n",
+				t.WeekStart, t.Classifications, t.Corrections, t.AvgConfidence))
+		}
 	}
 
-	sendNudges(api, cfg, missingIDs, cfg.ReportChannelID)
-	postEphemeral(api, cmd, fmt.Sprintf("Sent nudges to %d team member(s).", len(missingIDs)))
-	log.Printf("nudge sent missing-count=%d", len(missingIDs))
+	postEphemeral(api, cmd, sb.String())
+	log.Printf("report-stats sent user=%s", cmd.UserID)
 }
 
 func handleHelp(api *slack.Client, cfg Config, cmd slack.SlashCommand) {
@@ -1311,9 +1473,9 @@ func handleHelp(api *slack.Client, cfg Config, cmd slack.SlashCommand) {
 			"`/fetch-mrs` — Fetch *merged + open* GitLab MRs for this week.",
 			"`/generate-report team|boss` — Generate weekly report.",
 			"`/gen` — Alias of `/generate-report`.",
-			"`/check` — List team members who haven't reported this week.",
-			"`/nudge [@name]` — Nudge *all* missing members, or a *specific* user.",
+			"`/check` — List missing members with inline nudge buttons.",
 			"`/retrospective` — Analyze recent corrections and suggest improvements.",
+			"`/report-stats` — Show classification accuracy dashboard.",
 		)
 	}
 
@@ -1324,42 +1486,6 @@ func isManagerUser(_ *slack.Client, cfg Config, userID string) (bool, error) {
 	return cfg.IsManagerID(userID), nil
 }
 
-func resolveNudgeTargets(api *slack.Client, text string) ([]string, error) {
-	mentionID := extractMentionID(text)
-	if mentionID != "" {
-		return []string{mentionID}, nil
-	}
-
-	name := strings.TrimSpace(strings.TrimPrefix(text, "@"))
-	if name == "" {
-		return nil, fmt.Errorf("Error: invalid nudge target.")
-	}
-	ids, unresolved, err := resolveUserIDs(api, []string{name})
-	if err != nil {
-		return nil, fmt.Errorf("Error resolving user: %v", err)
-	}
-	if len(ids) == 0 || len(unresolved) > 0 {
-		return nil, fmt.Errorf("Error: mentioned user was not found.")
-	}
-	return ids, nil
-}
-
-func extractMentionID(text string) string {
-	re := regexp.MustCompile(`<@([A-Z0-9]+)(?:\\|[^>]+)?>`)
-	if match := re.FindStringSubmatch(text); len(match) > 1 {
-		return match[1]
-	}
-	return ""
-}
-
-func containsString(vals []string, target string) bool {
-	for _, v := range vals {
-		if v == target {
-			return true
-		}
-	}
-	return false
-}
 
 func resolveDelegatedAuthorName(input string, teamMembers []string) string {
 	input = strings.TrimSpace(input)
