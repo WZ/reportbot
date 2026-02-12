@@ -345,6 +345,116 @@ func TestBuildReportsFromLast_PreservesMidTopHeading(t *testing.T) {
 	}
 }
 
+func TestReorderItems_StatusBucketPrecedence(t *testing.T) {
+	// Test that items are sorted by status bucket: done → in testing → in progress → other
+	items := []TemplateItem{
+		{Description: "Item A", Status: "in progress", ReportedAt: time.Date(2026, 2, 10, 10, 0, 0, 0, time.UTC)},
+		{Description: "Item B", Status: "done", ReportedAt: time.Date(2026, 2, 10, 11, 0, 0, 0, time.UTC)},
+		{Description: "Item C", Status: "blocked", ReportedAt: time.Date(2026, 2, 10, 12, 0, 0, 0, time.UTC)},
+		{Description: "Item D", Status: "in testing", ReportedAt: time.Date(2026, 2, 10, 13, 0, 0, 0, time.UTC)},
+	}
+
+	sorted := reorderItems(items)
+
+	// Verify bucket order: done (bucket 0), in testing (bucket 1), in progress (bucket 2), other (bucket 3)
+	if sorted[0].Status != "done" {
+		t.Errorf("Expected first item to be 'done', got '%s'", sorted[0].Status)
+	}
+	if sorted[1].Status != "in testing" {
+		t.Errorf("Expected second item to be 'in testing', got '%s'", sorted[1].Status)
+	}
+	if sorted[2].Status != "in progress" {
+		t.Errorf("Expected third item to be 'in progress', got '%s'", sorted[2].Status)
+	}
+	if sorted[3].Status != "blocked" {
+		t.Errorf("Expected fourth item to be 'blocked', got '%s'", sorted[3].Status)
+	}
+}
+
+func TestReorderItems_WithinBucketOrderByReportedAt(t *testing.T) {
+	// Test that within the same status bucket, items are ordered by ReportedAt ascending
+	items := []TemplateItem{
+		{Description: "Item C", Status: "in progress", ReportedAt: time.Date(2026, 2, 10, 15, 0, 0, 0, time.UTC)},
+		{Description: "Item A", Status: "in progress", ReportedAt: time.Date(2026, 2, 10, 10, 0, 0, 0, time.UTC)},
+		{Description: "Item B", Status: "in progress", ReportedAt: time.Date(2026, 2, 10, 12, 0, 0, 0, time.UTC)},
+	}
+
+	sorted := reorderItems(items)
+
+	// Verify items are ordered by ReportedAt ascending
+	if sorted[0].Description != "Item A" {
+		t.Errorf("Expected first item to be 'Item A', got '%s'", sorted[0].Description)
+	}
+	if sorted[1].Description != "Item B" {
+		t.Errorf("Expected second item to be 'Item B', got '%s'", sorted[1].Description)
+	}
+	if sorted[2].Description != "Item C" {
+		t.Errorf("Expected third item to be 'Item C', got '%s'", sorted[2].Description)
+	}
+}
+
+func TestReorderItems_ZeroTimestampCarriedOverFirst(t *testing.T) {
+	// Test that items with zero timestamp (carried over from previous report) appear first within the bucket
+	items := []TemplateItem{
+		{Description: "New item 1", Status: "in progress", ReportedAt: time.Date(2026, 2, 10, 10, 0, 0, 0, time.UTC)},
+		{Description: "Carried over", Status: "in progress", ReportedAt: time.Time{}}, // zero timestamp
+		{Description: "New item 2", Status: "in progress", ReportedAt: time.Date(2026, 2, 10, 12, 0, 0, 0, time.UTC)},
+	}
+
+	sorted := reorderItems(items)
+
+	// Verify carried-over item (zero timestamp) comes first
+	if sorted[0].Description != "Carried over" {
+		t.Errorf("Expected first item to be 'Carried over', got '%s'", sorted[0].Description)
+	}
+	if sorted[1].Description != "New item 1" {
+		t.Errorf("Expected second item to be 'New item 1', got '%s'", sorted[1].Description)
+	}
+	if sorted[2].Description != "New item 2" {
+		t.Errorf("Expected third item to be 'New item 2', got '%s'", sorted[2].Description)
+	}
+}
+
+func TestReorderItems_ComprehensiveSorting(t *testing.T) {
+	// Test comprehensive sorting: bucket precedence + within-bucket ordering
+	items := []TemplateItem{
+		{Description: "Done new", Status: "done", ReportedAt: time.Date(2026, 2, 10, 14, 0, 0, 0, time.UTC)},
+		{Description: "Progress carried", Status: "in progress", ReportedAt: time.Time{}},
+		{Description: "Testing new", Status: "in testing", ReportedAt: time.Date(2026, 2, 10, 13, 0, 0, 0, time.UTC)},
+		{Description: "Done carried", Status: "done", ReportedAt: time.Time{}},
+		{Description: "Progress new", Status: "in progress", ReportedAt: time.Date(2026, 2, 10, 15, 0, 0, 0, time.UTC)},
+		{Description: "Other carried", Status: "blocked", ReportedAt: time.Time{}},
+		{Description: "Testing carried", Status: "in testing", ReportedAt: time.Time{}},
+	}
+
+	sorted := reorderItems(items)
+
+	// Expected order:
+	// 1. Done carried (bucket 0, zero timestamp)
+	// 2. Done new (bucket 0, has timestamp)
+	// 3. Testing carried (bucket 1, zero timestamp)
+	// 4. Testing new (bucket 1, has timestamp)
+	// 5. Progress carried (bucket 2, zero timestamp)
+	// 6. Progress new (bucket 2, has timestamp)
+	// 7. Other carried (bucket 3, zero timestamp)
+
+	expected := []string{
+		"Done carried",
+		"Done new",
+		"Testing carried",
+		"Testing new",
+		"Progress carried",
+		"Progress new",
+		"Other carried",
+	}
+
+	for i, exp := range expected {
+		if sorted[i].Description != exp {
+			t.Errorf("Position %d: expected '%s', got '%s'", i, exp, sorted[i].Description)
+		}
+	}
+}
+
 func mustDate(t *testing.T, ymd string) time.Time {
 	t.Helper()
 	d, err := time.Parse("20060102", ymd)
