@@ -49,7 +49,6 @@ func StartSlackBot(cfg Config, db *sql.DB, api *slack.Client) error {
 
 	go func() {
 		for evt := range client.Events {
-			log.Printf("socket-mode event type=%s", evt.Type)
 			switch evt.Type {
 			case socketmode.EventTypeSlashCommand:
 				cmd, ok := evt.Data.(slack.SlashCommand)
