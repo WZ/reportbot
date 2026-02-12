@@ -177,6 +177,9 @@ func handleReport(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashComm
 		log.Printf("report parse error user=%s: %v", cmd.UserID, parseErr)
 		return
 	}
+	for i := range items {
+		items[i].AuthorID = cmd.UserID
+	}
 	if len(items) == 1 {
 		if err := InsertWorkItem(db, items[0]); err != nil {
 			postEphemeral(api, cmd, fmt.Sprintf("Error saving item: %v", err))
@@ -845,6 +848,12 @@ func handleViewSubmission(api *slack.Client, db *sql.DB, cfg Config, cb slack.In
 			return
 		}
 		channelID := strings.TrimSpace(parts[1])
+		if channelID == "" {
+			channelID = cb.Container.ChannelID
+		}
+		if channelID == "" {
+			channelID = cb.Channel.ID
+		}
 		itemID, err := strconv.ParseInt(strings.TrimPrefix(parts[0], modalMetaPrefix), 10, 64)
 		if err != nil {
 			return
@@ -1153,6 +1162,11 @@ func canManageItem(item WorkItem, isManager bool, user *slack.User) bool {
 	if user == nil {
 		return false
 	}
+	// Prefer immutable Slack user ID when available.
+	if item.AuthorID != "" {
+		return user.ID == item.AuthorID
+	}
+	// Fallback: fuzzy name matching for legacy items without AuthorID.
 	candidates := []string{
 		strings.TrimSpace(user.Profile.DisplayName),
 		strings.TrimSpace(user.RealName),
