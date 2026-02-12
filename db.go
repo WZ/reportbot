@@ -116,7 +116,7 @@ func SourceRefExists(db *sql.DB, sourceRef string) (bool, error) {
 func GetItemsByDateRange(db *sql.DB, from, to time.Time) ([]WorkItem, error) {
 	rows, err := db.Query(
 		`SELECT id, description, author, source, source_ref, category, status, ticket_ids, reported_at, created_at
-		 FROM work_items WHERE reported_at >= ? AND reported_at < ? ORDER BY category, author, reported_at`,
+		 FROM work_items WHERE reported_at >= ? AND reported_at < ? ORDER BY category, author, reported_at, id`,
 		from, to,
 	)
 	if err != nil {
@@ -175,7 +175,7 @@ func GetPendingSlackItemsByAuthorAndDateRange(db *sql.DB, author string, from, t
 		 FROM work_items
 		 WHERE author = ? AND source = 'slack' AND reported_at >= ? AND reported_at < ?
 		   AND lower(trim(status)) <> 'done'
-		 ORDER BY reported_at DESC`,
+		 ORDER BY reported_at DESC, id DESC`,
 		author, from, to,
 	)
 	if err != nil {
@@ -204,7 +204,7 @@ func GetSlackItemsByAuthorAndDateRange(db *sql.DB, author string, from, to time.
 		`SELECT id, description, author, source, source_ref, category, status, ticket_ids, reported_at, created_at
 		 FROM work_items
 		 WHERE author = ? AND source = 'slack' AND reported_at >= ? AND reported_at < ?
-		 ORDER BY reported_at DESC`,
+		 ORDER BY reported_at DESC, id DESC`,
 		author, from, to,
 	)
 	if err != nil {
