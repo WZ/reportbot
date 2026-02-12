@@ -52,7 +52,7 @@ func StartNudgeScheduler(cfg Config, api *slack.Client) {
 
 	go func() {
 		for {
-			now := time.Now()
+			now := time.Now().In(cfg.Location)
 			next := nextWeekday(now, weekday, hour, min)
 			wait := next.Sub(now)
 			log.Printf("Next nudge at %s (in %s)", next.Format("Mon Jan 2 15:04"), wait.Round(time.Minute))
@@ -76,7 +76,7 @@ func nextWeekday(now time.Time, day time.Weekday, hour, min int) time.Time {
 }
 
 func sendNudges(api *slack.Client, cfg Config, memberIDs []string, reportChannelID string) {
-	monday, nextMonday := ReportWeekRange(cfg, time.Now())
+	monday, nextMonday := ReportWeekRange(cfg, time.Now().In(cfg.Location))
 	channelRef := ""
 	if reportChannelID != "" {
 		channelRef = fmt.Sprintf(" Please report in <#%s>.", reportChannelID)
