@@ -13,9 +13,12 @@ The LLM classifier was **open-loop** — it made decisions, but never learned fr
 | LLM repeats same mistakes weekly | LLM learns from every correction |
 | Manager fixes are lost | Corrections stored permanently |
 | Single-threaded, slow for large teams | Parallel classification (~3x faster) |
+| Random few-shot examples | TF-IDF relevance-based example selection |
+| Single-pass classification | Optional generator-critic loop catches errors |
+| Full-price repeated system prompts | Prompt caching (~40% cost reduction) |
 | Low-confidence items hidden in report | Uncertain items surfaced for review |
 | Glossary maintained manually | Glossary grows automatically |
-| No visibility into LLM accuracy | Full decision audit trail |
+| No visibility into LLM accuracy | Full decision audit trail + `/report-stats` dashboard |
 
 ---
 
@@ -28,6 +31,7 @@ Traditional AI integration is **call-and-forget**: send data to an LLM, get a re
 1. **Memory** — It remembers past decisions and corrections across weeks
 2. **Self-evaluation** — It flags its own low-confidence decisions for human review
 3. **Self-improvement** — It uses corrections to avoid repeating mistakes and autonomously updates its own rules
+4. **Planning** — A generator-critic loop lets the system review and revise its own classifications before presenting them
 
 ---
 
@@ -102,6 +106,67 @@ Traditional AI integration is **call-and-forget**: send data to an LLM, get a re
 
 ---
 
+### Feature 7: Prompt Caching
+
+**What it does:** The Anthropic system prompt is marked with `CacheControl` so it's cached across parallel batches within a report generation run.
+
+**Why it matters:** The system prompt (section list, rules, glossary, corrections) is identical across all parallel batches. Caching avoids re-processing it for each batch, reducing input token costs by ~40%.
+
+**How it works:**
+- The system prompt `TextBlockParam` includes `CacheControl: ephemeral`
+- On the first batch call, Anthropic caches the system prompt (reported as `cache_creation_input_tokens`)
+- Subsequent parallel batch calls hit the cache (reported as `cache_read_input_tokens`)
+- Cache tokens are tracked in `LLMUsage` and logged per call
+
+---
+
+### Feature 8: TF-IDF Example Selection
+
+**What it does:** Instead of blindly using the first N items from the previous report as few-shot examples, the system selects the most relevant historical items for each classification batch using TF-IDF cosine similarity.
+
+**Why it matters:** Better examples lead to better classifications, especially for new or unusual item types. A work item about "ClickHouse replication lag" gets examples about database and query items, not random infrastructure tasks.
+
+**How it works:**
+- On report generation, the system loads up to 500 classified items from the last 12 weeks (confidence >= 0.70)
+- A TF-IDF index is built in memory (`llm_examples.go`) with tokenization, IDF weighting, and sparse vectors
+- For each classification batch, `topKForBatch` finds the most similar historical items across all batch queries
+- Selected examples are included in the prompt with their correct section IDs
+- Falls back to the previous behavior (existing items from current report) when no historical data exists
+
+---
+
+### Feature 9: Generator-Critic Loop
+
+**What it does:** An optional second LLM pass reviews all classification assignments and flags potential misclassifications before the manager sees the report.
+
+**Why it matters:** A single-pass classifier can make confident mistakes. The critic pass catches these by reviewing assignments in context — seeing all items and their sections together, which the initial per-batch classifier cannot.
+
+**How it works:**
+- Enabled via `llm_critic_enabled: true` in config
+- After all batches are merged and glossary overrides applied, the full assignment list is sent to a second LLM call
+- The critic prompt asks: "Review these classifications. Return only items you believe are misclassified, with a suggested section."
+- Valid suggestions (where the suggested section exists) are applied automatically
+- The critic's token usage is tracked and logged alongside the main classification usage
+- If the critic call fails, it's logged as non-fatal and the original assignments are preserved
+
+---
+
+### Feature 10: Accuracy Dashboard (`/report-stats`)
+
+**What it does:** The `/report-stats` command shows classification accuracy metrics, confidence distributions, most-corrected sections, and weekly trends.
+
+**Why it matters:** Without metrics, you can't tell if the system is improving. The dashboard gives managers visibility into classification quality over time, helping them decide whether to adjust the glossary, enable the critic, or tune the confidence threshold.
+
+**How it works:**
+- Manager-only command
+- Queries `classification_history` and `classification_corrections` tables for aggregate stats
+- Shows: total classifications, total corrections, average confidence, confidence bucket distribution
+- Shows: most-corrected sections (where the LLM makes the most mistakes)
+- Shows: 8-week trend of classifications, corrections, and average confidence
+- Rendered as an ephemeral Slack message
+
+---
+
 ## Agentic Design Considerations
 
 ### Human-in-the-Loop by Default
@@ -131,8 +196,11 @@ All agentic features are **additive and non-fatal**:
 
 - Corrections are injected as text (20 lines max) — negligible token overhead
 - Parallel batches don't increase total tokens, only wall-clock time
+- Prompt caching reduces input token costs by ~40% across parallel batches
+- The critic loop is opt-in (`llm_critic_enabled`) — disabled by default to avoid extra cost
 - Retrospective is on-demand (`/retrospective`), not scheduled — cost is opt-in
 - Glossary overrides bypass the LLM entirely — each auto-glossary term saves future tokens
+- TF-IDF example selection is pure in-memory computation — no additional LLM calls
 
 ---
 
@@ -149,20 +217,25 @@ flowchart LR
     subgraph Classify["Classify"]
         direction TB
         MEM["Memory<br>───<br>Glossary<br>Guide<br>Corrections"]
-        LLM["LLM<br>Classifier<br>(parallel)"]
+        TFIDF["TF-IDF<br>Example<br>Selection"]
+        LLM["LLM Classifier<br>(parallel, cached)"]
+        CRITIC["Critic<br>(optional 2nd pass)"]
         MEM -.->|enrich| LLM
+        TFIDF -.->|"few-shot<br>examples"| LLM
+        LLM --> CRITIC
     end
 
     subgraph Deliver["Deliver"]
         direction TB
         RPT["Weekly<br>Report"]
         UNC["Uncertainty<br>Prompts"]
+        STATS["/report-stats<br>Dashboard"]
     end
 
     MGR["Manager"]
 
     Input --> LLM
-    LLM --> Deliver
+    CRITIC --> Deliver
     Deliver --> MGR
 
     MGR -->|"corrections"| MEM
@@ -173,7 +246,7 @@ flowchart LR
     style MGR fill:#f96,stroke:#333,color:#000
 ```
 
-The key is the arrow from **Manager** back into **Memory**. Every correction enriches the next classification run — forming the closed loop. The system gets smarter each week without any model retraining.
+The key is the arrow from **Manager** back into **Memory**. Every correction enriches the next classification run — forming the closed loop. The TF-IDF index selects the most relevant historical examples for each batch, while the optional critic catches mistakes before the manager sees them. The system gets smarter each week without any model retraining.
 
 ---
 
@@ -196,7 +269,7 @@ Each week, the system handles more cases deterministically (glossary) and makes 
 
 | Feature | Value | Effort |
 |---------|-------|--------|
-| **Generator-Critic Loop** | Second LLM pass catches errors before the manager sees them | Medium |
-| **Semantic Example Selection (RAG)** | Find similar past items as few-shot examples for better cold-start accuracy | High |
-| **Prompt Caching** | Cache system prompt across parallel batches for ~40% cost reduction | Low |
-| **Accuracy Dashboard** | Track classification accuracy trends over time via `/report-stats` | Medium |
+| **Structured Output** | Use `anthropic.Tool` for critic response schema to eliminate JSON parse failures | Low |
+| **Structured Logging** | Replace `log.Printf` with `slog` + duration tracking for LLM call observability | Medium |
+| **Semantic Embeddings (RAG)** | Replace TF-IDF with vector embeddings for higher-quality example selection | High |
+| **ReAct Agent** | Turn classifier into an agent that can query GitLab, past reports, and team context before classifying | High |

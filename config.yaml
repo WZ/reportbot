@@ -23,6 +23,9 @@ llm_example_max_chars: 140
 # Optional glossary memory file for phrase/status hints
 llm_glossary_path: "./llm_glossary.yaml"
 
+# Enable generator-critic loop (second LLM pass to catch misclassifications)
+llm_critic_enabled: false
+
 # LLM API keys (set the one that matches llm_provider)
 anthropic_api_key: "sk-ant-your-key"
 openai_api_key: ""
@@ -34,9 +37,9 @@ report_output_dir: "./reportbot-reports"
 # Channel ID used for report reminders and links
 report_channel_id: "C01234567"
 
-# Manager full names (as shown in Slack)
-manager:
-  - "Alice Smith"
+# Manager Slack user IDs (controls access to /fetch-mrs, /generate-report, /check, /retrospective, /report-stats)
+manager_slack_ids:
+  - "U01ABC123"
 
 # Team member full names (as shown in Slack)
 team_members:
