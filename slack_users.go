@@ -4,9 +4,36 @@ import (
 	"log"
 	"regexp"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/slack-go/slack"
 )
+
+const userCacheTTL = 5 * time.Minute
+
+var userCache struct {
+	sync.Mutex
+	users     []slack.User
+	fetchedAt time.Time
+}
+
+func getCachedUsers(api *slack.Client) ([]slack.User, error) {
+	userCache.Lock()
+	defer userCache.Unlock()
+
+	if userCache.users != nil && time.Since(userCache.fetchedAt) < userCacheTTL {
+		return userCache.users, nil
+	}
+
+	users, err := api.GetUsers()
+	if err != nil {
+		return nil, err
+	}
+	userCache.users = users
+	userCache.fetchedAt = time.Now()
+	return users, nil
+}
 
 func resolveUserIDs(api *slack.Client, identifiers []string) ([]string, []string, error) {
 	var ids []string
@@ -29,7 +56,7 @@ func resolveUserIDs(api *slack.Client, identifiers []string) ([]string, []string
 		return uniqueStrings(ids), nil, nil
 	}
 
-	users, err := api.GetUsers()
+	users, err := getCachedUsers(api)
 	if err != nil {
 		log.Printf("resolve users: get users error: %v", err)
 		return uniqueStrings(ids), names, err
@@ -125,12 +152,21 @@ func nameMatches(teamEntry, candidate string) bool {
 	if len(teamTokens) == 0 || len(candTokens) == 0 {
 		return false
 	}
-	candSet := make(map[string]bool, len(candTokens))
-	for _, t := range candTokens {
-		candSet[t] = true
+	// Check both directions: team⊆candidate OR candidate⊆team.
+	// This handles short GitLab names (e.g. "Alice" matching "Alice Smith").
+	if allIn(teamTokens, candTokens) || allIn(candTokens, teamTokens) {
+		return true
 	}
-	for _, t := range teamTokens {
-		if !candSet[t] {
+	return false
+}
+
+func allIn(needles, haystack []string) bool {
+	set := make(map[string]bool, len(haystack))
+	for _, t := range haystack {
+		set[t] = true
+	}
+	for _, t := range needles {
+		if !set[t] {
 			return false
 		}
 	}
