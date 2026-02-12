@@ -51,26 +51,26 @@ func StartSlackBot(cfg Config, db *sql.DB, api *slack.Client) error {
 		for evt := range client.Events {
 			switch evt.Type {
 			case socketmode.EventTypeSlashCommand:
+				client.Ack(*evt.Request)
 				cmd, ok := evt.Data.(slack.SlashCommand)
 				if !ok {
 					continue
 				}
 				log.Printf("Slash command received: %s from user=%s channel=%s", cmd.Command, cmd.UserID, cmd.ChannelID)
-				client.Ack(*evt.Request)
 				go handleSlashCommand(client, api, db, cfg, cmd)
 			case socketmode.EventTypeEventsAPI:
+				client.Ack(*evt.Request)
 				eventsAPIEvent, ok := evt.Data.(slackevents.EventsAPIEvent)
 				if !ok {
 					continue
 				}
-				client.Ack(*evt.Request)
 				go handleEventsAPI(api, cfg, eventsAPIEvent)
 			case socketmode.EventTypeInteractive:
+				client.Ack(*evt.Request)
 				callback, ok := evt.Data.(slack.InteractionCallback)
 				if !ok {
 					continue
 				}
-				client.Ack(*evt.Request)
 				go handleInteraction(api, db, cfg, callback)
 			}
 		}
@@ -144,7 +144,7 @@ func handleMemberJoined(api *slack.Client, cfg Config, ev *slackevents.MemberJoi
 func handleReport(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashCommand) {
 	text := strings.TrimSpace(cmd.Text)
 	if text == "" {
-		postEphemeral(api, cmd, "Usage: /report <description> (status)\nExample: /report [mantis_id] Add pagination to user list API (done)\nMultiline: /report Item A (in progress)\\nItem B (done)")
+		postEphemeral(api, cmd, "Usage: /report <description> (status)\nExample: /report [mantis_id] Add pagination to user list API (done)\nMultiline (separate items with newlines, e.g. Shift+Enter): /report Item A (in progress)\\nItem B (done)")
 		return
 	}
 
