@@ -29,9 +29,9 @@ Configuration is layered: `config.yaml` is loaded first, then environment variab
 
 - **Slack**: `slack_bot_token` (xoxb-...), `slack_app_token` (xapp-...)
 - **GitLab**: `gitlab_url`, `gitlab_token`, `gitlab_group_id` (numeric ID or group path)
-- **LLM**: `llm_provider` ("anthropic" or "openai"), `anthropic_api_key` or `openai_api_key`
+- **LLM**: `llm_provider` ("anthropic" or "openai"), `anthropic_api_key` or `openai_api_key`, `llm_critic_enabled` (bool, enables generator-critic second pass)
 - **Permissions**: `manager_slack_ids` (list of Slack user IDs) — controls access to `/fetch-mrs`, `/generate-report`, `/check`, `/retrospective`, `/report-stats`
-- **Team**: `team_members` (list of Slack full names or user IDs; used by `/check` and scheduled nudge), `nudge_day` (Monday-Sunday), `nudge_time` (HH:MM 24h format)
+- **Nudge**: `team_members` (list of Slack full names or user IDs; used by `/check` and scheduled nudge), `nudge_day` (Monday-Sunday), `nudge_time` (HH:MM 24h format)
 - **Team**: `team_name` (used in report header and filename)
 
 See `config.yaml` and `README.md` for full reference.
@@ -72,7 +72,7 @@ The application has a flat structure with 13 Go source files (+ 4 test files):
 
 ### AI Categorization
 
-`llm.go:CategorizeItemsToSections()` classifies items into report sections using parallel LLM batches. The system prompt lists valid section IDs (derived from the previous report template), instructions for classification, status normalization, ticket extraction, duplicate detection, and confidence scoring. Recent corrections (last 4 weeks) are injected as negative examples. Glossary overrides are applied post-classification. Response format: `[{"id": 142, "section_id": "S0_2", "normalized_status": "in progress", "ticket_ids": "1234", "duplicate_of": "", "confidence": 0.91}]`.
+`llm.go:CategorizeItemsToSections()` classifies items into report sections using parallel LLM batches. Few-shot examples are selected via TF-IDF similarity (`llm_examples.go`) from 12 weeks of classification history, replacing the previous blind "first N items" approach. The system prompt (cached via Anthropic prompt caching) lists valid section IDs (derived from the previous report template), instructions for classification, status normalization, ticket extraction, duplicate detection, and confidence scoring. Recent corrections (last 4 weeks) are injected as negative examples. Glossary overrides are applied post-classification. When `llm_critic_enabled` is set, a second LLM pass reviews all assignments and corrects misclassifications before returning. Response format: `[{"id": 142, "section_id": "S0_2", "normalized_status": "in progress", "ticket_ids": "1234", "duplicate_of": "", "confidence": 0.91}]`.
 
 ### Nudge Reminders
 
@@ -106,7 +106,8 @@ CGO_ENABLED=1 go test -v ./...
 
 Test files:
 - **report_builder_test.go** — Template parsing, merge/sort, LLM confidence gating, duplicate detection, prefix/heading preservation, item formatting
-- **llm_test.go** — Glossary overrides, prompt building (example limits, template guidance), JSON response parsing (array ticket IDs)
+- **llm_test.go** — Glossary overrides, prompt building (example limits, template guidance), JSON response parsing (array ticket IDs), critic response parsing
+- **llm_examples_test.go** — TF-IDF index building, topK similarity search, batch deduplication, cosine similarity edge cases
 - **models_test.go** — `ReportWeekRange` Monday cutoff logic
 
 Manual testing for Slack integration:

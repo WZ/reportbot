@@ -34,10 +34,12 @@ flowchart TB
 
     subgraph Pipeline["Classification Pipeline"]
         direction LR
+        TFIDF["TF-IDF\nExample Selector"]
         BATCH["Parallel\nBatch Splitter"]
-        GEN["LLM Classifier\n(with memory)"]
+        GEN["LLM Classifier\n(cached prompts)"]
         MERGE["Result\nMerger"]
-        BATCH --> GEN --> MERGE
+        CRITIC["Critic Pass\n(optional)"]
+        TFIDF --> BATCH --> GEN --> MERGE --> CRITIC
     end
 
     subgraph Memory["Memory Layer"]
@@ -60,12 +62,13 @@ flowchart TB
 
     S1 --> WI
     S2 --> WI
-    WI --> BATCH
+    WI --> TFIDF
+    CH -->|"12 weeks\nhistory"| TFIDF
 
     Memory -->|"inject into\nprompt"| GEN
-    MERGE --> RPT
-    MERGE -->|"persist decisions"| CH
-    MERGE -->|"low confidence"| UNC
+    CRITIC --> RPT
+    CRITIC -->|"persist decisions"| CH
+    CRITIC -->|"low confidence"| UNC
 
     RPT --> MGR
     MGR --> EDIT
@@ -104,6 +107,35 @@ After:   [Batch 1: 800ms]                                     =   820ms
          [Batch 2: 750ms]
          [Batch 3: 820ms]
 ```
+
+### 1a. Prompt Caching
+
+Anthropic system prompts are marked with `CacheControl: ephemeral`. Since all parallel batches share the same system prompt (sections, rules, glossary, corrections), only the first batch pays full input token cost. Subsequent batches hit the cache.
+
+- Tracked via `CacheCreationInputTokens` and `CacheReadInputTokens` in `LLMUsage`
+- ~40% reduction in input token costs for multi-batch runs
+- OpenAI path is unchanged (no cache control API)
+
+### 1b. TF-IDF Example Selection
+
+Instead of using the first N items from the previous report as few-shot examples, we select the most relevant historical items via TF-IDF cosine similarity.
+
+- `llm_examples.go` implements a pure Go TF-IDF index (no external deps)
+- Up to 500 classified items from the last 12 weeks (confidence >= 0.70) are loaded from `classification_history`
+- For each batch, `topKForBatch` finds the union of per-query top-K results, deduplicated
+- Falls back to existing-item examples when no history is available
+- Pure in-memory computation — zero additional LLM calls
+
+### 1c. Generator-Critic Loop
+
+An optional second LLM pass reviews all classification assignments after batches are merged:
+
+- Enabled via `llm_critic_enabled: true` in config
+- The critic sees the full assignment list (all items + their assigned sections) in a single call
+- Returns only items it believes are misclassified, with a suggested alternative section
+- Valid suggestions are applied; invalid section IDs are ignored
+- Non-fatal: if the critic call fails, original assignments are preserved
+- Token usage is tracked and logged alongside the main classification
 
 ### 2. Classification History
 
@@ -204,15 +236,23 @@ Manager-only command that loads all corrections from the last 4 weeks and sends 
 sequenceDiagram
     participant M as Manager
     participant Bot as ReportBot
+    participant TFIDF as TF-IDF Index
     participant LLM as LLM
     participant DB as Database
     participant Mem as Memory
 
     Note over Bot,LLM: Week N
-    Bot->>DB: Load items
+    Bot->>DB: Load items + 12 weeks history
+    Bot->>TFIDF: Build index from history
     Bot->>Mem: Load corrections + glossary
-    Bot->>LLM: Classify (parallel batches + memory)
+    Bot->>TFIDF: Select examples per batch
+    TFIDF-->>Bot: Relevant few-shot examples
+    Bot->>LLM: Classify (parallel batches, cached prompt)
     LLM-->>Bot: Decisions + confidence
+    opt Critic enabled
+        Bot->>LLM: Critic reviews all assignments
+        LLM-->>Bot: Flagged misclassifications
+    end
     Bot->>DB: Persist to classification_history
 
     alt Low confidence items
@@ -308,17 +348,26 @@ flowchart TB
         R3["Domain-specific\nhints for the LLM"]
     end
 
+    subgraph T4["Tier 4: History (Similarity)"]
+        direction LR
+        S1["12 weeks of classified\nitems from DB"]
+        S2["TF-IDF cosine\nsimilarity search"]
+        S3["Top-K relevant\nexamples per batch"]
+    end
+
     subgraph Prompt["Assembled LLM Prompt"]
-        P["System: sections + guide + glossary rules\nUser: examples + corrections + items"]
+        P["System: sections + guide + glossary rules (cached)\nUser: TF-IDF examples + corrections + items"]
     end
 
     T1 -->|"post-LLM override"| Prompt
     T2 -->|"negative examples"| Prompt
     T3 -->|"semantic hints"| Prompt
+    T4 -->|"few-shot examples"| Prompt
 
     style T1 fill:#2d6a4f,stroke:#333,color:#fff
     style T2 fill:#1a5276,stroke:#333,color:#fff
     style T3 fill:#6c3483,stroke:#333,color:#fff
+    style T4 fill:#1a5276,stroke:#333,color:#fff
     style Prompt fill:#1a1a2e,stroke:#69f,color:#fff
 ```
 
@@ -328,8 +377,7 @@ flowchart TB
 
 | Feature | Description | Impact |
 |---------|-------------|--------|
-| **Generator-Critic Loop** | Second LLM pass reviews classifications, flags issues | Higher accuracy, fewer Undetermined items |
-| **Semantic Example Selection** | RAG with embeddings — find most similar past items as few-shot examples | Better cold-start for new item types |
-| **Prompt Caching** | Anthropic cache API for system prompt across batches | ~40% cost reduction |
-| **Structured Output** | `anthropic.Tool` for critic response schema | Eliminates JSON parse failures |
+| **Structured Output** | Use `anthropic.Tool` for critic response schema | Eliminates JSON parse failures |
 | **Structured Logging** | Replace `log.Printf` with `slog` + duration tracking | Observability for LLM call latency |
+| **Semantic Embeddings (RAG)** | Replace TF-IDF with vector embeddings for higher-quality example selection | Better cold-start for new item types |
+| **ReAct Agent** | Turn classifier into an agent that queries GitLab, past reports, team context before classifying | Context-aware classification |
