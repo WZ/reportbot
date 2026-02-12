@@ -43,6 +43,8 @@ type Config struct {
 	MondayCutoffTime string   `yaml:"monday_cutoff_time"`
 	Timezone         string   `yaml:"timezone"`
 	TeamName         string   `yaml:"team_name"`
+
+	Location *time.Location `yaml:"-"` // computed from Timezone, not from YAML
 }
 
 func LoadConfig() Config {
@@ -168,13 +170,13 @@ func LoadConfig() Config {
 	}
 
 	if strings.EqualFold(cfg.Timezone, "Local") {
-		cfg.Timezone = time.Local.String()
+		cfg.Location = time.Local
 	} else {
 		loc, err := time.LoadLocation(cfg.Timezone)
 		if err != nil {
 			log.Fatalf("invalid timezone '%s': %v", cfg.Timezone, err)
 		}
-		time.Local = loc
+		cfg.Location = loc
 	}
 
 	if _, _, err := parseClock(cfg.MondayCutoffTime); err != nil {

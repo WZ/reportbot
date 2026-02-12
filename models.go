@@ -36,8 +36,8 @@ type ReportSection struct {
 }
 
 // CurrentWeekRange returns Monday 00:00:00 and next Monday 00:00:00 for the current calendar week.
-func CurrentWeekRange() (time.Time, time.Time) {
-	now := time.Now()
+func CurrentWeekRange(loc *time.Location) (time.Time, time.Time) {
+	now := time.Now().In(loc)
 	return CurrentWeekRangeAt(now)
 }
 
