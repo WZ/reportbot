@@ -1322,11 +1322,15 @@ func handleHelp(api *slack.Client, cfg Config, cmd slack.SlashCommand) {
 }
 
 func isManagerUser(api *slack.Client, cfg Config, userID string) (bool, error) {
+	// Prefer immutable Slack user ID check.
+	if cfg.IsManagerID(userID) {
+		return true, nil
+	}
+	// Fallback: name-based matching for backward compatibility.
 	user, err := api.GetUserInfo(userID)
 	if err != nil {
 		return false, err
 	}
-
 	candidates := []string{
 		user.RealName,
 		user.Profile.DisplayName,
