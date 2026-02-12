@@ -668,7 +668,7 @@ func normalizeStatus(status string) string {
 	case "in progress":
 		return "in progress"
 	default:
-		return s
+		return strings.TrimSpace(status)
 	}
 }
 
