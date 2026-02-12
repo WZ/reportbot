@@ -116,7 +116,8 @@ func (idx *tfidfIndex) queryVec(query string) sparseVec {
 	return vec
 }
 
-func (idx *tfidfIndex) topK(query string, k int) []historicalItem {
+// topKIndices returns the indices of the top-K most similar items to query.
+func (idx *tfidfIndex) topKIndices(query string, k int) []int {
 	if len(idx.items) == 0 || k <= 0 {
 		return nil
 	}
@@ -142,9 +143,18 @@ func (idx *tfidfIndex) topK(query string, k int) []historicalItem {
 	if len(results) > k {
 		results = results[:k]
 	}
-	out := make([]historicalItem, len(results))
+	out := make([]int, len(results))
 	for i, r := range results {
-		out[i] = idx.items[r.index]
+		out[i] = r.index
+	}
+	return out
+}
+
+func (idx *tfidfIndex) topK(query string, k int) []historicalItem {
+	indices := idx.topKIndices(query, k)
+	out := make([]historicalItem, len(indices))
+	for i, docIdx := range indices {
+		out[i] = idx.items[docIdx]
 	}
 	return out
 }
@@ -156,15 +166,10 @@ func (idx *tfidfIndex) topKForBatch(queries []string, k int) []historicalItem {
 	seen := make(map[int]bool)
 	var out []historicalItem
 	for _, q := range queries {
-		hits := idx.topK(q, k)
-		for _, h := range hits {
-			// Dedup by finding matching index in idx.items.
-			for i, item := range idx.items {
-				if !seen[i] && item.Description == h.Description && item.SectionID == h.SectionID {
-					seen[i] = true
-					out = append(out, h)
-					break
-				}
+		for _, docIdx := range idx.topKIndices(q, k) {
+			if !seen[docIdx] {
+				seen[docIdx] = true
+				out = append(out, idx.items[docIdx])
 			}
 		}
 	}

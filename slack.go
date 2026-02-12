@@ -1240,13 +1240,14 @@ func canManageItem(item WorkItem, isManager bool, user *slack.User) bool {
 
 
 func openNudgeConfirmModal(api *slack.Client, cfg Config, triggerID, channelID, targetIDs string) {
-	ids := strings.Split(targetIDs, ",")
+	var validIDs []string
 	var names []string
-	for _, id := range ids {
+	for _, id := range strings.Split(targetIDs, ",") {
 		id = strings.TrimSpace(id)
 		if id == "" {
 			continue
 		}
+		validIDs = append(validIDs, id)
 		user, err := api.GetUserInfo(id)
 		if err != nil {
 			names = append(names, fmt.Sprintf("<@%s>", id))
@@ -1262,9 +1263,13 @@ func openNudgeConfirmModal(api *slack.Client, cfg Config, triggerID, channelID, 
 		names = append(names, display)
 	}
 
+	if len(validIDs) == 0 {
+		return
+	}
+
 	prompt := fmt.Sprintf("Send a nudge reminder DM to *%s*?", strings.Join(names, ", "))
-	if len(ids) > 1 {
-		prompt = fmt.Sprintf("Send a nudge reminder DM to *%d members*?\n%s", len(ids), strings.Join(names, ", "))
+	if len(validIDs) > 1 {
+		prompt = fmt.Sprintf("Send a nudge reminder DM to *%d members*?\n%s", len(validIDs), strings.Join(names, ", "))
 	}
 
 	view := slack.ModalViewRequest{
@@ -1288,6 +1293,10 @@ func openNudgeConfirmModal(api *slack.Client, cfg Config, triggerID, channelID, 
 
 func handleNudgeConfirm(api *slack.Client, cfg Config, cb slack.InteractionCallback) {
 	userID := cb.User.ID
+	if !cfg.IsManagerID(userID) {
+		log.Printf("nudge confirm denied user=%s (not manager)", userID)
+		return
+	}
 	meta := strings.TrimSpace(cb.View.PrivateMetadata)
 	parts := strings.SplitN(meta, "|", 2)
 	if len(parts) != 2 || !strings.HasPrefix(parts[0], nudgeMetaPrefix) {
@@ -1355,7 +1364,8 @@ func handleReportStats(api *slack.Client, db *sql.DB, cfg Config, cmd slack.Slas
 	}
 
 	// Load 8-week trend.
-	trends, err := GetWeeklyClassificationTrend(db, 8)
+	eightWeeksAgo := time.Now().In(cfg.Location).AddDate(0, 0, -56)
+	trends, err := GetWeeklyClassificationTrend(db, eightWeeksAgo)
 	if err != nil {
 		log.Printf("report-stats trend error (non-fatal): %v", err)
 	}
