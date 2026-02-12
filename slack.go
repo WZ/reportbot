@@ -526,31 +526,17 @@ func renderListItems(api *slack.Client, db *sql.DB, cfg Config, channelID, userI
 		return
 	}
 
+	// Precompute sort keys: lowercase first name from synthesized display name.
+	sortKeys := make([]string, len(items))
+	for idx := range items {
+		if fields := strings.Fields(synthesizeName(items[idx].Author)); len(fields) > 0 {
+			sortKeys[idx] = strings.ToLower(fields[0])
+		}
+	}
 	// Sort: group by author (first name alphabetically), then by reported_at ascending.
-	// Use synthesizeName to normalize display names (removes aliases/parentheticals).
 	sort.SliceStable(items, func(i, j int) bool {
-		// Normalize author names and extract first token (first name)
-		normI := synthesizeName(items[i].Author)
-		normJ := synthesizeName(items[j].Author)
-		
-		// Extract first name (first token)
-		firstNameI := strings.Fields(normI)
-		firstNameJ := strings.Fields(normJ)
-		
-		var fnI, fnJ string
-		if len(firstNameI) > 0 {
-			fnI = firstNameI[0]
-		}
-		if len(firstNameJ) > 0 {
-			fnJ = firstNameJ[0]
-		}
-		
-		// Compare first names case-insensitively
-		fnILower := strings.ToLower(fnI)
-		fnJLower := strings.ToLower(fnJ)
-		
-		if fnILower != fnJLower {
-			return fnILower < fnJLower
+		if sortKeys[i] != sortKeys[j] {
+			return sortKeys[i] < sortKeys[j]
 		}
 		return items[i].ReportedAt.Before(items[j].ReportedAt)
 	})
