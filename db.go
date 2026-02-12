@@ -426,6 +426,32 @@ func GetRecentCorrections(db *sql.DB, since time.Time, limit int) ([]Classificat
 	return out, rows.Err()
 }
 
+func GetClassifiedItemsWithSections(db *sql.DB, since time.Time, limit int) ([]historicalItem, error) {
+	rows, err := db.Query(
+		`SELECT w.description, ch.section_id, ch.section_label
+		 FROM classification_history ch
+		 JOIN work_items w ON w.id = ch.work_item_id
+		 WHERE ch.confidence >= 0.70 AND ch.classified_at >= ?
+		 ORDER BY ch.classified_at DESC
+		 LIMIT ?`,
+		since, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []historicalItem
+	for rows.Next() {
+		var h historicalItem
+		if err := rows.Scan(&h.Description, &h.SectionID, &h.SectionLabel); err != nil {
+			return nil, err
+		}
+		out = append(out, h)
+	}
+	return out, rows.Err()
+}
+
 func CountCorrectionsByPhrase(db *sql.DB, description, correctedSectionID string) (int, error) {
 	var count int
 	err := db.QueryRow(
@@ -435,4 +461,139 @@ func CountCorrectionsByPhrase(db *sql.DB, description, correctedSectionID string
 		description, correctedSectionID,
 	).Scan(&count)
 	return count, err
+}
+
+// --- Classification Stats ---
+
+type ClassificationStats struct {
+	TotalClassifications int
+	TotalCorrections     int
+	AvgConfidence        float64
+	BucketBelow50        int
+	Bucket50to70         int
+	Bucket70to90         int
+	Bucket90Plus         int
+}
+
+func GetClassificationStats(db *sql.DB, since time.Time) (ClassificationStats, error) {
+	var s ClassificationStats
+	err := db.QueryRow(
+		`SELECT COUNT(*), COALESCE(AVG(confidence), 0),
+		        COALESCE(SUM(CASE WHEN confidence < 0.50 THEN 1 ELSE 0 END), 0),
+		        COALESCE(SUM(CASE WHEN confidence >= 0.50 AND confidence < 0.70 THEN 1 ELSE 0 END), 0),
+		        COALESCE(SUM(CASE WHEN confidence >= 0.70 AND confidence < 0.90 THEN 1 ELSE 0 END), 0),
+		        COALESCE(SUM(CASE WHEN confidence >= 0.90 THEN 1 ELSE 0 END), 0)
+		 FROM classification_history WHERE classified_at >= ?`,
+		since,
+	).Scan(&s.TotalClassifications, &s.AvgConfidence,
+		&s.BucketBelow50, &s.Bucket50to70, &s.Bucket70to90, &s.Bucket90Plus)
+	if err != nil {
+		return s, err
+	}
+
+	err = db.QueryRow(
+		`SELECT COUNT(*) FROM classification_corrections WHERE corrected_at >= ?`,
+		since,
+	).Scan(&s.TotalCorrections)
+	return s, err
+}
+
+type SectionCorrectionStat struct {
+	OriginalSectionID string
+	OriginalLabel     string
+	CorrectionCount   int
+}
+
+func GetCorrectionsBySection(db *sql.DB, since time.Time) ([]SectionCorrectionStat, error) {
+	rows, err := db.Query(
+		`SELECT original_section_id, COALESCE(original_label, ''), COUNT(*) as cnt
+		 FROM classification_corrections
+		 WHERE corrected_at >= ?
+		 GROUP BY original_section_id
+		 ORDER BY cnt DESC
+		 LIMIT 10`,
+		since,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []SectionCorrectionStat
+	for rows.Next() {
+		var s SectionCorrectionStat
+		if err := rows.Scan(&s.OriginalSectionID, &s.OriginalLabel, &s.CorrectionCount); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+type WeeklyTrend struct {
+	WeekStart       string
+	Classifications int
+	Corrections     int
+	AvgConfidence   float64
+}
+
+func GetWeeklyClassificationTrend(db *sql.DB, weeks int) ([]WeeklyTrend, error) {
+	rows, err := db.Query(
+		`SELECT
+		    strftime('%Y-%m-%d', classified_at, 'weekday 0', '-6 days') as week_start,
+		    COUNT(*) as classifications,
+		    COALESCE(AVG(confidence), 0) as avg_confidence
+		 FROM classification_history
+		 WHERE classified_at >= date('now', ? || ' days')
+		 GROUP BY week_start
+		 ORDER BY week_start DESC`,
+		-7*weeks,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var trends []WeeklyTrend
+	for rows.Next() {
+		var t WeeklyTrend
+		if err := rows.Scan(&t.WeekStart, &t.Classifications, &t.AvgConfidence); err != nil {
+			return nil, err
+		}
+		trends = append(trends, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Load correction counts per week.
+	corrRows, err := db.Query(
+		`SELECT
+		    strftime('%Y-%m-%d', corrected_at, 'weekday 0', '-6 days') as week_start,
+		    COUNT(*) as corrections
+		 FROM classification_corrections
+		 WHERE corrected_at >= date('now', ? || ' days')
+		 GROUP BY week_start`,
+		-7*weeks,
+	)
+	if err != nil {
+		return trends, nil // non-fatal
+	}
+	defer corrRows.Close()
+
+	corrMap := make(map[string]int)
+	for corrRows.Next() {
+		var ws string
+		var cnt int
+		if err := corrRows.Scan(&ws, &cnt); err != nil {
+			continue
+		}
+		corrMap[ws] = cnt
+	}
+	for i := range trends {
+		if cnt, ok := corrMap[trends[i].WeekStart]; ok {
+			trends[i].Corrections = cnt
+		}
+	}
+	return trends, nil
 }

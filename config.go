@@ -27,6 +27,7 @@ type Config struct {
 	LLMExampleMaxLen int     `yaml:"llm_example_max_chars"`
 	LLMGlossaryPath  string  `yaml:"llm_glossary_path"`
 	LLMGuidePath     string  `yaml:"llm_classification_guide_path"`
+	LLMCriticEnabled bool    `yaml:"llm_critic_enabled"`
 	// Backward compatibility for old key name.
 	ReportTemplatePath string `yaml:"report_template_path"`
 	AnthropicAPIKey    string `yaml:"anthropic_api_key"`
@@ -76,6 +77,7 @@ func LoadConfig() Config {
 	envOverrideInt(&cfg.LLMExampleMaxLen, "LLM_EXAMPLE_MAX_CHARS")
 	envOverride(&cfg.LLMGlossaryPath, "LLM_GLOSSARY_PATH")
 	envOverride(&cfg.LLMGuidePath, "LLM_CLASSIFICATION_GUIDE_PATH")
+	envOverrideBool(&cfg.LLMCriticEnabled, "LLM_CRITIC_ENABLED")
 	// Backward compatibility for old env key.
 	envOverride(&cfg.ReportTemplatePath, "REPORT_TEMPLATE_PATH")
 	envOverride(&cfg.AnthropicAPIKey, "ANTHROPIC_API_KEY")
@@ -216,6 +218,12 @@ func envOverrideInt(field *int, envKey string) {
 			log.Fatalf("invalid %s '%s': %v", envKey, val, err)
 		}
 		*field = parsed
+	}
+}
+
+func envOverrideBool(field *bool, envKey string) {
+	if val := os.Getenv(envKey); val != "" {
+		*field = strings.EqualFold(val, "true") || val == "1"
 	}
 }
 
