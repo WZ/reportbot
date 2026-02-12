@@ -176,7 +176,7 @@ func handleReport(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashComm
 		}
 	}
 
-	items, parseErr := parseReportItems(reportText, author)
+	items, parseErr := parseReportItems(reportText, author, cfg.Location)
 	if parseErr != nil {
 		postEphemeral(api, cmd, parseErr.Error())
 		log.Printf("report parse error user=%s: %v", cmd.UserID, parseErr)
@@ -199,7 +199,7 @@ func handleReport(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashComm
 		}
 	}
 
-	monday, nextMonday := ReportWeekRange(cfg, time.Now())
+	monday, nextMonday := ReportWeekRange(cfg, time.Now().In(cfg.Location))
 	weekItems, err := GetSlackItemsByAuthorAndDateRange(db, author, monday, nextMonday)
 	if err != nil {
 		log.Printf("report weekly items lookup error user=%s author=%s: %v", cmd.UserID, author, err)
@@ -234,7 +234,7 @@ func handleReport(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashComm
 	log.Printf("report saved user=%s author=%s count=%d", cmd.UserID, author, len(items))
 }
 
-func parseReportItems(reportText, author string) ([]WorkItem, error) {
+func parseReportItems(reportText, author string, loc *time.Location) ([]WorkItem, error) {
 	lines := strings.Split(strings.ReplaceAll(reportText, "\r\n", "\n"), "\n")
 	trimmed := make([]string, 0, len(lines))
 	for _, line := range lines {
@@ -262,7 +262,7 @@ func parseReportItems(reportText, author string) ([]WorkItem, error) {
 		return nil, fmt.Errorf("Usage: /report <description> (status)")
 	}
 
-	now := time.Now()
+	now := time.Now().In(loc)
 	items := make([]WorkItem, 0, len(trimmed))
 	for _, line := range trimmed {
 		status := "done"
@@ -300,7 +300,7 @@ func handleFetchMRs(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashCo
 		return
 	}
 
-	monday, nextMonday := ReportWeekRange(cfg, time.Now())
+	monday, nextMonday := ReportWeekRange(cfg, time.Now().In(cfg.Location))
 	log.Printf("fetch-mrs range %s - %s", monday.Format("2006-01-02"), nextMonday.Format("2006-01-02"))
 
 	postEphemeral(api, cmd, fmt.Sprintf("Fetching merged MRs for %s to %s...",
@@ -340,7 +340,7 @@ func handleFetchMRs(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashCo
 			Source:      "gitlab",
 			SourceRef:   mr.WebURL,
 			Status:      mapMRStatus(mr),
-			ReportedAt:  mrReportedAt(mr),
+			ReportedAt:  mrReportedAt(mr, cfg.Location),
 		})
 	}
 
@@ -383,7 +383,7 @@ func handleGenerateReport(api *slack.Client, db *sql.DB, cfg Config, cmd slack.S
 	postEphemeral(api, cmd, fmt.Sprintf("Generating report (mode: %s)...", mode))
 	log.Printf("generate-report mode=%s", mode)
 
-	monday, nextMonday := ReportWeekRange(cfg, time.Now())
+	monday, nextMonday := ReportWeekRange(cfg, time.Now().In(cfg.Location))
 	items, err := GetItemsByDateRange(db, monday, nextMonday)
 	if err != nil {
 		postEphemeral(api, cmd, fmt.Sprintf("Error loading items: %v", err))
@@ -517,7 +517,7 @@ func handleListItems(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashC
 }
 
 func renderListItems(api *slack.Client, db *sql.DB, cfg Config, channelID, userID string, page int) {
-	monday, nextMonday := ReportWeekRange(cfg, time.Now())
+	monday, nextMonday := ReportWeekRange(cfg, time.Now().In(cfg.Location))
 	items, err := GetItemsByDateRange(db, monday, nextMonday)
 	if err != nil {
 		postEphemeralTo(api, channelID, userID, fmt.Sprintf("Error: %v", err))
@@ -665,7 +665,7 @@ func handleListMissing(api *slack.Client, db *sql.DB, cfg Config, cmd slack.Slas
 		return
 	}
 
-	monday, nextMonday := ReportWeekRange(cfg, time.Now())
+	monday, nextMonday := ReportWeekRange(cfg, time.Now().In(cfg.Location))
 	authors, err := GetSlackAuthorsByDateRange(db, monday, nextMonday)
 	if err != nil {
 		postEphemeral(api, cmd, fmt.Sprintf("Error loading items: %v", err))
@@ -892,7 +892,7 @@ func handleViewSubmission(api *slack.Client, db *sql.DB, cfg Config, cb slack.In
 	if status == "other" {
 		status = item.Status
 	}
-	monday, nextMonday := ReportWeekRange(cfg, time.Now())
+	monday, nextMonday := ReportWeekRange(cfg, time.Now().In(cfg.Location))
 	if !itemInRange(item, monday, nextMonday) {
 		return
 	}
@@ -938,7 +938,7 @@ func deleteItemAction(api *slack.Client, db *sql.DB, cfg Config, channelID, user
 		postEphemeralTo(api, channelID, userID, "Item not found.")
 		return
 	}
-	monday, nextMonday := ReportWeekRange(cfg, time.Now())
+	monday, nextMonday := ReportWeekRange(cfg, time.Now().In(cfg.Location))
 	if !itemInRange(item, monday, nextMonday) {
 		postEphemeralTo(api, channelID, userID, "You can only modify this week's items.")
 		return
@@ -964,7 +964,7 @@ func openEditModal(api *slack.Client, db *sql.DB, cfg Config, triggerID, channel
 		postEphemeralTo(api, channelID, userID, "Item not found.")
 		return
 	}
-	monday, nextMonday := ReportWeekRange(cfg, time.Now())
+	monday, nextMonday := ReportWeekRange(cfg, time.Now().In(cfg.Location))
 	if !itemInRange(item, monday, nextMonday) {
 		postEphemeralTo(api, channelID, userID, "You can only modify this week's items.")
 		return
@@ -1113,7 +1113,7 @@ func openDeleteModal(api *slack.Client, db *sql.DB, cfg Config, triggerID, chann
 		postEphemeralTo(api, channelID, userID, "Item not found.")
 		return
 	}
-	monday, nextMonday := ReportWeekRange(cfg, time.Now())
+	monday, nextMonday := ReportWeekRange(cfg, time.Now().In(cfg.Location))
 	if !itemInRange(item, monday, nextMonday) {
 		postEphemeralTo(api, channelID, userID, "You can only modify this week's items.")
 		return
@@ -1233,7 +1233,7 @@ func handleNudge(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashComma
 	}
 
 	// No parameter: nudge only members who haven't reported this week.
-	monday, nextMonday := ReportWeekRange(cfg, time.Now())
+	monday, nextMonday := ReportWeekRange(cfg, time.Now().In(cfg.Location))
 	authors, err := GetSlackAuthorsByDateRange(db, monday, nextMonday)
 	if err != nil {
 		postEphemeral(api, cmd, fmt.Sprintf("Error loading items: %v", err))
@@ -1399,7 +1399,7 @@ func mapMRStatus(mr GitLabMR) string {
 	return "done"
 }
 
-func mrReportedAt(mr GitLabMR) time.Time {
+func mrReportedAt(mr GitLabMR, loc *time.Location) time.Time {
 	if mr.State == "opened" && !mr.UpdatedAt.IsZero() {
 		return mr.UpdatedAt
 	}
@@ -1409,13 +1409,13 @@ func mrReportedAt(mr GitLabMR) time.Time {
 	if !mr.CreatedAt.IsZero() {
 		return mr.CreatedAt
 	}
-	return time.Now()
+	return time.Now().In(loc)
 }
 
 // --- Correction helpers ---
 
 func loadSectionOptionsForModal(cfg Config) []sectionOption {
-	template, _, err := loadTemplateForGeneration(cfg.ReportOutputDir, cfg.TeamName, time.Now())
+	template, _, err := loadTemplateForGeneration(cfg.ReportOutputDir, cfg.TeamName, time.Now().In(cfg.Location))
 	if err != nil {
 		log.Printf("edit modal load template error (non-fatal): %v", err)
 		return nil
@@ -1619,7 +1619,7 @@ func handleRetrospective(api *slack.Client, db *sql.DB, cfg Config, cmd slack.Sl
 		return
 	}
 
-	fourWeeksAgo := time.Now().AddDate(0, 0, -28)
+	fourWeeksAgo := time.Now().In(cfg.Location).AddDate(0, 0, -28)
 	corrections, err := GetRecentCorrections(db, fourWeeksAgo, 200)
 	if err != nil {
 		postEphemeral(api, cmd, fmt.Sprintf("Error loading corrections: %v", err))
