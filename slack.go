@@ -525,11 +525,30 @@ func renderListItems(api *slack.Client, db *sql.DB, cfg Config, channelID, userI
 	}
 
 	// Sort: group by author (first name alphabetically), then by reported_at ascending.
+	// Use synthesizeName to normalize display names (removes aliases/parentheticals).
 	sort.SliceStable(items, func(i, j int) bool {
-		ai := strings.ToLower(strings.TrimSpace(items[i].Author))
-		aj := strings.ToLower(strings.TrimSpace(items[j].Author))
-		if ai != aj {
-			return ai < aj
+		// Normalize author names and extract first token (first name)
+		normI := synthesizeName(items[i].Author)
+		normJ := synthesizeName(items[j].Author)
+		
+		// Extract first name (first token)
+		firstNameI := strings.Fields(normI)
+		firstNameJ := strings.Fields(normJ)
+		
+		var fnI, fnJ string
+		if len(firstNameI) > 0 {
+			fnI = firstNameI[0]
+		}
+		if len(firstNameJ) > 0 {
+			fnJ = firstNameJ[0]
+		}
+		
+		// Compare first names case-insensitively
+		fnILower := strings.ToLower(fnI)
+		fnJLower := strings.ToLower(fnJ)
+		
+		if fnILower != fnJLower {
+			return fnILower < fnJLower
 		}
 		return items[i].ReportedAt.Before(items[j].ReportedAt)
 	})
