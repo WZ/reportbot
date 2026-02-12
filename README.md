@@ -86,7 +86,8 @@ See [docs/agentic-features-overview.md](docs/agentic-features-overview.md) for a
    - `users:read` (to resolve full names for managers/team members)
 4. Under **Event Subscriptions**, subscribe to these bot events:
    - `member_joined_channel` (sends welcome message to new members)
-5. Under **Slash Commands**, create these commands:
+5. Under **Interactivity & Shortcuts**, toggle **Interactivity** on (required for edit/delete modals in `/list`)
+6. Under **Slash Commands**, create these commands:
 
    | Command | Description |
    |---|---|
@@ -101,7 +102,7 @@ See [docs/agentic-features-overview.md](docs/agentic-features-overview.md) for a
    | `/retrospective` | Analyze corrections and suggest improvements |
    | `/help` | Show help and usage |
 
-6. Install the app to your workspace
+7. Install the app to your workspace
 
 ### 2. Configure
 
@@ -333,7 +334,7 @@ Anyone can view this week's items:
 - Members can edit/delete only their own items.
 - Managers can edit/delete all items.
 - Delete uses a confirmation modal.
-- Edit opens a modal to update item text (status can stay in trailing `(done|in progress|in testing|...)` in the edited text).
+- Edit opens a modal with a text field for the description and a dropdown for the status.
 
 ### Weekly Nudge
 

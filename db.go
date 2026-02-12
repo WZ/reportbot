@@ -63,14 +63,21 @@ func InitDB(path string) (*sql.DB, error) {
 		return nil, err
 	}
 
+	// Migration: add author_id column if missing.
+	var colCount int
+	_ = db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('work_items') WHERE name = 'author_id'`).Scan(&colCount)
+	if colCount == 0 {
+		_, _ = db.Exec(`ALTER TABLE work_items ADD COLUMN author_id TEXT DEFAULT ''`)
+	}
+
 	return db, nil
 }
 
 func InsertWorkItem(db *sql.DB, item WorkItem) error {
 	_, err := db.Exec(
-		`INSERT INTO work_items (description, author, source, source_ref, category, status, ticket_ids, reported_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		item.Description, item.Author, item.Source, item.SourceRef,
+		`INSERT INTO work_items (description, author, author_id, source, source_ref, category, status, ticket_ids, reported_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		item.Description, item.Author, item.AuthorID, item.Source, item.SourceRef,
 		item.Category, item.Status, item.TicketIDs, item.ReportedAt,
 	)
 	return err
@@ -84,8 +91,8 @@ func InsertWorkItems(db *sql.DB, items []WorkItem) (int, error) {
 	defer tx.Rollback()
 
 	stmt, err := tx.Prepare(
-		`INSERT INTO work_items (description, author, source, source_ref, category, status, ticket_ids, reported_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO work_items (description, author, author_id, source, source_ref, category, status, ticket_ids, reported_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 	)
 	if err != nil {
 		return 0, err
@@ -95,7 +102,7 @@ func InsertWorkItems(db *sql.DB, items []WorkItem) (int, error) {
 	inserted := 0
 	for _, item := range items {
 		_, err := stmt.Exec(
-			item.Description, item.Author, item.Source, item.SourceRef,
+			item.Description, item.Author, item.AuthorID, item.Source, item.SourceRef,
 			item.Category, item.Status, item.TicketIDs, item.ReportedAt,
 		)
 		if err != nil {
@@ -115,7 +122,7 @@ func SourceRefExists(db *sql.DB, sourceRef string) (bool, error) {
 
 func GetItemsByDateRange(db *sql.DB, from, to time.Time) ([]WorkItem, error) {
 	rows, err := db.Query(
-		`SELECT id, description, author, source, source_ref, category, status, ticket_ids, reported_at, created_at
+		`SELECT id, description, author, author_id, source, source_ref, category, status, ticket_ids, reported_at, created_at
 		 FROM work_items WHERE reported_at >= ? AND reported_at < ? ORDER BY category, author, reported_at, id`,
 		from, to,
 	)
@@ -128,7 +135,7 @@ func GetItemsByDateRange(db *sql.DB, from, to time.Time) ([]WorkItem, error) {
 	for rows.Next() {
 		var item WorkItem
 		err := rows.Scan(
-			&item.ID, &item.Description, &item.Author, &item.Source,
+			&item.ID, &item.Description, &item.Author, &item.AuthorID, &item.Source,
 			&item.SourceRef, &item.Category, &item.Status, &item.TicketIDs,
 			&item.ReportedAt, &item.CreatedAt,
 		)
@@ -143,11 +150,11 @@ func GetItemsByDateRange(db *sql.DB, from, to time.Time) ([]WorkItem, error) {
 func GetWorkItemByID(db *sql.DB, id int64) (WorkItem, error) {
 	var item WorkItem
 	err := db.QueryRow(
-		`SELECT id, description, author, source, source_ref, category, status, ticket_ids, reported_at, created_at
+		`SELECT id, description, author, author_id, source, source_ref, category, status, ticket_ids, reported_at, created_at
 		 FROM work_items WHERE id = ?`,
 		id,
 	).Scan(
-		&item.ID, &item.Description, &item.Author, &item.Source,
+		&item.ID, &item.Description, &item.Author, &item.AuthorID, &item.Source,
 		&item.SourceRef, &item.Category, &item.Status, &item.TicketIDs,
 		&item.ReportedAt, &item.CreatedAt,
 	)
@@ -171,7 +178,7 @@ func DeleteWorkItemByID(db *sql.DB, id int64) error {
 
 func GetPendingSlackItemsByAuthorAndDateRange(db *sql.DB, author string, from, to time.Time) ([]WorkItem, error) {
 	rows, err := db.Query(
-		`SELECT id, description, author, source, source_ref, category, status, ticket_ids, reported_at, created_at
+		`SELECT id, description, author, author_id, source, source_ref, category, status, ticket_ids, reported_at, created_at
 		 FROM work_items
 		 WHERE author = ? AND source = 'slack' AND reported_at >= ? AND reported_at < ?
 		   AND lower(trim(status)) <> 'done'
@@ -187,7 +194,7 @@ func GetPendingSlackItemsByAuthorAndDateRange(db *sql.DB, author string, from, t
 	for rows.Next() {
 		var item WorkItem
 		err := rows.Scan(
-			&item.ID, &item.Description, &item.Author, &item.Source,
+			&item.ID, &item.Description, &item.Author, &item.AuthorID, &item.Source,
 			&item.SourceRef, &item.Category, &item.Status, &item.TicketIDs,
 			&item.ReportedAt, &item.CreatedAt,
 		)
@@ -201,7 +208,7 @@ func GetPendingSlackItemsByAuthorAndDateRange(db *sql.DB, author string, from, t
 
 func GetSlackItemsByAuthorAndDateRange(db *sql.DB, author string, from, to time.Time) ([]WorkItem, error) {
 	rows, err := db.Query(
-		`SELECT id, description, author, source, source_ref, category, status, ticket_ids, reported_at, created_at
+		`SELECT id, description, author, author_id, source, source_ref, category, status, ticket_ids, reported_at, created_at
 		 FROM work_items
 		 WHERE author = ? AND source = 'slack' AND reported_at >= ? AND reported_at < ?
 		 ORDER BY reported_at DESC, id DESC`,
@@ -216,7 +223,7 @@ func GetSlackItemsByAuthorAndDateRange(db *sql.DB, author string, from, to time.
 	for rows.Next() {
 		var item WorkItem
 		err := rows.Scan(
-			&item.ID, &item.Description, &item.Author, &item.Source,
+			&item.ID, &item.Description, &item.Author, &item.AuthorID, &item.Source,
 			&item.SourceRef, &item.Category, &item.Status, &item.TicketIDs,
 			&item.ReportedAt, &item.CreatedAt,
 		)
