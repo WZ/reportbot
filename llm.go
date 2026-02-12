@@ -671,7 +671,11 @@ func parseCriticResponse(responseText string) ([]criticFlagged, error) {
 
 	var flagged []criticFlagged
 	if err := json.Unmarshal([]byte(responseText), &flagged); err != nil {
-		return nil, fmt.Errorf("parsing critic response: %w (response: %s)", err, responseText)
+		truncated := responseText
+		if len(truncated) > 512 {
+			truncated = truncated[:512] + fmt.Sprintf("... [truncated, total_length=%d]", len(responseText))
+		}
+		return nil, fmt.Errorf("parsing critic response: %w (truncated response: %s)", err, truncated)
 	}
 	return flagged, nil
 }

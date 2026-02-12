@@ -432,7 +432,7 @@ func GetClassifiedItemsWithSections(db *sql.DB, since time.Time, limit int) ([]h
 		 FROM classification_history ch
 		 JOIN work_items w ON w.id = ch.work_item_id
 		 WHERE ch.confidence >= 0.70 AND ch.classified_at >= ?
-		 ORDER BY ch.classified_at DESC
+		 ORDER BY ch.classified_at DESC, ch.id DESC
 		 LIMIT ?`,
 		since, limit,
 	)
@@ -506,7 +506,7 @@ type SectionCorrectionStat struct {
 
 func GetCorrectionsBySection(db *sql.DB, since time.Time) ([]SectionCorrectionStat, error) {
 	rows, err := db.Query(
-		`SELECT original_section_id, COALESCE(original_label, ''), COUNT(*) as cnt
+		`SELECT original_section_id, COALESCE(MAX(original_label), ''), COUNT(*) as cnt
 		 FROM classification_corrections
 		 WHERE corrected_at >= ?
 		 GROUP BY original_section_id
@@ -537,17 +537,17 @@ type WeeklyTrend struct {
 	AvgConfidence   float64
 }
 
-func GetWeeklyClassificationTrend(db *sql.DB, weeks int) ([]WeeklyTrend, error) {
+func GetWeeklyClassificationTrend(db *sql.DB, since time.Time) ([]WeeklyTrend, error) {
 	rows, err := db.Query(
 		`SELECT
 		    strftime('%Y-%m-%d', classified_at, 'weekday 0', '-6 days') as week_start,
 		    COUNT(*) as classifications,
 		    COALESCE(AVG(confidence), 0) as avg_confidence
 		 FROM classification_history
-		 WHERE classified_at >= date('now', ? || ' days')
+		 WHERE classified_at >= ?
 		 GROUP BY week_start
 		 ORDER BY week_start DESC`,
-		-7*weeks,
+		since,
 	)
 	if err != nil {
 		return nil, err
@@ -572,9 +572,9 @@ func GetWeeklyClassificationTrend(db *sql.DB, weeks int) ([]WeeklyTrend, error) 
 		    strftime('%Y-%m-%d', corrected_at, 'weekday 0', '-6 days') as week_start,
 		    COUNT(*) as corrections
 		 FROM classification_corrections
-		 WHERE corrected_at >= date('now', ? || ' days')
+		 WHERE corrected_at >= ?
 		 GROUP BY week_start`,
-		-7*weeks,
+		since,
 	)
 	if err != nil {
 		return trends, nil // non-fatal
