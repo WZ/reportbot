@@ -30,7 +30,7 @@ Configuration is layered: `config.yaml` is loaded first, then environment variab
 - **Slack**: `slack_bot_token` (xoxb-...), `slack_app_token` (xapp-...)
 - **GitLab**: `gitlab_url`, `gitlab_token`, `gitlab_group_id` (numeric ID or group path)
 - **LLM**: `llm_provider` ("anthropic" or "openai"), `anthropic_api_key` or `openai_api_key`
-- **Permissions**: `manager_slack_ids` (list of Slack user IDs, recommended) or `manager` (list of Slack full names, legacy fallback) — controls access to `/fetch-mrs`, `/generate-report`, `/check`, `/nudge`, `/retrospective`
+- **Permissions**: `manager_slack_ids` (list of Slack user IDs) — controls access to `/fetch-mrs`, `/generate-report`, `/check`, `/nudge`, `/retrospective`
 - **Nudge**: `team_members` (list of Slack user IDs to DM), `nudge_day` (Monday-Sunday), `nudge_time` (HH:MM 24h format)
 - **Categories**: `categories` (list, defines report section order and AI classification options)
 - **Team**: `team_name` (used in report header and filename)
@@ -42,7 +42,7 @@ See `config.yaml.example` for full reference.
 The application has a flat structure with 12 Go source files (+ 3 test files):
 
 - **main.go** — Entry point: loads config, initializes DB, creates Slack client, starts nudge scheduler and Socket Mode bot
-- **config.go** — Config struct, YAML + env loading with validation, `IsManagerName()` permission check
+- **config.go** — Config struct, YAML + env loading with validation, `IsManagerID()` permission check
 - **models.go** — Core types (`WorkItem`, `GitLabMR`, `ReportSection`) and `CurrentWeekRange()` calendar week calculator
 - **db.go** — SQLite schema and CRUD: `work_items`, `classification_history`, `classification_corrections` tables
 - **slack.go** — Socket Mode bot, slash command handlers (`/report`, `/fetch-mrs`, `/generate-report`, `/list`, `/check`, `/nudge`, `/retrospective`, `/help`), edit/delete modals, uncertainty sampling, correction capture
@@ -84,7 +84,7 @@ The application has a flat structure with 12 Go source files (+ 3 test files):
 - Slash commands must be **acked immediately** to avoid Slack's 3-second timeout
 - All command processing happens in goroutines after ack
 - Responses use **ephemeral messages** (`PostEphemeral`) for feedback, except `/generate-report` which posts the full report to the channel
-- Permission check: `config.go:IsManagerID()` checks Slack user ID against `manager_slack_ids` first, then `IsManagerName()` falls back to name matching against `manager` list
+- Permission check: `config.go:IsManagerID()` checks Slack user ID against `manager_slack_ids`
 
 ## GitLab Integration Notes
 
@@ -122,6 +122,6 @@ Manual testing for Slack integration:
 - **`anthropic.Model` type error**: Cast string model name with `anthropic.Model(model)`
 - **SQLite CGO disabled**: Must build with `CGO_ENABLED=1`
 - **Slash commands not visible**: Reinstall Slack app after creating commands
-- **Permission denied on `/fetch-mrs`**: Add user's Slack full name to `manager` list in config
+- **Permission denied on `/fetch-mrs`**: Add user's Slack user ID to `manager_slack_ids` in config
 - **Nudge not firing**: Check logs for "Next nudge at..." message, verify `team_members` is not empty
 - **GitLab 401**: Verify `gitlab_token` has `read_api` scope and `gitlab_group_id` is accessible

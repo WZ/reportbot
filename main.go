@@ -12,7 +12,7 @@ func main() {
 	log.Printf(
 		"Config loaded. Team=%s Managers=%d TeamMembers=%d Timezone=%s LLMBatchSize=%d LLMConfidenceThreshold=%.2f LLMExampleCount=%d LLMExampleMaxChars=%d LLMGlossaryPath=%s",
 		cfg.TeamName,
-		len(cfg.Managers),
+		len(cfg.ManagerSlackIDs),
 		len(cfg.TeamMembers),
 		cfg.Timezone,
 		cfg.LLMBatchSize,

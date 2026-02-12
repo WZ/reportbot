@@ -161,7 +161,7 @@ func handleReport(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashComm
 	// /report {Member Name} Description (status)
 	reportText := text
 	if match := delegatedAuthorRegex.FindStringSubmatch(text); len(match) > 1 {
-		if cfg.IsManagerName(author) {
+		if cfg.IsManagerID(cmd.UserID) {
 			delegated := strings.TrimSpace(match[1])
 			remaining := strings.TrimSpace(text[len(match[0]):])
 			if delegated != "" && remaining != "" {
@@ -1321,27 +1321,8 @@ func handleHelp(api *slack.Client, cfg Config, cmd slack.SlashCommand) {
 	postEphemeral(api, cmd, strings.Join(lines, "\n"))
 }
 
-func isManagerUser(api *slack.Client, cfg Config, userID string) (bool, error) {
-	// Prefer immutable Slack user ID check.
-	if cfg.IsManagerID(userID) {
-		return true, nil
-	}
-	// Fallback: name-based matching for backward compatibility.
-	user, err := api.GetUserInfo(userID)
-	if err != nil {
-		return false, err
-	}
-	candidates := []string{
-		user.RealName,
-		user.Profile.DisplayName,
-		user.Name,
-	}
-	for _, c := range candidates {
-		if c != "" && cfg.IsManagerName(c) {
-			return true, nil
-		}
-	}
-	return false, nil
+func isManagerUser(_ *slack.Client, cfg Config, userID string) (bool, error) {
+	return cfg.IsManagerID(userID), nil
 }
 
 func resolveNudgeTargets(api *slack.Client, text string) ([]string, error) {

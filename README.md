@@ -134,13 +134,9 @@ llm_example_max_chars: 140      # optional: max chars per example snippet
 llm_glossary_path: "./llm_glossary.yaml"    # optional glossary memory file
 anthropic_api_key: "sk-ant-..."
 
-# Permissions (Slack user IDs — recommended, immutable)
+# Permissions (Slack user IDs)
 manager_slack_ids:
   - "U01ABC123"
-
-# Permissions (Slack full names — legacy fallback, spoofable)
-manager:
-  - "Member One"
 
 # Team members (Slack full names) - receive nudge reminders
 team_members:
@@ -180,8 +176,7 @@ export LLM_CONFIDENCE_THRESHOLD=0.70
 export LLM_EXAMPLE_COUNT=20
 export LLM_EXAMPLE_MAX_CHARS=140
 export LLM_GLOSSARY_PATH=./llm_glossary.yaml
-export MANAGER_SLACK_IDS="U01ABC123,U02DEF456"  # Comma-separated Slack user IDs (recommended)
-export MANAGER="Member One,Member Two"          # Comma-separated Slack full names (legacy fallback)
+export MANAGER_SLACK_IDS="U01ABC123,U02DEF456"  # Comma-separated Slack user IDs
 export REPORT_CHANNEL_ID=C01234567
 export MONDAY_CUTOFF_TIME=12:00
 export TIMEZONE=America/Los_Angeles
@@ -353,7 +348,7 @@ Requires the `im:write` bot token scope in your Slack app.
 
 ## Permissions
 
-Manager commands (`/fetch-mrs`, `/generate-report`, `/check`, `/nudge`, `/retrospective`) are restricted to users listed in `manager_slack_ids` (Slack user IDs, recommended) or `manager` (Slack full names, legacy fallback). Use `manager_slack_ids` to prevent privilege escalation via display name changes.
+Manager commands (`/fetch-mrs`, `/generate-report`, `/check`, `/nudge`, `/retrospective`) are restricted to Slack user IDs listed in `manager_slack_ids`.
 
 ## Report Structure
 
