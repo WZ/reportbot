@@ -160,6 +160,7 @@ func handleReport(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashComm
 	// Manager-only delegated reporting syntax:
 	// /report {Member Name} Description (status)
 	reportText := text
+	authorID := cmd.UserID
 	if match := delegatedAuthorRegex.FindStringSubmatch(text); len(match) > 1 {
 		if cfg.IsManagerID(cmd.UserID) {
 			delegated := strings.TrimSpace(match[1])
@@ -167,6 +168,9 @@ func handleReport(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashComm
 			if delegated != "" && remaining != "" {
 				author = resolveDelegatedAuthorName(delegated, cfg.TeamMembers)
 				reportText = remaining
+				if ids, _, err := resolveUserIDs(api, []string{author}); err == nil && len(ids) > 0 {
+					authorID = ids[0]
+				}
 			}
 		}
 	}
@@ -178,7 +182,7 @@ func handleReport(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashComm
 		return
 	}
 	for i := range items {
-		items[i].AuthorID = cmd.UserID
+		items[i].AuthorID = authorID
 	}
 	if len(items) == 1 {
 		if err := InsertWorkItem(db, items[0]); err != nil {
