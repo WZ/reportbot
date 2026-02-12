@@ -6,6 +6,7 @@ type WorkItem struct {
 	ID          int64
 	Description string
 	Author      string
+	AuthorID    string // Slack user ID (immutable, for authorization)
 	Source      string // "slack" or "gitlab"
 	SourceRef   string // GitLab MR URL or empty
 	Category    string

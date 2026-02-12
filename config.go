@@ -36,7 +36,7 @@ type Config struct {
 	ReportOutputDir string `yaml:"report_output_dir"`
 	ReportChannelID string `yaml:"report_channel_id"`
 
-	Managers         []string `yaml:"manager"`
+	ManagerSlackIDs  []string `yaml:"manager_slack_ids"`
 	TeamMembers      []string `yaml:"team_members"`
 	NudgeDay         string   `yaml:"nudge_day"`
 	NudgeTime        string   `yaml:"nudge_time"`
@@ -87,12 +87,12 @@ func LoadConfig() Config {
 	envOverride(&cfg.MondayCutoffTime, "MONDAY_CUTOFF_TIME")
 	envOverride(&cfg.Timezone, "TIMEZONE")
 
-	if names := os.Getenv("MANAGER"); names != "" {
-		cfg.Managers = nil
-		for _, name := range strings.Split(names, ",") {
-			name = strings.TrimSpace(name)
-			if name != "" {
-				cfg.Managers = append(cfg.Managers, name)
+	if ids := os.Getenv("MANAGER_SLACK_IDS"); ids != "" {
+		cfg.ManagerSlackIDs = nil
+		for _, id := range strings.Split(ids, ",") {
+			id = strings.TrimSpace(id)
+			if id != "" {
+				cfg.ManagerSlackIDs = append(cfg.ManagerSlackIDs, id)
 			}
 		}
 	}
@@ -227,10 +227,9 @@ func envOverrideFloat(field *float64, envKey string) {
 	}
 }
 
-func (c Config) IsManagerName(name string) bool {
-	name = strings.ToLower(strings.TrimSpace(name))
-	for _, manager := range c.Managers {
-		if strings.ToLower(strings.TrimSpace(manager)) == name {
+func (c Config) IsManagerID(userID string) bool {
+	for _, id := range c.ManagerSlackIDs {
+		if strings.TrimSpace(id) == userID {
 			return true
 		}
 	}

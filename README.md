@@ -86,7 +86,8 @@ See [docs/agentic-features-overview.md](docs/agentic-features-overview.md) for a
    - `users:read` (to resolve full names for managers/team members)
 4. Under **Event Subscriptions**, subscribe to these bot events:
    - `member_joined_channel` (sends welcome message to new members)
-5. Under **Slash Commands**, create these commands:
+5. Under **Interactivity & Shortcuts**, toggle **Interactivity** on (required for edit/delete modals in `/list`)
+6. Under **Slash Commands**, create these commands:
 
    | Command | Description |
    |---|---|
@@ -101,7 +102,7 @@ See [docs/agentic-features-overview.md](docs/agentic-features-overview.md) for a
    | `/retrospective` | Analyze corrections and suggest improvements |
    | `/help` | Show help and usage |
 
-6. Install the app to your workspace
+7. Install the app to your workspace
 
 ### 2. Configure
 
@@ -133,9 +134,9 @@ llm_example_max_chars: 140      # optional: max chars per example snippet
 llm_glossary_path: "./llm_glossary.yaml"    # optional glossary memory file
 anthropic_api_key: "sk-ant-..."
 
-# Permissions (Slack full names)
-manager:
-  - "Member One"
+# Permissions (Slack user IDs)
+manager_slack_ids:
+  - "U01ABC123"
 
 # Team members (Slack full names) - receive nudge reminders
 team_members:
@@ -175,7 +176,7 @@ export LLM_CONFIDENCE_THRESHOLD=0.70
 export LLM_EXAMPLE_COUNT=20
 export LLM_EXAMPLE_MAX_CHARS=140
 export LLM_GLOSSARY_PATH=./llm_glossary.yaml
-export MANAGER="Member One,Member Two"   # Comma-separated Slack full names
+export MANAGER_SLACK_IDS="U01ABC123,U02DEF456"  # Comma-separated Slack user IDs
 export REPORT_CHANNEL_ID=C01234567
 export MONDAY_CUTOFF_TIME=12:00
 export TIMEZONE=America/Los_Angeles
@@ -333,7 +334,7 @@ Anyone can view this week's items:
 - Members can edit/delete only their own items.
 - Managers can edit/delete all items.
 - Delete uses a confirmation modal.
-- Edit opens a modal to update item text (status can stay in trailing `(done|in progress|in testing|...)` in the edited text).
+- Edit opens a modal with a text field for the description and a dropdown for the status.
 
 ### Weekly Nudge
 
@@ -347,7 +348,7 @@ Requires the `im:write` bot token scope in your Slack app.
 
 ## Permissions
 
-Manager commands (`/fetch-mrs`, `/generate-report`, `/check`, `/nudge`, `/retrospective`) are restricted to Slack full names listed in `manager`.
+Manager commands (`/fetch-mrs`, `/generate-report`, `/check`, `/nudge`, `/retrospective`) are restricted to Slack user IDs listed in `manager_slack_ids`.
 
 ## Report Structure
 

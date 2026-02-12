@@ -50,29 +50,28 @@ func StartSlackBot(cfg Config, db *sql.DB, api *slack.Client) error {
 
 	go func() {
 		for evt := range client.Events {
-			log.Printf("socket-mode event type=%s", evt.Type)
 			switch evt.Type {
 			case socketmode.EventTypeSlashCommand:
+				client.Ack(*evt.Request)
 				cmd, ok := evt.Data.(slack.SlashCommand)
 				if !ok {
 					continue
 				}
 				log.Printf("Slash command received: %s from user=%s channel=%s", cmd.Command, cmd.UserID, cmd.ChannelID)
-				client.Ack(*evt.Request)
 				go handleSlashCommand(client, api, db, cfg, cmd)
 			case socketmode.EventTypeEventsAPI:
+				client.Ack(*evt.Request)
 				eventsAPIEvent, ok := evt.Data.(slackevents.EventsAPIEvent)
 				if !ok {
 					continue
 				}
-				client.Ack(*evt.Request)
 				go handleEventsAPI(api, cfg, eventsAPIEvent)
 			case socketmode.EventTypeInteractive:
+				client.Ack(*evt.Request)
 				callback, ok := evt.Data.(slack.InteractionCallback)
 				if !ok {
 					continue
 				}
-				client.Ack(*evt.Request)
 				go handleInteraction(api, db, cfg, callback)
 			}
 		}
@@ -146,7 +145,7 @@ func handleMemberJoined(api *slack.Client, cfg Config, ev *slackevents.MemberJoi
 func handleReport(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashCommand) {
 	text := strings.TrimSpace(cmd.Text)
 	if text == "" {
-		postEphemeral(api, cmd, "Usage: /report <description> (status)\nExample: /report [mantis_id] Add pagination to user list API (done)\nMultiline: /report Item A (in progress)\\nItem B (done)")
+		postEphemeral(api, cmd, "Usage: /report <description> (status)\nExample: /report [mantis_id] Add pagination to user list API (done)\nMultiline (separate items with newlines, e.g. Shift+Enter): /report Item A (in progress)\\nItem B (done)")
 		return
 	}
 
@@ -162,13 +161,17 @@ func handleReport(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashComm
 	// Manager-only delegated reporting syntax:
 	// /report {Member Name} Description (status)
 	reportText := text
+	authorID := cmd.UserID
 	if match := delegatedAuthorRegex.FindStringSubmatch(text); len(match) > 1 {
-		if cfg.IsManagerName(author) {
+		if cfg.IsManagerID(cmd.UserID) {
 			delegated := strings.TrimSpace(match[1])
 			remaining := strings.TrimSpace(text[len(match[0]):])
 			if delegated != "" && remaining != "" {
 				author = resolveDelegatedAuthorName(delegated, cfg.TeamMembers)
 				reportText = remaining
+				if ids, _, err := resolveUserIDs(api, []string{author}); err == nil && len(ids) > 0 {
+					authorID = ids[0]
+				}
 			}
 		}
 	}
@@ -178,6 +181,9 @@ func handleReport(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashComm
 		postEphemeral(api, cmd, parseErr.Error())
 		log.Printf("report parse error user=%s: %v", cmd.UserID, parseErr)
 		return
+	}
+	for i := range items {
+		items[i].AuthorID = authorID
 	}
 	if len(items) == 1 {
 		if err := InsertWorkItem(db, items[0]); err != nil {
@@ -525,31 +531,17 @@ func renderListItems(api *slack.Client, db *sql.DB, cfg Config, channelID, userI
 		return
 	}
 
+	// Precompute sort keys: lowercase first name from synthesized display name.
+	sortKeys := make([]string, len(items))
+	for idx := range items {
+		if fields := strings.Fields(synthesizeName(items[idx].Author)); len(fields) > 0 {
+			sortKeys[idx] = strings.ToLower(fields[0])
+		}
+	}
 	// Sort: group by author (first name alphabetically), then by reported_at ascending.
-	// Use synthesizeName to normalize display names (removes aliases/parentheticals).
 	sort.SliceStable(items, func(i, j int) bool {
-		// Normalize author names and extract first token (first name)
-		normI := synthesizeName(items[i].Author)
-		normJ := synthesizeName(items[j].Author)
-		
-		// Extract first name (first token)
-		firstNameI := strings.Fields(normI)
-		firstNameJ := strings.Fields(normJ)
-		
-		var fnI, fnJ string
-		if len(firstNameI) > 0 {
-			fnI = firstNameI[0]
-		}
-		if len(firstNameJ) > 0 {
-			fnJ = firstNameJ[0]
-		}
-		
-		// Compare first names case-insensitively
-		fnILower := strings.ToLower(fnI)
-		fnJLower := strings.ToLower(fnJ)
-		
-		if fnILower != fnJLower {
-			return fnILower < fnJLower
+		if sortKeys[i] != sortKeys[j] {
+			return sortKeys[i] < sortKeys[j]
 		}
 		return items[i].ReportedAt.Before(items[j].ReportedAt)
 	})
@@ -847,6 +839,12 @@ func handleViewSubmission(api *slack.Client, db *sql.DB, cfg Config, cb slack.In
 			return
 		}
 		channelID := strings.TrimSpace(parts[1])
+		if channelID == "" {
+			channelID = cb.Container.ChannelID
+		}
+		if channelID == "" {
+			channelID = cb.Channel.ID
+		}
 		itemID, err := strconv.ParseInt(strings.TrimPrefix(parts[0], modalMetaPrefix), 10, 64)
 		if err != nil {
 			return
@@ -1163,6 +1161,11 @@ func canManageItem(item WorkItem, isManager bool, user *slack.User) bool {
 	if user == nil {
 		return false
 	}
+	// Prefer immutable Slack user ID when available.
+	if item.AuthorID != "" {
+		return user.ID == item.AuthorID
+	}
+	// Fallback: fuzzy name matching for legacy items without AuthorID.
 	candidates := []string{
 		strings.TrimSpace(user.Profile.DisplayName),
 		strings.TrimSpace(user.RealName),
@@ -1288,10 +1291,10 @@ func handleHelp(api *slack.Client, cfg Config, cmd slack.SlashCommand) {
 		"`/report <description> (status)` — Report a work item.",
 		"`/rpt` — Alias of `/report`.",
 		">*Example:* `/report [mantis_id] Add pagination to user list API (done)`",
-		">*Multiline* (each with own status):",
+		">*Multiline* (each with own status, use Shift+Enter for newlines):",
 		">```/report Item A (in progress)",
 		">Item B (done)```",
-		">*Shared status* (applies to all items):",
+		">*Shared status* (last line applies to all items):",
 		">```/report Item A",
 		">Item B",
 		">(in progress)```",
@@ -1317,23 +1320,8 @@ func handleHelp(api *slack.Client, cfg Config, cmd slack.SlashCommand) {
 	postEphemeral(api, cmd, strings.Join(lines, "\n"))
 }
 
-func isManagerUser(api *slack.Client, cfg Config, userID string) (bool, error) {
-	user, err := api.GetUserInfo(userID)
-	if err != nil {
-		return false, err
-	}
-
-	candidates := []string{
-		user.RealName,
-		user.Profile.DisplayName,
-		user.Name,
-	}
-	for _, c := range candidates {
-		if c != "" && cfg.IsManagerName(c) {
-			return true, nil
-		}
-	}
-	return false, nil
+func isManagerUser(_ *slack.Client, cfg Config, userID string) (bool, error) {
+	return cfg.IsManagerID(userID), nil
 }
 
 func resolveNudgeTargets(api *slack.Client, text string) ([]string, error) {
