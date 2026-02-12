@@ -34,6 +34,7 @@ type TemplateItem struct {
 	TicketIDs   string
 	Status      string
 	IsNew       bool
+	ReportedAt  time.Time
 }
 
 type sectionOption struct {
@@ -361,6 +362,7 @@ func mergeIncomingItems(
 			TicketIDs:   tickets,
 			Status:      status,
 			IsNew:       true,
+			ReportedAt:  item.ReportedAt,
 		}
 
 		if useLLM {
@@ -409,12 +411,7 @@ func chooseNormalizedStatus(incomingStatus, llmStatus string, useLLM bool) strin
 			return normalizeStatus(llmStatus)
 		}
 	}
-	switch normalizeStatus(incomingStatus) {
-	case "done", "in testing", "in progress":
-		return normalizeStatus(incomingStatus)
-	default:
-		return "other"
-	}
+	return normalizeStatus(incomingStatus)
 }
 
 type dupTarget struct {
@@ -524,21 +521,22 @@ func reorderTemplateItems(t *ReportTemplate) {
 }
 
 func reorderItems(items []TemplateItem) []TemplateItem {
-	buckets := []int{0, 1, 2, 3}
-	var out []TemplateItem
-	for _, bucket := range buckets {
-		for _, item := range items {
-			if statusBucket(item.Status) == bucket && !item.IsNew {
-				out = append(out, item)
-			}
+	sorted := make([]TemplateItem, len(items))
+	copy(sorted, items)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		bi, bj := statusBucket(sorted[i].Status), statusBucket(sorted[j].Status)
+		if bi != bj {
+			return bi < bj
 		}
-		for _, item := range items {
-			if statusBucket(item.Status) == bucket && item.IsNew {
-				out = append(out, item)
-			}
+		// Within same status bucket: items without timestamp (carried over) first,
+		// then sort by reported_at ascending (newly added at the bottom).
+		zi, zj := sorted[i].ReportedAt.IsZero(), sorted[j].ReportedAt.IsZero()
+		if zi != zj {
+			return zi
 		}
-	}
-	return out
+		return sorted[i].ReportedAt.Before(sorted[j].ReportedAt)
+	})
+	return sorted
 }
 
 func itemIdentityKey(item TemplateItem) string {
@@ -670,7 +668,7 @@ func normalizeStatus(status string) string {
 	case "in progress":
 		return "in progress"
 	default:
-		return s
+		return strings.TrimSpace(status)
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -338,7 +339,7 @@ func handleFetchMRs(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashCo
 	}
 
 	if len(newItems) == 0 {
-		postEphemeral(api, cmd, fmt.Sprintf("Found %d merged MRs, all already tracked.", len(mrs)))
+		postEphemeral(api, cmd, fmt.Sprintf("Found %d MRs (merged+open), all already tracked.", len(mrs)))
 		log.Printf("fetch-mrs all tracked")
 		return
 	}
@@ -523,6 +524,16 @@ func renderListItems(api *slack.Client, db *sql.DB, cfg Config, channelID, userI
 		log.Printf("list-items empty")
 		return
 	}
+
+	// Sort: group by author (first name alphabetically), then by reported_at ascending.
+	sort.SliceStable(items, func(i, j int) bool {
+		ai := strings.ToLower(strings.TrimSpace(items[i].Author))
+		aj := strings.ToLower(strings.TrimSpace(items[j].Author))
+		if ai != aj {
+			return ai < aj
+		}
+		return items[i].ReportedAt.Before(items[j].ReportedAt)
+	})
 
 	if page < 0 {
 		page = 0
@@ -859,6 +870,11 @@ func handleViewSubmission(api *slack.Client, db *sql.DB, cfg Config, cb slack.In
 		log.Printf("edit modal load item error id=%d: %v", itemID, err)
 		return
 	}
+
+	// Preserve original free-text status when "other" is selected.
+	if status == "other" {
+		status = item.Status
+	}
 	monday, nextMonday := ReportWeekRange(cfg, time.Now())
 	if !itemInRange(item, monday, nextMonday) {
 		return
@@ -952,8 +968,21 @@ func openEditModal(api *slack.Client, db *sql.DB, cfg Config, triggerID, channel
 		slack.NewOptionBlockObject("done", slack.NewTextBlockObject(slack.PlainTextType, "done", false, false), nil),
 		slack.NewOptionBlockObject("in testing", slack.NewTextBlockObject(slack.PlainTextType, "in testing", false, false), nil),
 		slack.NewOptionBlockObject("in progress", slack.NewTextBlockObject(slack.PlainTextType, "in progress", false, false), nil),
-		// Allow preserving uncommon statuses.
-		slack.NewOptionBlockObject("other", slack.NewTextBlockObject(slack.PlainTextType, "other", false, false), nil),
+	}
+	cur := normalizeStatus(item.Status)
+	if cur == "" {
+		cur = "done"
+	}
+	// If the current status is a free-text value, add it as a custom option.
+	if cur != "done" && cur != "in testing" && cur != "in progress" {
+		displayStatus := item.Status
+		runes := []rune(displayStatus)
+		if len(runes) > 70 {
+			displayStatus = string(runes[:70]) + "..."
+		}
+		statusOptions = append(statusOptions,
+			slack.NewOptionBlockObject("other", slack.NewTextBlockObject(slack.PlainTextType, displayStatus, false, false), nil),
+		)
 	}
 	statusSelect := slack.NewOptionsSelectBlockElement(
 		slack.OptTypeStatic,
@@ -961,10 +990,6 @@ func openEditModal(api *slack.Client, db *sql.DB, cfg Config, triggerID, channel
 		editActionStatus,
 		statusOptions...,
 	)
-	cur := normalizeStatus(item.Status)
-	if cur == "" {
-		cur = "done"
-	}
 	found := false
 	for _, o := range statusOptions {
 		if o.Value == cur {
@@ -973,8 +998,11 @@ func openEditModal(api *slack.Client, db *sql.DB, cfg Config, triggerID, channel
 			break
 		}
 	}
-	if !found {
-		statusSelect.InitialOption = statusOptions[len(statusOptions)-1]
+	if !found && len(statusOptions) == 4 {
+		// Pre-select the custom status option.
+		statusSelect.InitialOption = statusOptions[3]
+	} else if !found {
+		statusSelect.InitialOption = statusOptions[0]
 	}
 
 	// Build category dropdown from template sections.
@@ -1236,27 +1264,34 @@ func handleHelp(api *slack.Client, cfg Config, cmd slack.SlashCommand) {
 	}
 
 	lines := []string{
-		"ReportBot Commands",
+		"*ReportBot Commands*",
 		"",
-		"/report <description> (status) - Report a work item.",
-		"/rpt <description> (status) - Alias of /report.",
-		"  Example: /report [mantis_id] Add pagination to user list API (done)",
-		"  Multiline: /report Item A (in progress)\\nItem B (done)",
-		"  Shared status: /report Item A\\nItem B\\n(in progress)",
+		"`/report <description> (status)` — Report a work item.",
+		"`/rpt` — Alias of `/report`.",
+		">*Example:* `/report [mantis_id] Add pagination to user list API (done)`",
+		">*Multiline* (each with own status):",
+		">```/report Item A (in progress)",
+		">Item B (done)```",
+		">*Shared status* (applies to all items):",
+		">```/report Item A",
+		">Item B",
+		">(in progress)```",
 		"",
-		"/list - List this week's items.",
-		"/help - Show this help.",
+		"`/list` — List this week's items.",
+		"`/help` — Show this help.",
 	}
 
 	if isManager {
 		lines = append(lines,
 			"",
-			"/fetch-mrs - Fetch merged GitLab MRs for this week.",
-			"/generate-report team|boss - Generate weekly report.",
-			"/gen team|boss - Alias of /generate-report.",
-			"/check - List team members who haven't reported this week.",
-			"/nudge [@name] - Nudge missing members, or a specific user.",
-			"/retrospective - Analyze recent corrections and suggest improvements.",
+			"*Manager Commands*",
+			"",
+			"`/fetch-mrs` — Fetch *merged + open* GitLab MRs for this week.",
+			"`/generate-report team|boss` — Generate weekly report.",
+			"`/gen` — Alias of `/generate-report`.",
+			"`/check` — List team members who haven't reported this week.",
+			"`/nudge [@name]` — Nudge *all* missing members, or a *specific* user.",
+			"`/retrospective` — Analyze recent corrections and suggest improvements.",
 		)
 	}
 

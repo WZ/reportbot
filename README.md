@@ -35,6 +35,41 @@ The LLM classifier improves itself over time through a feedback loop:
 - **Uncertainty sampling** — Low-confidence items are surfaced to the manager with interactive section buttons after report generation
 - **Retrospective analysis** — `/retrospective` uses the LLM to find correction patterns and suggest glossary terms or guide updates
 
+```mermaid
+flowchart LR
+    subgraph Input["Input"]
+        direction TB
+        DEV["/report<br>(Slack)"]
+        GL["GitLab<br>MRs"]
+    end
+
+    subgraph Classify["Classify"]
+        direction TB
+        MEM["Memory<br>───<br>Glossary<br>Guide<br>Corrections"]
+        LLM["LLM<br>Classifier<br>(parallel)"]
+        MEM -.->|enrich| LLM
+    end
+
+    subgraph Deliver["Deliver"]
+        direction TB
+        RPT["Weekly<br>Report"]
+        UNC["Uncertainty<br>Prompts"]
+    end
+
+    MGR["Manager"]
+
+    Input --> LLM
+    LLM --> Deliver
+    Deliver --> MGR
+
+    MGR -->|"corrections"| MEM
+
+    style Input fill:#1a5276,stroke:#333,color:#fff
+    style Classify fill:#1a1a2e,stroke:#69f,color:#fff
+    style Deliver fill:#0f3460,stroke:#69f,color:#fff
+    style MGR fill:#f96,stroke:#333,color:#000
+```
+
 See [docs/agentic-features-overview.md](docs/agentic-features-overview.md) for a detailed overview.
 
 ## Quick Start
