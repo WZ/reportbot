@@ -38,6 +38,7 @@ const (
 
 	actionUncertaintySelect = "uncertainty_select"
 	actionUncertaintyOther  = "uncertainty_other"
+	noCategoryChangeValue   = "__NO_CHANGE__"
 
 	actionRetroApply   = "retro_apply"
 	actionRetroDismiss = "retro_dismiss"
@@ -123,7 +124,7 @@ func handleMemberJoined(api *slack.Client, cfg Config, ev *slackevents.MemberJoi
 		teamName = "the team"
 	}
 
-	intro := fmt.Sprintf("Welcome to %s! I'm ReportBot — I help track work items and generate weekly reports.\n\n"+
+	intro := fmt.Sprintf("Welcome to %s! I'm ReportAgent — I help track work items and generate weekly reports.\n\n"+
 		"Here's how to get started:\n"+
 		"• `/report <description> (status)` — Report a work item (e.g. `/report Fix login bug (done)`)\n"+
 		"• `/list` — View this week's items\n"+
@@ -880,7 +881,7 @@ func handleViewSubmission(api *slack.Client, db *sql.DB, cfg Config, cb slack.In
 	if catBlock, ok := values[editBlockCategory]; ok {
 		if catAction, ok2 := catBlock[editActionCategory]; ok2 {
 			newCategoryID := strings.TrimSpace(catAction.SelectedOption.Value)
-			if newCategoryID != "" && newCategoryID != item.Category {
+			if newCategoryID != "" && newCategoryID != noCategoryChangeValue && newCategoryID != item.Category {
 				recordCategoryCorrection(db, cfg, item, newCategoryID, userID)
 				if err := UpdateWorkItemCategory(db, itemID, newCategoryID); err != nil {
 					log.Printf("edit modal category update error id=%d: %v", itemID, err)
@@ -980,8 +981,13 @@ func openEditModal(api *slack.Client, db *sql.DB, cfg Config, triggerID, channel
 	var categoryBlock slack.Block
 	sectionOpts := loadSectionOptionsForModal(cfg)
 	if len(sectionOpts) > 0 {
+		// Slack static_select supports up to 100 options.
+		if len(sectionOpts) > 99 {
+			log.Printf("openEditModal truncating category options from %d to 99 due to Slack limit", len(sectionOpts))
+			sectionOpts = sectionOpts[:99]
+		}
 		noChangeOpt := slack.NewOptionBlockObject(
-			"",
+			noCategoryChangeValue,
 			slack.NewTextBlockObject(slack.PlainTextType, "(no change)", false, false),
 			nil,
 		)
@@ -1049,6 +1055,9 @@ func openEditModal(api *slack.Client, db *sql.DB, cfg Config, triggerID, channel
 		Blocks:          slack.Blocks{BlockSet: blocks},
 	}
 	if _, err := api.OpenView(triggerID, view); err != nil {
+		if apiErr, ok := err.(*slack.SlackErrorResponse); ok {
+			log.Printf("openEditModal slack error err=%s messages=%v", apiErr.Err, apiErr.ResponseMetadata.Messages)
+		}
 		postEphemeralTo(api, channelID, userID, fmt.Sprintf("Unable to open edit dialog: %v", err))
 	}
 }
