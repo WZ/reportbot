@@ -12,8 +12,7 @@ Developers report completed work via slash commands. The bot also pulls merged/o
 - `/fetch-mrs` — Pull merged and open GitLab MRs for the current calendar week
 - `/generate-report` (or `/gen`) — Generate a team markdown file (or boss `.eml` draft) and upload it to Slack
 - `/list` — View this week's items with inline edit/delete actions
-- `/check` — Managers: list team members who have not reported this week
-- `/nudge [@name]` — Managers: send reminder DMs (missing members by default)
+- `/check` — Managers: list missing members with inline nudge buttons
 - `/retrospective` — Managers: analyze recent corrections and suggest glossary/guide improvements
 - `/help` — Show all commands and example usage
 
@@ -82,7 +81,7 @@ See [docs/agentic-features-overview.md](docs/agentic-features-overview.md) for a
    - `chat:write`
    - `commands`
    - `files:write`
-   - `im:write` (for Friday nudge DMs)
+   - `im:write` (for nudge DMs)
    - `users:read` (to resolve full names for managers/team members)
 4. Under **Event Subscriptions**, subscribe to these bot events:
    - `member_joined_channel` (sends welcome message to new members)
@@ -97,8 +96,7 @@ See [docs/agentic-features-overview.md](docs/agentic-features-overview.md) for a
    | `/generate-report` | Generate the weekly report |
    | `/gen` | Alias of `/generate-report` |
    | `/list` | List this week's work items |
-   | `/check` | List team members missing reports |
-   | `/nudge` | Send reminder DMs |
+   | `/check` | List missing members with nudge buttons |
    | `/retrospective` | Analyze corrections and suggest improvements |
    | `/help` | Show help and usage |
 
@@ -138,17 +136,17 @@ anthropic_api_key: "sk-ant-..."
 manager_slack_ids:
   - "U01ABC123"
 
-# Team members (Slack full names) - receive nudge reminders
+# Team members (Slack full names) - used by /check and scheduled nudge
 team_members:
   - "Member One"
   - "Member Two"
 
-# Day and time to send nudge (configured timezone)
+# Day and time for scheduled nudge (configured timezone)
 nudge_day: "Friday"
 nudge_time: "10:00"
 monday_cutoff_time: "12:00"  # Monday before this time uses previous week
 
-# Timezone for week range and nudge scheduling (IANA format)
+# Timezone for week range and scheduled nudge (IANA format)
 timezone: "America/Los_Angeles"
 
 # Team name (used in report header and filename)
@@ -189,7 +187,7 @@ Note: Category/subcategory headings are sourced from the previous report in `rep
 | Provider | Default Model |
 |---|---|
 | `anthropic` | `claude-sonnet-4-5-20250929` |
-| `openai` | `gpt-4o` |
+| `openai` | `gpt-5-mini` |
 
 Set `llm_model` in YAML or `LLM_MODEL` env var to override.
 Set `llm_batch_size` / `LLM_BATCH_SIZE`, `llm_confidence_threshold` / `LLM_CONFIDENCE_THRESHOLD`, and `llm_example_count` / `llm_example_max_chars` to tune throughput, confidence gating, and prompt context size.
@@ -199,9 +197,9 @@ Glossary example (`llm_glossary.yaml`):
 
 ```yaml
 terms:
-  - phrase: "adom pending"
+  - phrase: "user pending"
     section: "Cluster Manager"
-  - phrase: "kudu backup"
+  - phrase: "database backup"
     section: "Top Focus > HA Log Sync Enhancement"
 
 status_hints:
@@ -336,9 +334,11 @@ Anyone can view this week's items:
 - Delete uses a confirmation modal.
 - Edit opens a modal with a text field for the description and a dropdown for the status.
 
-### Weekly Nudge
+### Nudge Reminders
 
-Every week on `nudge_day` (default Friday) at `nudge_time` (default 10:00 AM local), the bot DMs each user in `team_members` reminding them to report. To disable, leave `team_members` empty.
+**Scheduled**: Every week on `nudge_day` (default Friday) at `nudge_time` (default 10:00 AM local), the bot DMs each user in `team_members` reminding them to report. To disable, leave `team_members` empty.
+
+**On-demand**: `/check` lists team members who haven't reported this week, with a "Nudge" button next to each member and a "Nudge All" button at the bottom. Clicking opens a confirmation before sending the DM.
 
 On Monday before `monday_cutoff_time` (default `12:00`) in configured `timezone`, report commands use the previous calendar week.
 
@@ -348,7 +348,7 @@ Requires the `im:write` bot token scope in your Slack app.
 
 ## Permissions
 
-Manager commands (`/fetch-mrs`, `/generate-report`, `/check`, `/nudge`, `/retrospective`) are restricted to Slack user IDs listed in `manager_slack_ids`.
+Manager commands (`/fetch-mrs`, `/generate-report`, `/check`, `/retrospective`, `/report-stats`) are restricted to Slack user IDs listed in `manager_slack_ids`.
 
 ## Report Structure
 
@@ -371,8 +371,8 @@ reportbot/
   gitlab.go            GitLab API client for fetching merged MRs
   report.go            Markdown/EML report file generation
   report_builder.go    Template parsing, LLM classification pipeline, merge logic
-  slack.go             Slack Socket Mode bot, slash commands, correction capture, uncertainty sampling
-  nudge.go             Weekly reminder scheduler and DM sender
+  slack.go             Slack Socket Mode bot, slash commands, nudge UI, correction capture, uncertainty sampling
+  nudge.go             Scheduled weekly reminder and DM sender
   Dockerfile           Multi-stage Docker build
   docs/                Architecture diagrams and feature documentation
 ```

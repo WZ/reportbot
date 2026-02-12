@@ -58,7 +58,7 @@ func TestBuildSectionPrompts_UsesExampleLimits(t *testing.T) {
 		{SectionID: "S0_0", Description: "second example"},
 	}
 
-	_, userPrompt := buildSectionPrompts(cfg, options, items, existing, "", nil)
+	_, userPrompt := buildSectionPrompts(cfg, options, items, existing, "", nil, nil)
 
 	if !strings.Contains(userPrompt, "EX|S0_0|1234567890...") {
 		t.Fatalf("expected first example to be truncated by max chars, prompt=%s", userPrompt)
@@ -80,7 +80,7 @@ func TestBuildSectionPrompts_IncludesTemplateGuidance(t *testing.T) {
 		{ID: 1, Description: "Current item"},
 	}
 
-	systemPrompt, _ := buildSectionPrompts(cfg, options, items, nil, "Rule: prefer query section for clickhouse", nil)
+	systemPrompt, _ := buildSectionPrompts(cfg, options, items, nil, "Rule: prefer query section for clickhouse", nil, nil)
 	if !strings.Contains(systemPrompt, "Template guidance") {
 		t.Fatalf("expected template guidance marker in system prompt")
 	}
@@ -116,5 +116,36 @@ func TestParseTicketIDsField_MixedArray(t *testing.T) {
 	got := parseTicketIDsField(raw)
 	if got != "123,456,789" {
 		t.Fatalf("unexpected ticket IDs normalization: %q", got)
+	}
+}
+
+func TestParseCriticResponse(t *testing.T) {
+	response := `[
+		{"id": 42, "reason": "This is a database task not infra", "suggested_section_id": "S1_0"},
+		{"id": 55, "reason": "Belongs to auth service", "suggested_section_id": "S2_1"}
+	]`
+
+	flagged, err := parseCriticResponse(response)
+	if err != nil {
+		t.Fatalf("parseCriticResponse error: %v", err)
+	}
+	if len(flagged) != 2 {
+		t.Fatalf("expected 2 flagged items, got %d", len(flagged))
+	}
+	if flagged[0].ID != 42 || flagged[0].SuggestedSectionID != "S1_0" {
+		t.Fatalf("unexpected first flagged item: %+v", flagged[0])
+	}
+	if flagged[1].ID != 55 || flagged[1].SuggestedSectionID != "S2_1" {
+		t.Fatalf("unexpected second flagged item: %+v", flagged[1])
+	}
+}
+
+func TestParseCriticResponse_Empty(t *testing.T) {
+	flagged, err := parseCriticResponse("[]")
+	if err != nil {
+		t.Fatalf("parseCriticResponse error on empty: %v", err)
+	}
+	if len(flagged) != 0 {
+		t.Fatalf("expected 0 flagged items, got %d", len(flagged))
 	}
 }

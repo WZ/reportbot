@@ -41,8 +41,10 @@ type LLMSectionDecision struct {
 }
 
 type LLMUsage struct {
-	InputTokens  int64
-	OutputTokens int64
+	InputTokens              int64
+	OutputTokens             int64
+	CacheCreationInputTokens int64
+	CacheReadInputTokens     int64
 }
 
 func (u LLMUsage) TotalTokens() int64 {
@@ -52,6 +54,8 @@ func (u LLMUsage) TotalTokens() int64 {
 func (u *LLMUsage) Add(other LLMUsage) {
 	u.InputTokens += other.InputTokens
 	u.OutputTokens += other.OutputTokens
+	u.CacheCreationInputTokens += other.CacheCreationInputTokens
+	u.CacheReadInputTokens += other.CacheReadInputTokens
 }
 
 const defaultAnthropicModel = "claude-sonnet-4-5-20250929"
@@ -64,6 +68,7 @@ func CategorizeItemsToSections(
 	options []sectionOption,
 	existing []existingItemContext,
 	corrections []ClassificationCorrection,
+	historicalItems []historicalItem,
 ) (map[int64]LLMSectionDecision, LLMUsage, error) {
 	if len(items) == 0 {
 		return nil, LLMUsage{}, nil
@@ -79,6 +84,12 @@ func CategorizeItemsToSections(
 	}
 	glossarySectionMap := resolveGlossarySectionMap(glossary, options)
 	templateGuidance := loadTemplateGuidance(cfg.LLMGuidePath)
+
+	// Build TF-IDF index for example selection.
+	var tfidfIdx *tfidfIndex
+	if len(historicalItems) > 0 {
+		tfidfIdx = buildTFIDFIndex(historicalItems)
+	}
 
 	// Pre-slice all batches.
 	var batches [][]WorkItem
@@ -102,7 +113,20 @@ func CategorizeItemsToSections(
 		wg.Add(1)
 		go func(idx int, batch []WorkItem) {
 			defer wg.Done()
-			systemPrompt, userPrompt := buildSectionPrompts(cfg, options, batch, existing, templateGuidance, corrections)
+			// Select relevant examples for this batch via TF-IDF.
+			var batchExamples []historicalItem
+			if tfidfIdx != nil {
+				var queries []string
+				for _, item := range batch {
+					queries = append(queries, item.Description)
+				}
+				exampleCount := cfg.LLMExampleCount
+				if exampleCount < 1 {
+					exampleCount = 20
+				}
+				batchExamples = tfidfIdx.topKForBatch(queries, exampleCount)
+			}
+			systemPrompt, userPrompt := buildSectionPrompts(cfg, options, batch, existing, templateGuidance, corrections, batchExamples)
 
 			var responseText string
 			var usage LLMUsage
@@ -153,10 +177,35 @@ func CategorizeItemsToSections(
 		}
 	}
 
+	// Generator-Critic loop: second LLM pass to catch misclassifications.
+	if cfg.LLMCriticEnabled && len(all) > 0 {
+		flagged, criticUsage, err := runCriticPass(cfg, items, all, options)
+		totalUsage.Add(criticUsage)
+		if err != nil {
+			log.Printf("llm critic error (non-fatal): %v", err)
+		} else {
+			validSections := make(map[string]bool, len(options))
+			for _, opt := range options {
+				validSections[opt.ID] = true
+			}
+			for _, f := range flagged {
+				suggested := strings.TrimSpace(f.SuggestedSectionID)
+				if suggested == "" || !validSections[suggested] {
+					continue
+				}
+				if dec, ok := all[f.ID]; ok {
+					log.Printf("llm critic reclassified item=%d from=%s to=%s reason=%q", f.ID, dec.SectionID, suggested, f.Reason)
+					dec.SectionID = suggested
+					all[f.ID] = dec
+				}
+			}
+		}
+	}
+
 	return all, totalUsage, nil
 }
 
-func buildSectionPrompts(cfg Config, options []sectionOption, items []WorkItem, existing []existingItemContext, templateGuidance string, corrections []ClassificationCorrection) (string, string) {
+func buildSectionPrompts(cfg Config, options []sectionOption, items []WorkItem, existing []existingItemContext, templateGuidance string, corrections []ClassificationCorrection, examples []historicalItem) (string, string) {
 	var sectionLines strings.Builder
 	for _, option := range options {
 		sectionLines.WriteString(fmt.Sprintf("- %s: %s\n", option.ID, option.Label))
@@ -178,10 +227,24 @@ func buildSectionPrompts(cfg Config, options []sectionOption, items []WorkItem, 
 	}
 
 	examplesBlock := "none"
-	if len(existing) > 0 {
+	exampleMaxLen := cfg.LLMExampleMaxLen
+	if len(examples) > 0 {
+		// Use TF-IDF selected examples.
+		var exBuf strings.Builder
+		for _, ex := range examples {
+			desc := strings.TrimSpace(ex.Description)
+			if len(desc) > exampleMaxLen {
+				desc = desc[:exampleMaxLen] + "..."
+			}
+			exBuf.WriteString(fmt.Sprintf("- EX|%s|%s\n", ex.SectionID, desc))
+		}
+		if exBuf.Len() > 0 {
+			examplesBlock = exBuf.String()
+		}
+	} else if len(existing) > 0 {
+		// Fallback: use first N existing items.
 		exampleCount := cfg.LLMExampleCount
-		exampleMaxLen := cfg.LLMExampleMaxLen
-		var examples strings.Builder
+		var exBuf strings.Builder
 		for i, ex := range existing {
 			if i >= exampleCount {
 				break
@@ -190,10 +253,10 @@ func buildSectionPrompts(cfg Config, options []sectionOption, items []WorkItem, 
 			if len(desc) > exampleMaxLen {
 				desc = desc[:exampleMaxLen] + "..."
 			}
-			examples.WriteString(fmt.Sprintf("- EX|%s|%s\n", ex.SectionID, desc))
+			exBuf.WriteString(fmt.Sprintf("- EX|%s|%s\n", ex.SectionID, desc))
 		}
-		if examples.Len() > 0 {
-			examplesBlock = examples.String()
+		if exBuf.Len() > 0 {
+			examplesBlock = exBuf.String()
 		}
 	}
 
@@ -427,7 +490,7 @@ func callAnthropic(apiKey, model, systemPrompt, userPrompt string) (string, LLMU
 		Model:     anthropic.Model(model),
 		MaxTokens: 4096,
 		System: []anthropic.TextBlockParam{
-			{Text: systemPrompt},
+			{Text: systemPrompt, CacheControl: anthropic.NewCacheControlEphemeralParam()},
 		},
 		Messages: []anthropic.MessageParam{
 			anthropic.NewUserMessage(anthropic.NewTextBlock(userPrompt)),
@@ -438,13 +501,15 @@ func callAnthropic(apiKey, model, systemPrompt, userPrompt string) (string, LLMU
 		return "", LLMUsage{}, fmt.Errorf("Anthropic API error: %w", err)
 	}
 	usage := LLMUsage{
-		InputTokens:  message.Usage.InputTokens,
-		OutputTokens: message.Usage.OutputTokens,
+		InputTokens:              message.Usage.InputTokens,
+		OutputTokens:             message.Usage.OutputTokens,
+		CacheCreationInputTokens: message.Usage.CacheCreationInputTokens,
+		CacheReadInputTokens:     message.Usage.CacheReadInputTokens,
 	}
 
 	for _, block := range message.Content {
 		if block.Type == "text" {
-			log.Printf("llm anthropic response size=%d tokens_in=%d tokens_out=%d", len(block.Text), usage.InputTokens, usage.OutputTokens)
+			log.Printf("llm anthropic response size=%d tokens_in=%d tokens_out=%d cache_create=%d cache_read=%d", len(block.Text), usage.InputTokens, usage.OutputTokens, usage.CacheCreationInputTokens, usage.CacheReadInputTokens)
 			return block.Text, usage, nil
 		}
 	}
@@ -533,6 +598,82 @@ func callOpenAI(apiKey, model, systemPrompt, userPrompt string) (string, LLMUsag
 
 	log.Printf("llm openai response size=%d tokens_in=%d tokens_out=%d", len(openAIResp.Choices[0].Message.Content), usage.InputTokens, usage.OutputTokens)
 	return openAIResp.Choices[0].Message.Content, usage, nil
+}
+
+// --- Generator-Critic Loop ---
+
+type criticFlagged struct {
+	ID                 int64  `json:"id"`
+	Reason             string `json:"reason"`
+	SuggestedSectionID string `json:"suggested_section_id"`
+}
+
+func runCriticPass(cfg Config, items []WorkItem, decisions map[int64]LLMSectionDecision, options []sectionOption) ([]criticFlagged, LLMUsage, error) {
+	var sectionLines strings.Builder
+	for _, opt := range options {
+		sectionLines.WriteString(fmt.Sprintf("- %s: %s\n", opt.ID, opt.Label))
+	}
+
+	var itemLines strings.Builder
+	for _, item := range items {
+		dec := decisions[item.ID]
+		itemLines.WriteString(fmt.Sprintf("ID:%d | section: %s | status: %s | desc: %s\n",
+			item.ID, dec.SectionID, dec.NormalizedStatus, strings.TrimSpace(item.Description)))
+	}
+
+	systemPrompt := fmt.Sprintf(`You are a classification reviewer. Review the section assignments below and identify any misclassifications.
+
+Available sections:
+%s
+
+For each misclassified item, return its ID, a brief reason, and a suggested_section_id.
+Only flag items you are confident are wrong. Return an empty array [] if all assignments look correct.
+
+Respond with JSON only (no markdown):
+[{"id": 1, "reason": "...", "suggested_section_id": "S1_2"}, ...]`, sectionLines.String())
+
+	userPrompt := "Review these classifications:\n" + itemLines.String()
+
+	var responseText string
+	var usage LLMUsage
+	var err error
+
+	switch cfg.LLMProvider {
+	case "openai":
+		model := cfg.LLMModel
+		if model == "" {
+			model = defaultOpenAIModel
+		}
+		log.Printf("llm critic provider=openai model=%s items=%d", model, len(items))
+		responseText, usage, err = callOpenAI(cfg.OpenAIAPIKey, model, systemPrompt, userPrompt)
+	default:
+		model := cfg.LLMModel
+		if model == "" {
+			model = defaultAnthropicModel
+		}
+		log.Printf("llm critic provider=anthropic model=%s items=%d", model, len(items))
+		responseText, usage, err = callAnthropic(cfg.AnthropicAPIKey, model, systemPrompt, userPrompt)
+	}
+	if err != nil {
+		return nil, usage, err
+	}
+
+	flagged, parseErr := parseCriticResponse(responseText)
+	return flagged, usage, parseErr
+}
+
+func parseCriticResponse(responseText string) ([]criticFlagged, error) {
+	responseText = strings.TrimSpace(responseText)
+	responseText = strings.TrimPrefix(responseText, "```json")
+	responseText = strings.TrimPrefix(responseText, "```")
+	responseText = strings.TrimSuffix(responseText, "```")
+	responseText = strings.TrimSpace(responseText)
+
+	var flagged []criticFlagged
+	if err := json.Unmarshal([]byte(responseText), &flagged); err != nil {
+		return nil, fmt.Errorf("parsing critic response: %w (response: %s)", err, responseText)
+	}
+	return flagged, nil
 }
 
 // --- Retrospective Analysis ---
