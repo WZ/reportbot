@@ -31,11 +31,10 @@ Configuration is layered: `config.yaml` is loaded first, then environment variab
 - **GitLab**: `gitlab_url`, `gitlab_token`, `gitlab_group_id` (numeric ID or group path)
 - **LLM**: `llm_provider` ("anthropic" or "openai"), `anthropic_api_key` or `openai_api_key`
 - **Permissions**: `manager_slack_ids` (list of Slack user IDs) — controls access to `/fetch-mrs`, `/generate-report`, `/check`, `/nudge`, `/retrospective`
-- **Nudge**: `team_members` (list of Slack user IDs to DM), `nudge_day` (Monday-Sunday), `nudge_time` (HH:MM 24h format)
-- **Categories**: `categories` (list, defines report section order and AI classification options)
+- **Nudge**: `team_members` (list of Slack full names or user IDs to DM; full names preferred), `nudge_day` (Monday-Sunday), `nudge_time` (HH:MM 24h format)
 - **Team**: `team_name` (used in report header and filename)
 
-See `config.yaml.example` for full reference.
+See `config.yaml` and `README.md` for full reference.
 
 ## Architecture
 
