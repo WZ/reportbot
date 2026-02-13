@@ -71,7 +71,8 @@ func TestConvertGitHubItem(t *testing.T) {
 			User:    githubUser{Login: "alice"},
 			Labels:  []githubLabel{{Name: "bugfix"}, {Name: "urgent"}},
 			PullRequest: &githubPRLinks{
-				MergedAt: "2025-01-15T10:30:00Z",
+				// Search Issues API doesn't include merged_at, so we omit it here
+				// to test the fallback logic that uses ClosedAt instead.
 			},
 			CreatedAt:     "2025-01-14T08:00:00Z",
 			UpdatedAt:     "2025-01-15T10:30:00Z",
