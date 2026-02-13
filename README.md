@@ -4,6 +4,8 @@ A Slack bot that helps a development team track weekly work items and generate c
 
 Developers report completed work via slash commands. The bot also pulls merged/open GitLab merge requests automatically. An LLM (Anthropic Claude or OpenAI) classifies items into sections derived from the previous report.
 
+> **What started as "can an LLM sort bullet points into categories?"** turned into a self-improving classification system with memory, self-evaluation, and a second LLM that critiques the first one's homework. This project is an experiment in agentic AI patterns — the bot learns from its mistakes, writes its own rules, and occasionally gets things right on the first try. Built mostly by talking to Claude, because why write code yourself when you can argue with an AI about code instead.
+
 ## Features
 
 ### Commands
