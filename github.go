@@ -142,6 +142,11 @@ func convertGitHubItem(item githubPRItem, derivedState string) GitHubPR {
 	if item.PullRequest != nil && item.PullRequest.MergedAt != "" {
 		mergedAt, _ = time.Parse(time.RFC3339, item.PullRequest.MergedAt)
 	}
+	// Fallback: Search Issues API doesn't include pull_request.merged_at; for
+	// merged PRs, approximate merged time using closed_at when mergedAt is zero.
+	if mergedAt.IsZero() && derivedState == "merged" && !closedAt.IsZero() {
+		mergedAt = closedAt
+	}
 
 	var labels []string
 	for _, l := range item.Labels {
