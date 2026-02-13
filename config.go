@@ -19,6 +19,10 @@ type Config struct {
 	GitLabToken   string `yaml:"gitlab_token"`
 	GitLabGroupID string `yaml:"gitlab_group_id"`
 
+	GitHubToken string   `yaml:"github_token"`
+	GitHubOrg   string   `yaml:"github_org"`
+	GitHubRepos []string `yaml:"github_repos"`
+
 	LLMProvider      string  `yaml:"llm_provider"`
 	LLMModel         string  `yaml:"llm_model"`
 	LLMBatchSize     int     `yaml:"llm_batch_size"`
@@ -69,6 +73,17 @@ func LoadConfig() Config {
 	envOverride(&cfg.GitLabURL, "GITLAB_URL")
 	envOverride(&cfg.GitLabToken, "GITLAB_TOKEN")
 	envOverride(&cfg.GitLabGroupID, "GITLAB_GROUP_ID")
+	envOverride(&cfg.GitHubToken, "GITHUB_TOKEN")
+	envOverride(&cfg.GitHubOrg, "GITHUB_ORG")
+	if repos := os.Getenv("GITHUB_REPOS"); repos != "" {
+		cfg.GitHubRepos = nil
+		for _, r := range strings.Split(repos, ",") {
+			r = strings.TrimSpace(r)
+			if r != "" {
+				cfg.GitHubRepos = append(cfg.GitHubRepos, r)
+			}
+		}
+	}
 	envOverride(&cfg.LLMProvider, "LLM_PROVIDER")
 	envOverride(&cfg.LLMModel, "LLM_MODEL")
 	envOverrideInt(&cfg.LLMBatchSize, "LLM_BATCH_SIZE")
@@ -148,14 +163,40 @@ func LoadConfig() Config {
 	required := map[string]string{
 		"slack_bot_token": cfg.SlackBotToken,
 		"slack_app_token": cfg.SlackAppToken,
-		"gitlab_url":      cfg.GitLabURL,
-		"gitlab_token":    cfg.GitLabToken,
-		"gitlab_group_id": cfg.GitLabGroupID,
 	}
 	for name, val := range required {
 		if val == "" {
 			log.Fatalf("Required config '%s' is not set (via config.yaml or env var)", name)
 		}
+	}
+
+	// Partial GitLab config validation: if any field is set, all three must be set.
+	gitlabFields := map[string]string{
+		"gitlab_url":      cfg.GitLabURL,
+		"gitlab_token":    cfg.GitLabToken,
+		"gitlab_group_id": cfg.GitLabGroupID,
+	}
+	gitlabSet := 0
+	for _, v := range gitlabFields {
+		if v != "" {
+			gitlabSet++
+		}
+	}
+	if gitlabSet > 0 && gitlabSet < len(gitlabFields) {
+		for name, val := range gitlabFields {
+			if val == "" {
+				log.Fatalf("Partial GitLab config: '%s' is not set (all of gitlab_url, gitlab_token, gitlab_group_id are required together)", name)
+			}
+		}
+	}
+
+	// GitHub validation: if token is set, require org or repos.
+	if cfg.GitHubToken != "" && cfg.GitHubOrg == "" && len(cfg.GitHubRepos) == 0 {
+		log.Fatalf("github_token is set but neither github_org nor github_repos is configured")
+	}
+
+	if !cfg.GitLabConfigured() && !cfg.GitHubConfigured() {
+		log.Printf("WARNING: Neither GitLab nor GitHub is configured. /fetch-mrs will have nothing to fetch.")
 	}
 
 	switch cfg.LLMProvider {
@@ -244,6 +285,14 @@ func (c Config) IsManagerID(userID string) bool {
 		}
 	}
 	return false
+}
+
+func (c Config) GitLabConfigured() bool {
+	return c.GitLabURL != "" && c.GitLabToken != "" && c.GitLabGroupID != ""
+}
+
+func (c Config) GitHubConfigured() bool {
+	return c.GitHubToken != "" && (c.GitHubOrg != "" || len(c.GitHubRepos) > 0)
 }
 
 func parseClock(s string) (int, int, error) {

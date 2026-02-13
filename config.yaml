@@ -6,10 +6,15 @@
 slack_bot_token: "xoxb-your-bot-token"
 slack_app_token: "xapp-your-app-token"
 
-# GitLab access
+# GitLab access (optional — set to fetch MRs via /fetch-mrs)
 gitlab_url: "https://gitlab.example.com"
 gitlab_token: "glpat-your-gitlab-token"
 gitlab_group_id: "my-team-group"
+
+# GitHub access (optional — set to fetch PRs via /fetch-mrs)
+github_token: ""
+github_org: "my-github-org"
+github_repos: []  # optional: limit to specific repos, e.g. ["org/repo1", "org/repo2"]
 
 # LLM provider
 # supported values: anthropic, openai

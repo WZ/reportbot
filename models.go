@@ -7,8 +7,8 @@ type WorkItem struct {
 	Description string
 	Author      string
 	AuthorID    string // Slack user ID (immutable, for authorization)
-	Source      string // "slack" or "gitlab"
-	SourceRef   string // GitLab MR URL or empty
+	Source      string // "slack", "gitlab", or "github"
+	SourceRef   string // GitLab MR URL, GitHub PR URL, or empty
 	Category    string
 	Status      string // "done", "in progress", "in QA", etc.
 	TicketIDs   string // comma-separated: "1247202,1230118"
@@ -27,6 +27,20 @@ type GitLabMR struct {
 	State       string
 	Labels      []string
 	ProjectPath string
+}
+
+type GitHubPR struct {
+	Title        string
+	Author       string // GitHub login (username)
+	AuthorName   string // same as Author (Search API doesn't return display name)
+	HTMLURL      string // PR web URL, used as source_ref for dedup
+	MergedAt     time.Time
+	UpdatedAt    time.Time
+	CreatedAt    time.Time
+	ClosedAt     time.Time
+	State        string   // "open", "merged" (derived), or "closed"
+	Labels       []string
+	RepoFullName string // e.g. "org/repo-name"
 }
 
 type ReportSection struct {
