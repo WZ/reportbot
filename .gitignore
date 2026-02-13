@@ -8,3 +8,6 @@ override/
 reportbot-reports/
 prod/
 docker-compose-*
+.DS_Store
+.claude/
+.gomodcache/
