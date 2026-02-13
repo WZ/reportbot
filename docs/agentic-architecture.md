@@ -170,7 +170,7 @@ Past corrections (last 4 weeks, up to 20) are injected into the **user prompt** 
 ```
 Past corrections (learn from these — avoid repeating these mistakes):
 - "Fix TimescaleDB lag" was classified as S1_2 (Support), corrected to S1_3 (Query Service)
-- "tenant pending check" was classified as S0_0 (Infrastructure), corrected to S1_0 (Query Service)
+- "Tenant pending check" was classified as S0_0 (Infrastructure), corrected to S1_0 (Query Service)
 ```
 
 The system prompt also gets a one-liner: *"A 'Past corrections' section shows previous misclassifications. Avoid repeating them."*

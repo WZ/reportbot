@@ -80,11 +80,11 @@ func TestBuildSectionPrompts_IncludesTemplateGuidance(t *testing.T) {
 		{ID: 1, Description: "Current item"},
 	}
 
-	systemPrompt, _ := buildSectionPrompts(cfg, options, items, nil, "Rule: prefer query section for timescaledb", nil, nil)
+	systemPrompt, _ := buildSectionPrompts(cfg, options, items, nil, "Rule: prefer query section for database items", nil, nil)
 	if !strings.Contains(systemPrompt, "Template guidance") {
 		t.Fatalf("expected template guidance marker in system prompt")
 	}
-	if !strings.Contains(systemPrompt, "prefer query section for timescaledb") {
+	if !strings.Contains(systemPrompt, "prefer query section for database items") {
 		t.Fatalf("expected template guidance content in system prompt")
 	}
 }

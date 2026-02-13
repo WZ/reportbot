@@ -75,19 +75,19 @@ In all classification responses, copy that `section_id` value exactly; do not in
 
 1. Glossary override wins.
 2. If text is customer incident, support session, upgrade issue, crash investigation, workaround, or case follow-up -> PB_REL_SUPPORT.
-3. If text is TimescaleDB, analytics dashboard, query service, log viewer, event viewer, SQL/hive query behavior -> PB_QUERY.
+3. If text is database engine, analytics dashboard, query service, event viewer, log viewer, SQL query behavior -> PB_QUERY.
 4. If text is backup/restore job framework, storage pool DB job behavior, or schema/data-balance warnings -> PB_DATA_AUTOMATION_DB.
-5. If text is kafka/ETL/log pipeline lag/streaming/data pipeline framework -> PB_DATA_PIPELINE.
-6. If text is ansible/playbook/job var map/tenant pending/cluster web orchestration -> PB_CLUSTER_MGR.
+5. If text is message queue/ETL/log pipeline lag/streaming/data pipeline framework -> PB_DATA_PIPELINE.
+6. If text is provisioning/playbook/job var map/tenant pending/cluster web orchestration -> PB_CLUSTER_MGR.
 7. If text is routing/subnet/NTP/firstboot/system infra readiness -> PB_INFRA.
-8. If text is clearly Product Alpha observability/heartbeat metrics/CKS stack -> PA_OBS.
+8. If text is clearly Product Alpha observability/heartbeat metrics/monitoring stack -> PA_OBS.
 9. If text is cross-system log forwarding/perf forwarding rate -> PA_LOG.
 10. Otherwise -> UND.
 
 ## Tie-Breakers
 
 - Prefer Product Beta sections over Product Alpha when both seem plausible.
-- Prefer PB_QUERY over PB_REL_SUPPORT if query/TimescaleDB/analytics dashboard terms appear.
+- Prefer PB_QUERY over PB_REL_SUPPORT if query/database engine/analytics terms appear.
 - For duplicate/near-duplicate item texts in the same run, keep one (highest confidence) and preserve latest status.
 
 ## Status Normalization
