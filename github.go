@@ -69,10 +69,15 @@ func FetchGitHubPRs(cfg Config, from, to time.Time) ([]GitHubPR, error) {
 	for _, item := range openItems {
 		pr := convertGitHubItem(item, "open")
 		// Filter: only include open PRs updated within the date range.
-		if !pr.UpdatedAt.IsZero() && pr.UpdatedAt.Before(from) {
+		// If UpdatedAt is zero (missing or failed to parse), skip this PR,
+		// since we cannot be sure it falls within the requested range.
+		if pr.UpdatedAt.IsZero() {
 			continue
 		}
-		if !pr.UpdatedAt.IsZero() && !pr.UpdatedAt.Before(to) {
+		if pr.UpdatedAt.Before(from) {
+			continue
+		}
+		if !pr.UpdatedAt.Before(to) {
 			continue
 		}
 		allPRs = append(allPRs, pr)
