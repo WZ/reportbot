@@ -326,6 +326,8 @@ func handleFetchMRs(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashCo
 
 	teamMembers := cfg.TeamMembers
 	var totalFetched int
+	var skippedNonTeam int
+	var alreadyTracked int
 	var newItems []WorkItem
 	var fetchErrors []string
 
@@ -342,6 +344,7 @@ func handleFetchMRs(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashCo
 				if len(teamMembers) > 0 {
 					if !anyNameMatches(teamMembers, mr.AuthorName) && !anyNameMatches(teamMembers, mr.Author) {
 						log.Printf("fetch-mrs skipped non-team gitlab author=%s username=%s", mr.AuthorName, mr.Author)
+						skippedNonTeam++
 						continue
 					}
 				}
@@ -351,6 +354,7 @@ func handleFetchMRs(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashCo
 					continue
 				}
 				if exists {
+					alreadyTracked++
 					continue
 				}
 				newItems = append(newItems, WorkItem{
@@ -378,6 +382,7 @@ func handleFetchMRs(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashCo
 				if len(teamMembers) > 0 {
 					if !anyNameMatches(teamMembers, pr.AuthorName) && !anyNameMatches(teamMembers, pr.Author) {
 						log.Printf("fetch-mrs skipped non-team github author=%s", pr.Author)
+						skippedNonTeam++
 						continue
 					}
 				}
@@ -387,6 +392,7 @@ func handleFetchMRs(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashCo
 					continue
 				}
 				if exists {
+					alreadyTracked++
 					continue
 				}
 				newItems = append(newItems, WorkItem{
@@ -407,12 +413,23 @@ func handleFetchMRs(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashCo
 	}
 
 	if len(newItems) == 0 {
-		msg := fmt.Sprintf("Found %d MRs/PRs (merged+open), all already tracked.", totalFetched)
+		var reasons []string
+		if alreadyTracked > 0 {
+			reasons = append(reasons, fmt.Sprintf("%d already tracked", alreadyTracked))
+		}
+		if skippedNonTeam > 0 {
+			reasons = append(reasons, fmt.Sprintf("%d non-team", skippedNonTeam))
+		}
+		msg := fmt.Sprintf("Found %d MRs/PRs (merged+open), none to add", totalFetched)
+		if len(reasons) > 0 {
+			msg += fmt.Sprintf(" (%s)", strings.Join(reasons, ", "))
+		}
+		msg += "."
 		if len(fetchErrors) > 0 {
 			msg += fmt.Sprintf("\nWarnings:\n%s", strings.Join(fetchErrors, "\n"))
 		}
 		postEphemeral(api, cmd, msg)
-		log.Printf("fetch-mrs all tracked")
+		log.Printf("fetch-mrs none to add: alreadyTracked=%d skippedNonTeam=%d", alreadyTracked, skippedNonTeam)
 		return
 	}
 
@@ -423,13 +440,21 @@ func handleFetchMRs(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashCo
 		return
 	}
 
-	msg := fmt.Sprintf("Fetched %d MRs/PRs (merged+open) (%d new, %d already tracked)",
-		totalFetched, inserted, totalFetched-inserted)
+	var summary []string
+	summary = append(summary, fmt.Sprintf("%d new", inserted))
+	if alreadyTracked > 0 {
+		summary = append(summary, fmt.Sprintf("%d already tracked", alreadyTracked))
+	}
+	if skippedNonTeam > 0 {
+		summary = append(summary, fmt.Sprintf("%d non-team", skippedNonTeam))
+	}
+	msg := fmt.Sprintf("Fetched %d MRs/PRs (merged+open): %s",
+		totalFetched, strings.Join(summary, ", "))
 	if len(fetchErrors) > 0 {
 		msg += fmt.Sprintf("\nWarnings:\n%s", strings.Join(fetchErrors, "\n"))
 	}
 	postEphemeral(api, cmd, msg)
-	log.Printf("fetch-mrs inserted=%d skipped=%d", inserted, totalFetched-inserted)
+	log.Printf("fetch-mrs inserted=%d alreadyTracked=%d skippedNonTeam=%d", inserted, alreadyTracked, skippedNonTeam)
 }
 
 func handleGenerateReport(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashCommand) {
