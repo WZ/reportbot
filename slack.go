@@ -305,66 +305,131 @@ func handleFetchMRs(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashCo
 		return
 	}
 
+	if !cfg.GitLabConfigured() && !cfg.GitHubConfigured() {
+		postEphemeral(api, cmd, "Neither GitLab nor GitHub is configured. Set gitlab_* or github_* config fields.")
+		return
+	}
+
 	monday, nextMonday := ReportWeekRange(cfg, time.Now().In(cfg.Location))
 	log.Printf("fetch-mrs range %s - %s", monday.Format("2006-01-02"), nextMonday.Format("2006-01-02"))
 
-	postEphemeral(api, cmd, fmt.Sprintf("Fetching merged MRs for %s to %s...",
+	var sources []string
+	if cfg.GitLabConfigured() {
+		sources = append(sources, "GitLab")
+	}
+	if cfg.GitHubConfigured() {
+		sources = append(sources, "GitHub")
+	}
+	postEphemeral(api, cmd, fmt.Sprintf("Fetching MRs/PRs from %s for %s to %s...",
+		strings.Join(sources, " + "),
 		monday.Format("Jan 2"), nextMonday.AddDate(0, 0, -1).Format("Jan 2")))
 
-	mrs, err := FetchMRs(cfg, monday, nextMonday)
-	if err != nil {
-		postEphemeral(api, cmd, fmt.Sprintf("Error fetching MRs: %v", err))
-		log.Printf("fetch-mrs error: %v", err)
-		return
-	}
-	log.Printf("fetch-mrs fetched=%d", len(mrs))
-
 	teamMembers := cfg.TeamMembers
-
+	var totalFetched int
 	var newItems []WorkItem
-	for _, mr := range mrs {
-		if len(teamMembers) > 0 {
-			if !anyNameMatches(teamMembers, mr.AuthorName) && !anyNameMatches(teamMembers, mr.Author) {
-				log.Printf("fetch-mrs skipped non-team author=%s username=%s", mr.AuthorName, mr.Author)
-				continue
+	var fetchErrors []string
+
+	// Fetch GitLab MRs if configured.
+	if cfg.GitLabConfigured() {
+		mrs, glErr := FetchMRs(cfg, monday, nextMonday)
+		if glErr != nil {
+			log.Printf("fetch-mrs gitlab error: %v", glErr)
+			fetchErrors = append(fetchErrors, fmt.Sprintf("GitLab: %v", glErr))
+		} else {
+			log.Printf("fetch-mrs gitlab fetched=%d", len(mrs))
+			totalFetched += len(mrs)
+			for _, mr := range mrs {
+				if len(teamMembers) > 0 {
+					if !anyNameMatches(teamMembers, mr.AuthorName) && !anyNameMatches(teamMembers, mr.Author) {
+						log.Printf("fetch-mrs skipped non-team gitlab author=%s username=%s", mr.AuthorName, mr.Author)
+						continue
+					}
+				}
+				exists, dbErr := SourceRefExists(db, mr.WebURL)
+				if dbErr != nil {
+					log.Printf("Error checking MR existence: %v", dbErr)
+					continue
+				}
+				if exists {
+					continue
+				}
+				newItems = append(newItems, WorkItem{
+					Description: mr.Title,
+					Author:      mr.AuthorName,
+					Source:      "gitlab",
+					SourceRef:   mr.WebURL,
+					Status:      mapMRStatus(mr),
+					ReportedAt:  mrReportedAt(mr, cfg.Location),
+				})
 			}
 		}
+	}
 
-		exists, err := SourceRefExists(db, mr.WebURL)
-		if err != nil {
-			log.Printf("Error checking MR existence: %v", err)
-			continue
+	// Fetch GitHub PRs if configured.
+	if cfg.GitHubConfigured() {
+		prs, ghErr := FetchGitHubPRs(cfg, monday, nextMonday)
+		if ghErr != nil {
+			log.Printf("fetch-mrs github error: %v", ghErr)
+			fetchErrors = append(fetchErrors, fmt.Sprintf("GitHub: %v", ghErr))
+		} else {
+			log.Printf("fetch-mrs github fetched=%d", len(prs))
+			totalFetched += len(prs)
+			for _, pr := range prs {
+				if len(teamMembers) > 0 {
+					if !anyNameMatches(teamMembers, pr.AuthorName) && !anyNameMatches(teamMembers, pr.Author) {
+						log.Printf("fetch-mrs skipped non-team github author=%s", pr.Author)
+						continue
+					}
+				}
+				exists, dbErr := SourceRefExists(db, pr.HTMLURL)
+				if dbErr != nil {
+					log.Printf("Error checking PR existence: %v", dbErr)
+					continue
+				}
+				if exists {
+					continue
+				}
+				newItems = append(newItems, WorkItem{
+					Description: pr.Title,
+					Author:      pr.AuthorName,
+					Source:      "github",
+					SourceRef:   pr.HTMLURL,
+					Status:      mapPRStatus(pr),
+					ReportedAt:  prReportedAt(pr, cfg.Location),
+				})
+			}
 		}
-		if exists {
-			continue
-		}
+	}
 
-		newItems = append(newItems, WorkItem{
-			Description: mr.Title,
-			Author:      mr.AuthorName,
-			Source:      "gitlab",
-			SourceRef:   mr.WebURL,
-			Status:      mapMRStatus(mr),
-			ReportedAt:  mrReportedAt(mr, cfg.Location),
-		})
+	if len(fetchErrors) > 0 && len(newItems) == 0 && totalFetched == 0 {
+		postEphemeral(api, cmd, fmt.Sprintf("Error fetching MRs/PRs:\n%s", strings.Join(fetchErrors, "\n")))
+		return
 	}
 
 	if len(newItems) == 0 {
-		postEphemeral(api, cmd, fmt.Sprintf("Found %d MRs (merged+open), all already tracked.", len(mrs)))
+		msg := fmt.Sprintf("Found %d MRs/PRs (merged+open), all already tracked.", totalFetched)
+		if len(fetchErrors) > 0 {
+			msg += fmt.Sprintf("\nWarnings:\n%s", strings.Join(fetchErrors, "\n"))
+		}
+		postEphemeral(api, cmd, msg)
 		log.Printf("fetch-mrs all tracked")
 		return
 	}
 
 	inserted, err := InsertWorkItems(db, newItems)
 	if err != nil {
-		postEphemeral(api, cmd, fmt.Sprintf("Error storing MRs: %v", err))
+		postEphemeral(api, cmd, fmt.Sprintf("Error storing MRs/PRs: %v", err))
 		log.Printf("fetch-mrs insert error: %v", err)
 		return
 	}
 
-	postEphemeral(api, cmd, fmt.Sprintf("Fetched %d MRs (merged+open) (%d new, %d already tracked)",
-		len(mrs), inserted, len(mrs)-inserted))
-	log.Printf("fetch-mrs inserted=%d skipped=%d", inserted, len(mrs)-inserted)
+	msg := fmt.Sprintf("Fetched %d MRs/PRs (merged+open) (%d new, %d already tracked)",
+		totalFetched, inserted, totalFetched-inserted)
+	if len(fetchErrors) > 0 {
+		msg += fmt.Sprintf("\nWarnings:\n%s", strings.Join(fetchErrors, "\n"))
+	}
+	postEphemeral(api, cmd, msg)
+	log.Printf("fetch-mrs inserted=%d skipped=%d", inserted, totalFetched-inserted)
 }
 
 func handleGenerateReport(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashCommand) {
@@ -587,8 +652,11 @@ func renderListItems(api *slack.Client, db *sql.DB, cfg Config, channelID, userI
 	user, _ := api.GetUserInfo(userID)
 	for _, item := range items[start:end] {
 		source := ""
-		if item.Source == "gitlab" {
+		switch item.Source {
+		case "gitlab":
 			source = " [GitLab]"
+		case "github":
+			source = " [GitHub]"
 		}
 		category := ""
 		if item.Category != "" {
@@ -1470,7 +1538,7 @@ func handleHelp(api *slack.Client, cfg Config, cmd slack.SlashCommand) {
 			"",
 			"*Manager Commands*",
 			"",
-			"`/fetch-mrs` — Fetch *merged + open* GitLab MRs for this week.",
+			"`/fetch-mrs` — Fetch *merged + open* GitLab MRs and/or GitHub PRs for this week.",
 			"`/generate-report team|boss` — Generate weekly report.",
 			"`/gen` — Alias of `/generate-report`.",
 			"`/check` — List missing members with inline nudge buttons.",
@@ -1534,6 +1602,26 @@ func mrReportedAt(mr GitLabMR, loc *time.Location) time.Time {
 	}
 	if !mr.CreatedAt.IsZero() {
 		return mr.CreatedAt
+	}
+	return time.Now().In(loc)
+}
+
+func mapPRStatus(pr GitHubPR) string {
+	if pr.State == "open" {
+		return "in progress"
+	}
+	return "done"
+}
+
+func prReportedAt(pr GitHubPR, loc *time.Location) time.Time {
+	if pr.State == "open" && !pr.UpdatedAt.IsZero() {
+		return pr.UpdatedAt
+	}
+	if !pr.MergedAt.IsZero() {
+		return pr.MergedAt
+	}
+	if !pr.CreatedAt.IsZero() {
+		return pr.CreatedAt
 	}
 	return time.Now().In(loc)
 }
