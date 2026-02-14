@@ -18,7 +18,7 @@ The LLM classifier was **open-loop** — it made decisions, but never learned fr
 | Full-price repeated system prompts | Prompt caching (~40% cost reduction) |
 | Low-confidence items hidden in report | Uncertain items surfaced for review |
 | Glossary maintained manually | Glossary grows automatically |
-| No visibility into LLM accuracy | Full decision audit trail + `/report-stats` dashboard |
+| No visibility into LLM accuracy | Full decision audit trail + `/stats` dashboard |
 
 ---
 
@@ -151,9 +151,9 @@ Traditional AI integration is **call-and-forget**: send data to an LLM, get a re
 
 ---
 
-### Feature 10: Accuracy Dashboard (`/report-stats`)
+### Feature 10: Accuracy Dashboard (`/stats`)
 
-**What it does:** The `/report-stats` command shows classification accuracy metrics, confidence distributions, most-corrected sections, and weekly trends.
+**What it does:** The `/stats` command shows classification accuracy metrics, confidence distributions, most-corrected sections, and weekly trends.
 
 **Why it matters:** Without metrics, you can't tell if the system is improving. The dashboard gives managers visibility into classification quality over time, helping them decide whether to adjust the glossary, enable the critic, or tune the confidence threshold.
 
@@ -229,7 +229,7 @@ flowchart LR
         direction TB
         RPT["Weekly<br>Report"]
         UNC["Uncertainty<br>Prompts"]
-        STATS["/report-stats<br>Dashboard"]
+        STATS["/stats<br>Dashboard"]
     end
 
     MGR["Manager"]

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-ReportBot is a Slack bot that collects work items from developers and generates weekly markdown reports. It has two data sources: manual `/report` slash commands from developers, and automated GitLab merge request fetching. All items are AI-categorized using Anthropic Claude or OpenAI.
+ReportBot is a Slack bot that collects work items from developers and generates weekly markdown reports. It has two data sources: manual `/report` slash commands from developers, and automated fetching of GitLab MRs and/or GitHub PRs (either or both can be configured). All items are AI-categorized using Anthropic Claude or OpenAI.
 
 ## Build and Run
 
@@ -30,23 +30,26 @@ Configuration is layered: `config.yaml` is loaded first, then environment variab
 - **Slack**: `slack_bot_token` (xoxb-...), `slack_app_token` (xapp-...)
 - **GitLab**: `gitlab_url`, `gitlab_token`, `gitlab_group_id` (numeric ID or group path)
 - **LLM**: `llm_provider` ("anthropic" or "openai"), `anthropic_api_key` or `openai_api_key`, `llm_critic_enabled` (bool, enables generator-critic second pass)
-- **Permissions**: `manager_slack_ids` (list of Slack user IDs) — controls access to `/fetch-mrs`, `/generate-report`, `/check`, `/retrospective`, `/report-stats`
+- **Permissions**: `manager_slack_ids` (list of Slack user IDs) — controls access to `/fetch`, `/generate-report`, `/check`, `/retrospective`, `/stats`
 - **Nudge**: `team_members` (list of Slack full names or user IDs; used by `/check` and scheduled nudge), `nudge_day` (Monday-Sunday), `nudge_time` (HH:MM 24h format)
+- **Auto-fetch**: `auto_fetch_schedule` (5-field cron expression, e.g. `"0 9 * * 1-5"` for weekdays at 9am; empty to disable)
 - **Team**: `team_name` (used in report header and filename)
 
 See `config.yaml` and `README.md` for full reference.
 
 ## Architecture
 
-The application has a flat structure with 13 Go source files (+ 4 test files):
+The application has a flat structure with 15 Go source files (+ 5 test files):
 
-- **main.go** — Entry point: loads config, initializes DB, creates Slack client, starts nudge scheduler and Socket Mode bot
+- **main.go** — Entry point: loads config, initializes DB, creates Slack client, starts nudge and auto-fetch schedulers, starts Socket Mode bot
 - **config.go** — Config struct, YAML + env loading with validation, `IsManagerID()` permission check
-- **models.go** — Core types (`WorkItem`, `GitLabMR`, `ReportSection`) and `CurrentWeekRange()` calendar week calculator
+- **models.go** — Core types (`WorkItem`, `GitLabMR`, `GitHubPR`, `ReportSection`) and `CurrentWeekRange()` calendar week calculator
 - **db.go** — SQLite schema and CRUD: `work_items`, `classification_history`, `classification_corrections` tables
-- **slack.go** — Socket Mode bot, slash command handlers (`/report`, `/fetch-mrs`, `/generate-report`, `/list`, `/check`, `/retrospective`, `/report-stats`, `/help`), nudge confirmation modals, edit/delete modals, uncertainty sampling, correction capture
+- **slack.go** — Socket Mode bot, slash command handlers (`/report`, `/fetch`, `/generate-report`, `/list`, `/check`, `/retrospective`, `/stats`, `/help`), nudge confirmation modals, edit/delete modals, uncertainty sampling, correction capture
 - **slack_users.go** — User resolution helpers: Slack API lookups, name matching, team member ID resolution
 - **gitlab.go** — GitLab API client: fetches merged and open MRs for a date range with pagination, filters by state and date client-side
+- **github.go** — GitHub Search API client: fetches merged and open PRs for a date range, converts to `GitHubPR` structs
+- **auto_fetch.go** — Reusable `FetchAndImportMRs()` function (used by `/fetch` and scheduler), `FetchResult` counters, `FormatFetchSummary()`, cron-based `StartAutoFetchScheduler()`
 - **llm.go** — AI classification: parallel batch processing, Anthropic (SDK) / OpenAI (HTTP), prompt caching, generator-critic loop, prompt building with corrections and glossary, retrospective analysis
 - **llm_examples.go** — TF-IDF index for relevance-based few-shot example selection from classification history
 - **glossary.go** — Glossary loading from YAML, auto-growth from repeated corrections, phrase extraction
@@ -59,7 +62,7 @@ The application has a flat structure with 13 Go source files (+ 4 test files):
 ### Work Item Lifecycle
 
 1. Developer reports via `/report` → `slack.go:handleReport()` → `db.go:InsertWorkItem()` with `source="slack"`
-2. Manager runs `/fetch-mrs` → `slack.go:handleFetchMRs()` → `gitlab.go:FetchMRs()` → batch insert with `source="gitlab"`, deduped by `source_ref` (MR URL)
+2. Manager runs `/fetch` (or auto-fetch scheduler fires) → `auto_fetch.go:FetchAndImportMRs()` → `gitlab.go:FetchMRs()` / `github.go:FetchGitHubPRs()` → batch insert with `source="gitlab"` or `source="github"`, deduped by `source_ref` (MR/PR URL)
 3. Manager runs `/generate-report` → `slack.go:handleGenerateReport()`:
    - Load items for current calendar week (Monday-Sunday via `models.go:ReportWeekRange()`)
    - `report_builder.go:BuildReportsFromLast()` loads last report as template, classifies items via `llm.go:CategorizeItemsToSections()` in parallel batches, merges into template
@@ -79,6 +82,10 @@ The application has a flat structure with 13 Go source files (+ 4 test files):
 **Scheduled**: `nudge.go:StartNudgeScheduler()` launches a goroutine that calculates the next occurrence of `nudge_day` at `nudge_time` using `nextWeekday()`, sleeps until then, DMs all `team_members`, then repeats. Disabled if `team_members` is empty.
 
 **On-demand**: `/check` shows missing members as Block Kit sections with per-member "Nudge" buttons and a "Nudge All" button. Clicking opens a confirmation modal; on submit, `nudge.go:sendNudges()` sends the DM.
+
+### Auto-Fetch Scheduler
+
+`auto_fetch.go:StartAutoFetchScheduler()` uses `robfig/cron/v3` to parse `auto_fetch_schedule` (a standard 5-field cron expression). When the schedule fires, it calls `FetchAndImportMRs()` and posts a summary to `report_channel_id`. Disabled when the config field is empty or when neither GitLab nor GitHub is configured. Example schedules: `"0 9 * * *"` (daily 9am), `"0 9 * * 1-5"` (weekdays 9am).
 
 ## Slack Integration Notes
 
@@ -109,6 +116,8 @@ Test files:
 - **llm_test.go** — Glossary overrides, prompt building (example limits, template guidance), JSON response parsing (array ticket IDs), critic response parsing
 - **llm_examples_test.go** — TF-IDF index building, topK similarity search, batch deduplication, cosine similarity edge cases
 - **models_test.go** — `ReportWeekRange` Monday cutoff logic
+- **auto_fetch_test.go** — `FormatFetchSummary` output formatting, `FetchAndImportMRs` error when neither source configured
+- **github_test.go** — GitHub Search API scope building, PR conversion, status mapping, `prReportedAt` fallback logic
 
 Manual testing for Slack integration:
 
@@ -116,7 +125,7 @@ Manual testing for Slack integration:
 2. Configure `config.yaml` with test tokens and a single-user `team_members` list
 3. Run `/report Test item (done)` → verify DB insert
 4. Run `/list` → verify item appears
-5. Run `/fetch-mrs` → verify GitLab API call and MR import
+5. Run `/fetch` → verify GitLab API call and MR import
 6. Run `/generate-report team` and `/generate-report boss` → compare output formats
 7. Run `/check` → verify missing members list with nudge buttons, click Nudge → verify confirmation modal and DM
 
@@ -125,6 +134,6 @@ Manual testing for Slack integration:
 - **`anthropic.Model` type error**: Cast string model name with `anthropic.Model(model)`
 - **SQLite CGO disabled**: Must build with `CGO_ENABLED=1`
 - **Slash commands not visible**: Reinstall Slack app after creating commands
-- **Permission denied on `/fetch-mrs`**: Add user's Slack user ID to `manager_slack_ids` in config
+- **Permission denied on `/fetch`**: Add user's Slack user ID to `manager_slack_ids` in config
 - **Scheduled nudge not firing**: Check logs for "Next nudge at..." message, verify `team_members` is not empty
 - **GitLab 401**: Verify `gitlab_token` has `read_api` scope and `gitlab_group_id` is accessible

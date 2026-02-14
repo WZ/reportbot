@@ -2,7 +2,7 @@
 
 A Slack bot that helps a development team track weekly work items and generate categorized markdown reports.
 
-Developers report completed work via slash commands. The bot also pulls merged/open GitLab merge requests automatically. An LLM (Anthropic Claude or OpenAI) classifies items into sections derived from the previous report.
+Developers report completed work via slash commands. The bot also pulls merged/open GitLab MRs and GitHub PRs (manually or on a cron schedule). An LLM (Anthropic Claude or OpenAI) classifies items into sections derived from the previous report.
 
 > **What started as "can an LLM sort bullet points into categories?"** turned into a self-improving classification system with memory, self-evaluation, and a second LLM that critiques the first one's homework. This project is an experiment in agentic AI patterns — the bot learns from its mistakes, writes its own rules, and occasionally gets things right on the first try. Built mostly by talking to Claude, because why write code yourself when you can argue with an AI about code instead.
 
@@ -11,12 +11,12 @@ Developers report completed work via slash commands. The bot also pulls merged/o
 ### Commands
 
 - `/report` (or `/rpt`) — Developers report work items via Slack
-- `/fetch-mrs` — Pull merged and open GitLab MRs for the current calendar week
+- `/fetch` — Pull merged and open GitLab MRs and/or GitHub PRs for the current calendar week
 - `/generate-report` (or `/gen`) — Generate a team markdown file (or boss `.eml` draft) and upload it to Slack
 - `/list` — View this week's items with inline edit/delete actions
 - `/check` — Managers: list missing members with inline nudge buttons
 - `/retrospective` — Managers: analyze recent corrections and suggest glossary/guide improvements
-- `/report-stats` — Managers: view classification accuracy dashboard and trends
+- `/stats` — Managers: view classification accuracy dashboard and trends
 - `/help` — Show all commands and example usage
 
 ### Report Generation
@@ -39,14 +39,14 @@ The LLM classifier improves itself over time through a feedback loop:
 - **Auto-growing glossary** — When the same correction appears 2+ times, a deterministic glossary rule is created automatically
 - **Uncertainty sampling** — Low-confidence items are surfaced to the manager with interactive section buttons after report generation
 - **Retrospective analysis** — `/retrospective` uses the LLM to find correction patterns and suggest glossary terms or guide updates
-- **Accuracy dashboard** — `/report-stats` shows classification metrics, confidence distribution, most-corrected sections, and weekly trends
+- **Accuracy dashboard** — `/stats` shows classification metrics, confidence distribution, most-corrected sections, and weekly trends
 
 ```mermaid
 flowchart LR
     subgraph Input["Input"]
         direction TB
         DEV["/report<br>(Slack)"]
-        GL["GitLab<br>MRs"]
+        GL["GitLab MRs /<br>GitHub PRs"]
     end
 
     subgraph Classify["Classify"]
@@ -64,7 +64,7 @@ flowchart LR
         direction TB
         RPT["Weekly<br>Report"]
         UNC["Uncertainty<br>Prompts"]
-        STATS["/report-stats<br>Dashboard"]
+        STATS["/stats<br>Dashboard"]
     end
 
     MGR["Manager"]
@@ -104,13 +104,13 @@ See [docs/agentic-features-overview.md](docs/agentic-features-overview.md) for a
    |---|---|
    | `/report` | Report a work item |
    | `/rpt` | Alias of `/report` |
-   | `/fetch-mrs` | Fetch merged and open GitLab MRs for this week |
+   | `/fetch` | Fetch merged and open GitLab MRs and/or GitHub PRs for this week |
    | `/generate-report` | Generate the weekly report |
    | `/gen` | Alias of `/generate-report` |
    | `/list` | List this week's work items |
    | `/check` | List missing members with nudge buttons |
    | `/retrospective` | Analyze corrections and suggest improvements |
-   | `/report-stats` | View classification accuracy dashboard |
+   | `/stats` | View classification accuracy dashboard |
    | `/help` | Show help and usage |
 
 7. Install the app to your workspace
@@ -155,6 +155,9 @@ team_members:
   - "Member One"
   - "Member Two"
 
+# Automatic MR/PR fetching (cron expression, empty to disable)
+auto_fetch_schedule: "0 9 * * 1-5"  # weekdays at 9am
+
 # Day and time for scheduled nudge (configured timezone)
 nudge_day: "Friday"
 nudge_time: "10:00"
@@ -191,6 +194,7 @@ export LLM_GLOSSARY_PATH=./llm_glossary.yaml
 export LLM_CRITIC_ENABLED=true                  # Optional: enable generator-critic loop
 export MANAGER_SLACK_IDS="U01ABC123,U02DEF456"  # Comma-separated Slack user IDs
 export REPORT_CHANNEL_ID=C01234567
+export AUTO_FETCH_SCHEDULE="0 9 * * 1-5"        # Optional: cron schedule for auto-fetch
 export MONDAY_CUTOFF_TIME=12:00
 export TIMEZONE=America/Los_Angeles
 ```
@@ -296,15 +300,23 @@ Delegated names support fuzzy matching against `team_members` (for example `{Mem
 
 Status is auto-extracted from the trailing parenthetical. Defaults to `done` if omitted.
 
-### Fetching GitLab Merge Requests
+### Fetching MRs/PRs
 
-Manager only. Pulls all merged MRs for the current calendar week (Monday–Sunday):
+Manager only. Pulls all merged and open GitLab MRs and/or GitHub PRs for the current calendar week (Monday–Sunday):
 
 ```
-/fetch-mrs
+/fetch
 ```
 
-Duplicates are skipped automatically based on MR URL.
+Duplicates are skipped automatically based on MR/PR URL. Non-team authors (not in `team_members`) are filtered out.
+
+**Automatic fetching**: Set `auto_fetch_schedule` to a cron expression and MRs/PRs will be imported on a schedule, with a summary posted to `report_channel_id`. Examples:
+
+```yaml
+auto_fetch_schedule: "0 9 * * *"     # daily at 9am
+auto_fetch_schedule: "0 9 * * 1-5"   # weekdays at 9am
+auto_fetch_schedule: "0 9 * * 5"     # Fridays at 9am
+```
 
 ### Generating Reports
 
@@ -364,7 +376,7 @@ Requires the `im:write` bot token scope in your Slack app.
 
 ## Permissions
 
-Manager commands (`/fetch-mrs`, `/generate-report`, `/check`, `/retrospective`, `/report-stats`) are restricted to Slack user IDs listed in `manager_slack_ids`.
+Manager commands (`/fetch`, `/generate-report`, `/check`, `/retrospective`, `/stats`) are restricted to Slack user IDs listed in `manager_slack_ids`.
 
 ## Report Structure
 
@@ -386,9 +398,11 @@ reportbot/
   llm_examples.go      TF-IDF index for relevance-based few-shot example selection
   glossary.go          Glossary loading, auto-growth from corrections
   gitlab.go            GitLab API client for fetching merged MRs
+  github.go            GitHub Search API client for fetching merged/open PRs
+  auto_fetch.go        Reusable fetch-import logic, cron-based auto-fetch scheduler
   report.go            Markdown/EML report file generation
   report_builder.go    Template parsing, LLM classification pipeline, merge logic
-  slack.go             Slack Socket Mode bot, slash commands, nudge UI, /report-stats, correction capture, uncertainty sampling
+  slack.go             Slack Socket Mode bot, slash commands, nudge UI, /stats, correction capture, uncertainty sampling
   slack_users.go       User resolution helpers: Slack API lookups, name matching
   nudge.go             Scheduled weekly reminder and DM sender
   Dockerfile           Multi-stage Docker build

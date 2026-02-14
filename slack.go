@@ -92,7 +92,7 @@ func handleSlashCommand(client *socketmode.Client, api *slack.Client, db *sql.DB
 		handleReport(api, db, cfg, cmd)
 	case "/rpt":
 		handleReport(api, db, cfg, cmd)
-	case "/fetch-mrs":
+	case "/fetch":
 		handleFetchMRs(api, db, cfg, cmd)
 	case "/generate-report":
 		handleGenerateReport(api, db, cfg, cmd)
@@ -104,7 +104,7 @@ func handleSlashCommand(client *socketmode.Client, api *slack.Client, db *sql.DB
 		handleListMissing(api, db, cfg, cmd)
 	case "/retrospective":
 		handleRetrospective(api, db, cfg, cmd)
-	case "/report-stats":
+	case "/stats":
 		handleReportStats(api, db, cfg, cmd)
 	case "/help":
 		handleHelp(api, cfg, cmd)
@@ -296,12 +296,12 @@ func handleFetchMRs(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashCo
 	isManager, err := isManagerUser(api, cfg, cmd.UserID)
 	if err != nil {
 		postEphemeral(api, cmd, fmt.Sprintf("Error checking permissions: %v", err))
-		log.Printf("fetch-mrs auth error user=%s: %v", cmd.UserID, err)
+		log.Printf("fetch auth error user=%s: %v", cmd.UserID, err)
 		return
 	}
 	if !isManager {
 		postEphemeral(api, cmd, "Sorry, only managers can use this command.")
-		log.Printf("fetch-mrs denied user=%s", cmd.UserID)
+		log.Printf("fetch denied user=%s", cmd.UserID)
 		return
 	}
 
@@ -311,7 +311,6 @@ func handleFetchMRs(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashCo
 	}
 
 	monday, nextMonday := ReportWeekRange(cfg, time.Now().In(cfg.Location))
-	log.Printf("fetch-mrs range %s - %s", monday.Format("2006-01-02"), nextMonday.Format("2006-01-02"))
 
 	var sources []string
 	if cfg.GitLabConfigured() {
@@ -324,137 +323,16 @@ func handleFetchMRs(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashCo
 		strings.Join(sources, " + "),
 		monday.Format("Jan 2"), nextMonday.AddDate(0, 0, -1).Format("Jan 2")))
 
-	teamMembers := cfg.TeamMembers
-	var totalFetched int
-	var skippedNonTeam int
-	var alreadyTracked int
-	var newItems []WorkItem
-	var fetchErrors []string
-
-	// Fetch GitLab MRs if configured.
-	if cfg.GitLabConfigured() {
-		mrs, glErr := FetchMRs(cfg, monday, nextMonday)
-		if glErr != nil {
-			log.Printf("fetch-mrs gitlab error: %v", glErr)
-			fetchErrors = append(fetchErrors, fmt.Sprintf("GitLab: %v", glErr))
-		} else {
-			log.Printf("fetch-mrs gitlab fetched=%d", len(mrs))
-			totalFetched += len(mrs)
-			for _, mr := range mrs {
-				if len(teamMembers) > 0 {
-					if !anyNameMatches(teamMembers, mr.AuthorName) && !anyNameMatches(teamMembers, mr.Author) {
-						log.Printf("fetch-mrs skipped non-team gitlab author=%s username=%s", mr.AuthorName, mr.Author)
-						skippedNonTeam++
-						continue
-					}
-				}
-				exists, dbErr := SourceRefExists(db, mr.WebURL)
-				if dbErr != nil {
-					log.Printf("Error checking MR existence: %v", dbErr)
-					continue
-				}
-				if exists {
-					alreadyTracked++
-					continue
-				}
-				newItems = append(newItems, WorkItem{
-					Description: mr.Title,
-					Author:      mr.AuthorName,
-					Source:      "gitlab",
-					SourceRef:   mr.WebURL,
-					Status:      mapMRStatus(mr),
-					ReportedAt:  mrReportedAt(mr, cfg.Location),
-				})
-			}
-		}
-	}
-
-	// Fetch GitHub PRs if configured.
-	if cfg.GitHubConfigured() {
-		prs, ghErr := FetchGitHubPRs(cfg, monday, nextMonday)
-		if ghErr != nil {
-			log.Printf("fetch-mrs github error: %v", ghErr)
-			fetchErrors = append(fetchErrors, fmt.Sprintf("GitHub: %v", ghErr))
-		} else {
-			log.Printf("fetch-mrs github fetched=%d", len(prs))
-			totalFetched += len(prs)
-			for _, pr := range prs {
-				if len(teamMembers) > 0 {
-					if !anyNameMatches(teamMembers, pr.AuthorName) && !anyNameMatches(teamMembers, pr.Author) {
-						log.Printf("fetch-mrs skipped non-team github author=%s", pr.Author)
-						skippedNonTeam++
-						continue
-					}
-				}
-				exists, dbErr := SourceRefExists(db, pr.HTMLURL)
-				if dbErr != nil {
-					log.Printf("Error checking PR existence: %v", dbErr)
-					continue
-				}
-				if exists {
-					alreadyTracked++
-					continue
-				}
-				newItems = append(newItems, WorkItem{
-					Description: pr.Title,
-					Author:      pr.AuthorName,
-					Source:      "github",
-					SourceRef:   pr.HTMLURL,
-					Status:      mapPRStatus(pr),
-					ReportedAt:  prReportedAt(pr, cfg.Location),
-				})
-			}
-		}
-	}
-
-	if len(fetchErrors) > 0 && len(newItems) == 0 && totalFetched == 0 {
-		postEphemeral(api, cmd, fmt.Sprintf("Error fetching MRs/PRs:\n%s", strings.Join(fetchErrors, "\n")))
-		return
-	}
-
-	if len(newItems) == 0 {
-		var reasons []string
-		if alreadyTracked > 0 {
-			reasons = append(reasons, fmt.Sprintf("%d already tracked", alreadyTracked))
-		}
-		if skippedNonTeam > 0 {
-			reasons = append(reasons, fmt.Sprintf("%d non-team", skippedNonTeam))
-		}
-		msg := fmt.Sprintf("Found %d MRs/PRs (merged+open), none to add", totalFetched)
-		if len(reasons) > 0 {
-			msg += fmt.Sprintf(" (%s)", strings.Join(reasons, ", "))
-		}
-		msg += "."
-		if len(fetchErrors) > 0 {
-			msg += fmt.Sprintf("\nWarnings:\n%s", strings.Join(fetchErrors, "\n"))
-		}
-		postEphemeral(api, cmd, msg)
-		log.Printf("fetch-mrs none to add: alreadyTracked=%d skippedNonTeam=%d", alreadyTracked, skippedNonTeam)
-		return
-	}
-
-	inserted, err := InsertWorkItems(db, newItems)
+	result, err := FetchAndImportMRs(cfg, db)
 	if err != nil {
-		postEphemeral(api, cmd, fmt.Sprintf("Error storing MRs/PRs: %v", err))
-		log.Printf("fetch-mrs insert error: %v", err)
+		postEphemeral(api, cmd, fmt.Sprintf("Error: %v", err))
+		log.Printf("fetch error: %v", err)
 		return
 	}
 
-	var summary []string
-	summary = append(summary, fmt.Sprintf("%d new", inserted))
-	if alreadyTracked > 0 {
-		summary = append(summary, fmt.Sprintf("%d already tracked", alreadyTracked))
-	}
-	if skippedNonTeam > 0 {
-		summary = append(summary, fmt.Sprintf("%d non-team", skippedNonTeam))
-	}
-	msg := fmt.Sprintf("Fetched %d MRs/PRs (merged+open): %s",
-		totalFetched, strings.Join(summary, ", "))
-	if len(fetchErrors) > 0 {
-		msg += fmt.Sprintf("\nWarnings:\n%s", strings.Join(fetchErrors, "\n"))
-	}
+	msg := FormatFetchSummary(result)
 	postEphemeral(api, cmd, msg)
-	log.Printf("fetch-mrs inserted=%d alreadyTracked=%d skippedNonTeam=%d", inserted, alreadyTracked, skippedNonTeam)
+	log.Printf("fetch inserted=%d alreadyTracked=%d skippedNonTeam=%d", result.Inserted, result.AlreadyTracked, result.SkippedNonTeam)
 }
 
 func handleGenerateReport(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashCommand) {
@@ -1434,12 +1312,12 @@ func handleReportStats(api *slack.Client, db *sql.DB, cfg Config, cmd slack.Slas
 	isManager, err := isManagerUser(api, cfg, cmd.UserID)
 	if err != nil {
 		postEphemeral(api, cmd, fmt.Sprintf("Error checking permissions: %v", err))
-		log.Printf("report-stats auth error user=%s: %v", cmd.UserID, err)
+		log.Printf("stats auth error user=%s: %v", cmd.UserID, err)
 		return
 	}
 	if !isManager {
 		postEphemeral(api, cmd, "Sorry, only managers can use this command.")
-		log.Printf("report-stats denied user=%s", cmd.UserID)
+		log.Printf("stats denied user=%s", cmd.UserID)
 		return
 	}
 
@@ -1447,7 +1325,7 @@ func handleReportStats(api *slack.Client, db *sql.DB, cfg Config, cmd slack.Slas
 	allTimeStats, err := GetClassificationStats(db, time.Time{})
 	if err != nil {
 		postEphemeral(api, cmd, fmt.Sprintf("Error loading stats: %v", err))
-		log.Printf("report-stats all-time error: %v", err)
+		log.Printf("stats all-time error: %v", err)
 		return
 	}
 
@@ -1455,21 +1333,21 @@ func handleReportStats(api *slack.Client, db *sql.DB, cfg Config, cmd slack.Slas
 	fourWeeksAgo := time.Now().In(cfg.Location).AddDate(0, 0, -28)
 	recentStats, err := GetClassificationStats(db, fourWeeksAgo)
 	if err != nil {
-		log.Printf("report-stats recent error (non-fatal): %v", err)
+		log.Printf("stats recent error (non-fatal): %v", err)
 		recentStats = ClassificationStats{}
 	}
 
 	// Load per-section corrections.
 	sectionCorr, err := GetCorrectionsBySection(db, fourWeeksAgo)
 	if err != nil {
-		log.Printf("report-stats section corrections error (non-fatal): %v", err)
+		log.Printf("stats section corrections error (non-fatal): %v", err)
 	}
 
 	// Load 8-week trend.
 	eightWeeksAgo := time.Now().In(cfg.Location).AddDate(0, 0, -56)
 	trends, err := GetWeeklyClassificationTrend(db, eightWeeksAgo)
 	if err != nil {
-		log.Printf("report-stats trend error (non-fatal): %v", err)
+		log.Printf("stats trend error (non-fatal): %v", err)
 	}
 
 	var sb strings.Builder
@@ -1529,7 +1407,7 @@ func handleReportStats(api *slack.Client, db *sql.DB, cfg Config, cmd slack.Slas
 	}
 
 	postEphemeral(api, cmd, sb.String())
-	log.Printf("report-stats sent user=%s", cmd.UserID)
+	log.Printf("stats sent user=%s", cmd.UserID)
 }
 
 func handleHelp(api *slack.Client, cfg Config, cmd slack.SlashCommand) {
@@ -1563,12 +1441,12 @@ func handleHelp(api *slack.Client, cfg Config, cmd slack.SlashCommand) {
 			"",
 			"*Manager Commands*",
 			"",
-			"`/fetch-mrs` — Fetch *merged + open* GitLab MRs and/or GitHub PRs for this week.",
+			"`/fetch` — Fetch *merged + open* GitLab MRs and/or GitHub PRs for this week.",
 			"`/generate-report team|boss` — Generate weekly report.",
 			"`/gen` — Alias of `/generate-report`.",
 			"`/check` — List missing members with inline nudge buttons.",
 			"`/retrospective` — Analyze recent corrections and suggest improvements.",
-			"`/report-stats` — Show classification accuracy dashboard.",
+			"`/stats` — Show classification accuracy dashboard.",
 		)
 	}
 

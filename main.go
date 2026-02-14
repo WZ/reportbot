@@ -38,6 +38,7 @@ func main() {
 	)
 
 	StartNudgeScheduler(cfg, api)
+	StartAutoFetchScheduler(cfg, db, api)
 
 	log.Println("Starting Engineering Report Bot...")
 	if err := StartSlackBot(cfg, db, api); err != nil {
