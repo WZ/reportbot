@@ -23,7 +23,7 @@ We added a **self-improving feedback loop** where every manager correction train
 flowchart TB
     subgraph Input["Data Sources"]
         S1["/report\n(Slack)"]
-        S2["/fetch-mrs\n(GitLab)"]
+        S2["/fetch\n(GitLab)"]
     end
 
     subgraph DB["Persistent Storage"]

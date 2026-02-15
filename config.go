@@ -45,6 +45,7 @@ type Config struct {
 	TeamMembers      []string `yaml:"team_members"`
 	NudgeDay         string   `yaml:"nudge_day"`
 	NudgeTime        string   `yaml:"nudge_time"`
+	AutoFetchSchedule string `yaml:"auto_fetch_schedule"`
 	MondayCutoffTime string   `yaml:"monday_cutoff_time"`
 	Timezone         string   `yaml:"timezone"`
 	TeamName         string   `yaml:"team_name"`
@@ -103,6 +104,7 @@ func LoadConfig() Config {
 	envOverride(&cfg.TeamName, "TEAM_NAME")
 	envOverride(&cfg.NudgeDay, "NUDGE_DAY")
 	envOverride(&cfg.NudgeTime, "NUDGE_TIME")
+	envOverride(&cfg.AutoFetchSchedule, "AUTO_FETCH_SCHEDULE")
 	envOverride(&cfg.MondayCutoffTime, "MONDAY_CUTOFF_TIME")
 	envOverride(&cfg.Timezone, "TIMEZONE")
 
@@ -196,7 +198,7 @@ func LoadConfig() Config {
 	}
 
 	if !cfg.GitLabConfigured() && !cfg.GitHubConfigured() {
-		log.Printf("WARNING: Neither GitLab nor GitHub is configured. /fetch-mrs will have nothing to fetch.")
+		log.Printf("WARNING: Neither GitLab nor GitHub is configured. /fetch will have nothing to fetch.")
 	}
 
 	switch cfg.LLMProvider {

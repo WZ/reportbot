@@ -6,12 +6,12 @@
 slack_bot_token: "xoxb-your-bot-token"
 slack_app_token: "xapp-your-app-token"
 
-# GitLab access (optional — set to fetch MRs via /fetch-mrs)
+# GitLab access (optional — set to fetch MRs via /fetch)
 gitlab_url: "https://gitlab.example.com"
 gitlab_token: "glpat-your-gitlab-token"
 gitlab_group_id: "my-team-group"
 
-# GitHub access (optional — set to fetch PRs via /fetch-mrs)
+# GitHub access (optional — set to fetch PRs via /fetch)
 github_token: ""
 github_org: "my-github-org"
 github_repos: []  # optional: limit to specific repos, e.g. ["org/repo1", "org/repo2"]
@@ -42,7 +42,7 @@ report_output_dir: "./reportbot-reports"
 # Channel ID used for report reminders and links
 report_channel_id: "C01234567"
 
-# Manager Slack user IDs (controls access to /fetch-mrs, /generate-report, /check, /retrospective, /report-stats)
+# Manager Slack user IDs (controls access to /fetch, /generate-report, /check, /retrospective, /stats)
 manager_slack_ids:
   - "U01ABC123"
 
@@ -50,6 +50,11 @@ manager_slack_ids:
 team_members:
   - "Alice Smith"
   - "Bob Lee"
+
+# Automatic MR/PR fetching schedule (standard 5-field cron expression)
+# Examples: "0 9 * * *" (daily 9am), "0 9 * * 1-5" (weekdays 9am), "0 9 * * 5" (Fridays 9am)
+# Leave empty to disable auto-fetch.
+auto_fetch_schedule: ""
 
 # Weekly nudge schedule in configured timezone
 nudge_day: "Friday"
