@@ -454,11 +454,23 @@ func handleGenerateReport(api *slack.Client, db *sql.DB, cfg Config, cmd slack.S
 
 	tokenUsedText := formatTokenCount(llmUsage.TotalTokens())
 
+	uploadChannel := cmd.ChannelID
+	if cfg.ReportPrivate {
+		// Send report as a DM to the caller instead of the channel.
+		ch, _, _, err := api.OpenConversation(&slack.OpenConversationParameters{Users: []string{cmd.UserID}})
+		if err != nil {
+			log.Printf("Error opening DM for private report: %v", err)
+			postEphemeral(api, cmd, "Error opening DM to send private report. Check bot permissions.")
+			return
+		}
+		uploadChannel = ch.ID
+	}
+
 	_, err = api.UploadFileV2(slack.UploadFileV2Parameters{
 		File:           filePath,
 		FileSize:       int(fi.Size()),
 		Filename:       filepath.Base(filePath),
-		Channel:        cmd.ChannelID,
+		Channel:        uploadChannel,
 		Title:          fileTitle,
 		InitialComment: fmt.Sprintf("Generated report for week starting %s (mode: %s, tokens used: %s)", monday.Format("2006-01-02"), mode, tokenUsedText),
 	})

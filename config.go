@@ -49,6 +49,7 @@ type Config struct {
 	MondayCutoffTime string   `yaml:"monday_cutoff_time"`
 	Timezone         string   `yaml:"timezone"`
 	TeamName         string   `yaml:"team_name"`
+	ReportPrivate    bool     `yaml:"report_private"`
 
 	Location *time.Location `yaml:"-"` // computed from Timezone, not from YAML
 }
@@ -107,6 +108,7 @@ func LoadConfig() Config {
 	envOverride(&cfg.AutoFetchSchedule, "AUTO_FETCH_SCHEDULE")
 	envOverride(&cfg.MondayCutoffTime, "MONDAY_CUTOFF_TIME")
 	envOverride(&cfg.Timezone, "TIMEZONE")
+	envOverrideBool(&cfg.ReportPrivate, "REPORT_PRIVATE")
 
 	if ids := os.Getenv("MANAGER_SLACK_IDS"); ids != "" {
 		cfg.ManagerSlackIDs = nil
