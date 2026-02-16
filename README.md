@@ -15,7 +15,7 @@ Developers report completed work via slash commands. The bot also pulls merged/o
 - `/generate-report` (or `/gen`) — Generate a team markdown file (or boss `.eml` draft) and upload it to Slack
 - `/list` — View this week's items with inline edit/delete actions
 - `/check` — Managers: list missing members with inline nudge buttons
-- `/retrospective` — Managers: analyze recent corrections and suggest glossary/guide improvements
+- `/retrospect` — Managers: analyze recent corrections and suggest glossary/guide improvements
 - `/stats` — Managers: view classification accuracy dashboard and trends
 - `/help` — Show all commands and example usage
 
@@ -38,7 +38,7 @@ The LLM classifier improves itself over time through a feedback loop:
 - **Correction capture** — Manager corrections (via edit modal or uncertainty buttons) are stored and fed back into future prompts
 - **Auto-growing glossary** — When the same correction appears 2+ times, a deterministic glossary rule is created automatically
 - **Uncertainty sampling** — Low-confidence items are surfaced to the manager with interactive section buttons after report generation
-- **Retrospective analysis** — `/retrospective` uses the LLM to find correction patterns and suggest glossary terms or guide updates
+- **Retrospective analysis** — `/retrospect` uses the LLM to find correction patterns and suggest glossary terms or guide updates
 - **Accuracy dashboard** — `/stats` shows classification metrics, confidence distribution, most-corrected sections, and weekly trends
 
 ```mermaid
@@ -109,7 +109,7 @@ See [docs/agentic-features-overview.md](docs/agentic-features-overview.md) for a
    | `/gen` | Alias of `/generate-report` |
    | `/list` | List this week's work items |
    | `/check` | List missing members with nudge buttons |
-   | `/retrospective` | Analyze corrections and suggest improvements |
+   | `/retrospect` | Analyze corrections and suggest improvements |
    | `/stats` | View classification accuracy dashboard |
    | `/help` | Show help and usage |
 
@@ -380,7 +380,7 @@ Requires the `im:write` bot token scope in your Slack app.
 
 ## Permissions
 
-Manager commands (`/fetch`, `/generate-report`, `/check`, `/retrospective`, `/stats`) are restricted to Slack user IDs listed in `manager_slack_ids`.
+Manager commands (`/fetch`, `/generate-report`, `/check`, `/retrospect`, `/stats`) are restricted to Slack user IDs listed in `manager_slack_ids`.
 
 ## Report Structure
 

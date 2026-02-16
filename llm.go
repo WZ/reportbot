@@ -727,13 +727,13 @@ Analyze the corrections below and find patterns (phrases or topics that were rep
 Only suggest patterns that appear 2+ times. Max 5 suggestions.
 
 For each suggestion, choose an action:
-- "glossary_term": A keyword/phrase that should always map to a specific section. Provide "phrase" and "section" (section_id).
+- "glossary_term": A keyword/phrase that should always map to a specific section. Provide "phrase" and "section" (use the section label, e.g. "Infrastructure", not the ID).
 - "guide_update": A rule to add to the classification guide. Provide "guide_text" with the rule text. Keep guide_text under 500 characters.
 
 IMPORTANT: In "title" and "reasoning", always use section LABELS (e.g. "Data Automation & Database"), never raw section IDs (e.g. "S7_0").
 
 Respond with JSON only (no markdown):
-[{"title": "...", "reasoning": "...", "action": "glossary_term", "phrase": "...", "section": "S1_2", "guide_text": ""}, ...]`, sectionLines.String())
+[{"title": "...", "reasoning": "...", "action": "glossary_term", "phrase": "...", "section": "Infrastructure", "guide_text": ""}, ...]`, sectionLines.String())
 
 	userPrompt := "Recent classification corrections:\n" + corrLines.String()
 

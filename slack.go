@@ -102,7 +102,7 @@ func handleSlashCommand(client *socketmode.Client, api *slack.Client, db *sql.DB
 		handleListItems(api, db, cfg, cmd)
 	case "/check":
 		handleListMissing(api, db, cfg, cmd)
-	case "/retrospective":
+	case "/retrospect":
 		handleRetrospective(api, db, cfg, cmd)
 	case "/stats":
 		handleReportStats(api, db, cfg, cmd)
@@ -1471,7 +1471,7 @@ func handleHelp(api *slack.Client, cfg Config, cmd slack.SlashCommand) {
 			"`/generate-report team|boss` — Generate weekly report.",
 			"`/gen` — Alias of `/generate-report`.",
 			"`/check` — List missing members with inline nudge buttons.",
-			"`/retrospective` — Analyze recent corrections and suggest improvements.",
+			"`/retrospect` — Analyze recent corrections and suggest improvements.",
 			"`/stats` — Show classification accuracy dashboard.",
 		)
 	}
@@ -1888,6 +1888,14 @@ func handleRetroApply(api *slack.Client, db *sql.DB, cfg Config, cb slack.Intera
 		if phrase == "" || section == "" {
 			postEphemeralTo(api, channelID, userID, "Missing phrase or section for glossary term.")
 			return
+		}
+		// Resolve section ID to label for consistency with auto-grow glossary.
+		sectionOpts := loadSectionOptionsForModal(cfg)
+		for _, opt := range sectionOpts {
+			if opt.ID == section {
+				section = opt.Label
+				break
+			}
 		}
 		if err := AppendGlossaryTerm(cfg.LLMGlossaryPath, phrase, section); err != nil {
 			postEphemeralTo(api, channelID, userID, fmt.Sprintf("Error applying glossary term: %v", err))

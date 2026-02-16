@@ -30,7 +30,7 @@ Configuration is layered: `config.yaml` is loaded first, then environment variab
 - **Slack**: `slack_bot_token` (xoxb-...), `slack_app_token` (xapp-...)
 - **GitLab**: `gitlab_url`, `gitlab_token`, `gitlab_group_id` (numeric ID or group path)
 - **LLM**: `llm_provider` ("anthropic" or "openai"), `anthropic_api_key` or `openai_api_key`, `llm_critic_enabled` (bool, enables generator-critic second pass)
-- **Permissions**: `manager_slack_ids` (list of Slack user IDs) — controls access to `/fetch`, `/generate-report`, `/check`, `/retrospective`, `/stats`
+- **Permissions**: `manager_slack_ids` (list of Slack user IDs) — controls access to `/fetch`, `/generate-report`, `/check`, `/retrospect`, `/stats`
 - **Nudge**: `team_members` (list of Slack full names or user IDs; used by `/check` and scheduled nudge), `nudge_day` (Monday-Sunday), `nudge_time` (HH:MM 24h format)
 - **Auto-fetch**: `auto_fetch_schedule` (5-field cron expression, e.g. `"0 9 * * 1-5"` for weekdays at 9am; empty to disable)
 - **Report**: `report_private` (bool, when true `/generate-report` DMs the report to the caller instead of posting to the channel; default false)
@@ -46,7 +46,7 @@ The application has a flat structure with 15 Go source files (+ 5 test files):
 - **config.go** — Config struct, YAML + env loading with validation, `IsManagerID()` permission check
 - **models.go** — Core types (`WorkItem`, `GitLabMR`, `GitHubPR`, `ReportSection`) and `CurrentWeekRange()` calendar week calculator
 - **db.go** — SQLite schema and CRUD: `work_items`, `classification_history`, `classification_corrections` tables
-- **slack.go** — Socket Mode bot, slash command handlers (`/report`, `/fetch`, `/generate-report`, `/list`, `/check`, `/retrospective`, `/stats`, `/help`), nudge confirmation modals, edit/delete modals, uncertainty sampling, correction capture
+- **slack.go** — Socket Mode bot, slash command handlers (`/report`, `/fetch`, `/generate-report`, `/list`, `/check`, `/retrospect`, `/stats`, `/help`), nudge confirmation modals, edit/delete modals, uncertainty sampling, correction capture
 - **slack_users.go** — User resolution helpers: Slack API lookups, name matching, team member ID resolution
 - **gitlab.go** — GitLab API client: fetches merged and open MRs for a date range with pagination, filters by state and date client-side
 - **github.go** — GitHub Search API client: fetches merged and open PRs for a date range, converts to `GitHubPR` structs
