@@ -51,7 +51,7 @@ flowchart TB
     subgraph Output["Output & Feedback"]
         RPT["Draft Report\n(.md + .eml)"]
         UNC["Uncertainty\nSampling"]
-        RETRO["/retrospective\nAnalysis"]
+        RETRO["/retrospect\nAnalysis"]
     end
 
     subgraph Feedback["Manager Feedback"]
@@ -209,12 +209,12 @@ After report generation, items with confidence between 0 and the threshold (defa
 
 One tap records a correction, updates the item, and feeds the feedback loop. Capped at 10 items to avoid notification fatigue.
 
-### 7. `/retrospective` Command
+### 7. `/retrospect` Command
 
 Manager-only command that loads all corrections from the last 4 weeks and sends them to the LLM for pattern analysis:
 
 ```
-/retrospective
+/retrospect
 → "Analyzing 23 corrections from the last 4 weeks..."
 → Suggestion 1: "TimescaleDB items always go to Query Service"
    Action: Add glossary term "timescaledb" → S1_0
@@ -270,7 +270,7 @@ sequenceDiagram
     end
 
     Note over Bot,LLM: End of Week
-    M->>Bot: /retrospective
+    M->>Bot: /retrospect
     Bot->>LLM: Analyze correction patterns
     LLM-->>Bot: Suggestions
     Bot->>M: Apply/Dismiss buttons
@@ -344,7 +344,7 @@ flowchart TB
     subgraph T3["Tier 3: Guide (Semantic)"]
         direction LR
         R1["Free-text rules in\nclassification guide"]
-        R2["Updated via\n/retrospective"]
+        R2["Updated via\n/retrospect"]
         R3["Domain-specific\nhints for the LLM"]
     end
 

@@ -78,7 +78,7 @@ Traditional AI integration is **call-and-forget**: send data to an LLM, get a re
 
 ### Feature 4: Retrospective Analysis
 
-**What it does:** The `/retrospective` command triggers an LLM analysis of all recent corrections to find patterns and suggest systemic improvements.
+**What it does:** The `/retrospect` command triggers an LLM analysis of all recent corrections to find patterns and suggest systemic improvements.
 
 **Why it matters:** Individual corrections fix individual items. Retrospective analysis finds the **root cause** — a missing glossary rule, an ambiguous category description — and suggests a fix. The manager reviews and applies with one click.
 
@@ -198,7 +198,7 @@ All agentic features are **additive and non-fatal**:
 - Parallel batches don't increase total tokens, only wall-clock time
 - Prompt caching reduces input token costs by ~40% across parallel batches
 - The critic loop is opt-in (`llm_critic_enabled`) — disabled by default to avoid extra cost
-- Retrospective is on-demand (`/retrospective`), not scheduled — cost is opt-in
+- Retrospective is on-demand (`/retrospect`), not scheduled — cost is opt-in
 - Glossary overrides bypass the LLM entirely — each auto-glossary term saves future tokens
 - TF-IDF example selection is pure in-memory computation — no additional LLM calls
 
@@ -257,7 +257,7 @@ Week 1:  LLM classifies 80 items → Manager corrects 12 → Corrections stored
 Week 2:  LLM sees Week 1 corrections in prompt → Only 7 need correcting
          Auto-glossary triggers for 2 repeated patterns
 Week 3:  Glossary handles those 2 patterns automatically → 4 corrections
-         Manager runs /retrospective → Applies 2 more rules
+         Manager runs /retrospect → Applies 2 more rules
 Week 4:  2 corrections. System is converging.
 ```
 

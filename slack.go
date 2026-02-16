@@ -102,7 +102,7 @@ func handleSlashCommand(client *socketmode.Client, api *slack.Client, db *sql.DB
 		handleListItems(api, db, cfg, cmd)
 	case "/check":
 		handleListMissing(api, db, cfg, cmd)
-	case "/retrospective":
+	case "/retrospect":
 		handleRetrospective(api, db, cfg, cmd)
 	case "/stats":
 		handleReportStats(api, db, cfg, cmd)
@@ -454,11 +454,23 @@ func handleGenerateReport(api *slack.Client, db *sql.DB, cfg Config, cmd slack.S
 
 	tokenUsedText := formatTokenCount(llmUsage.TotalTokens())
 
+	uploadChannel := cmd.ChannelID
+	if cfg.ReportPrivate {
+		// Send report as a DM to the caller instead of the channel.
+		ch, _, _, err := api.OpenConversation(&slack.OpenConversationParameters{Users: []string{cmd.UserID}})
+		if err != nil {
+			log.Printf("Error opening DM for private report: %v", err)
+			postEphemeral(api, cmd, "Error opening DM to send private report. Check bot permissions.")
+			return
+		}
+		uploadChannel = ch.ID
+	}
+
 	_, err = api.UploadFileV2(slack.UploadFileV2Parameters{
 		File:           filePath,
 		FileSize:       int(fi.Size()),
 		Filename:       filepath.Base(filePath),
-		Channel:        cmd.ChannelID,
+		Channel:        uploadChannel,
 		Title:          fileTitle,
 		InitialComment: fmt.Sprintf("Generated report for week starting %s (mode: %s, tokens used: %s)", monday.Format("2006-01-02"), mode, tokenUsedText),
 	})
@@ -476,7 +488,7 @@ func handleGenerateReport(api *slack.Client, db *sql.DB, cfg Config, cmd slack.S
 	log.Printf("generate-report done items=%d", len(items))
 
 	// Uncertainty sampling: send messages for low-confidence items.
-	sendUncertaintyMessages(api, cfg, cmd, result)
+	sendUncertaintyMessages(api, cfg, cmd, result, items)
 }
 
 func formatTokenCount(tokens int64) string {
@@ -859,6 +871,21 @@ func handleBlockActions(api *slack.Client, db *sql.DB, cfg Config, cb slack.Inte
 			return
 		}
 	}
+
+	// Support dynamically suffixed uncertainty action IDs.
+	if strings.HasPrefix(act.ActionID, actionUncertaintySelect+"_") {
+		handleUncertaintySelect(api, db, cfg, cb, act)
+		return
+	}
+	if strings.HasPrefix(act.ActionID, actionUncertaintyOther+"_") {
+		itemID, err := strconv.ParseInt(strings.TrimSpace(act.Value), 10, 64)
+		if err != nil {
+			postEphemeralTo(api, channelID, userID, "Invalid item id.")
+			return
+		}
+		openEditModal(api, db, cfg, cb.TriggerID, channelID, userID, itemID)
+		return
+	}
 }
 
 func handleViewSubmission(api *slack.Client, db *sql.DB, cfg Config, cb slack.InteractionCallback) {
@@ -1218,7 +1245,6 @@ func canManageItem(item WorkItem, isManager bool, user *slack.User) bool {
 	return false
 }
 
-
 func openNudgeConfirmModal(api *slack.Client, cfg Config, triggerID, channelID, targetIDs string) {
 	var validIDs []string
 	var names []string
@@ -1445,7 +1471,7 @@ func handleHelp(api *slack.Client, cfg Config, cmd slack.SlashCommand) {
 			"`/generate-report team|boss` — Generate weekly report.",
 			"`/gen` — Alias of `/generate-report`.",
 			"`/check` — List missing members with inline nudge buttons.",
-			"`/retrospective` — Analyze recent corrections and suggest improvements.",
+			"`/retrospect` — Analyze recent corrections and suggest improvements.",
 			"`/stats` — Show classification accuracy dashboard.",
 		)
 	}
@@ -1456,7 +1482,6 @@ func handleHelp(api *slack.Client, cfg Config, cmd slack.SlashCommand) {
 func isManagerUser(_ *slack.Client, cfg Config, userID string) (bool, error) {
 	return cfg.IsManagerID(userID), nil
 }
-
 
 func resolveDelegatedAuthorName(input string, teamMembers []string) string {
 	input = strings.TrimSpace(input)
@@ -1608,7 +1633,7 @@ func tryAutoGrowGlossary(db *sql.DB, cfg Config, description, sectionID, section
 
 // --- Uncertainty sampling ---
 
-func sendUncertaintyMessages(api *slack.Client, cfg Config, cmd slack.SlashCommand, result BuildResult) {
+func sendUncertaintyMessages(api *slack.Client, cfg Config, cmd slack.SlashCommand, result BuildResult, items []WorkItem) {
 	if len(result.Decisions) == 0 || len(result.Options) == 0 {
 		return
 	}
@@ -1639,13 +1664,23 @@ func sendUncertaintyMessages(api *slack.Client, cfg Config, cmd slack.SlashComma
 		optionLabels[opt.ID] = opt.Label
 	}
 
+	itemDescriptions := make(map[int64]string, len(items))
+	for _, item := range items {
+		itemDescriptions[item.ID] = item.Description
+	}
+
+	sent := 0
 	for _, u := range uncertain {
 		bestGuess := u.decision.SectionID
 		if label, ok := optionLabels[bestGuess]; ok {
 			bestGuess = label
 		}
 
-		headerText := fmt.Sprintf("Uncertain classification (%.0f%% confidence)\nItem ID: %d\nBest guess: %s", u.confidence*100, u.itemID, bestGuess)
+		desc := itemDescriptions[u.itemID]
+		if desc == "" {
+			desc = fmt.Sprintf("#%d", u.itemID)
+		}
+		headerText := fmt.Sprintf("Uncertain classification (%.0f%% confidence)\n_%s_\nBest guess: %s", u.confidence*100, desc, bestGuess)
 
 		// Build section buttons (up to 4 most common sections).
 		var buttons []slack.BlockElement
@@ -1656,17 +1691,23 @@ func sendUncertaintyMessages(api *slack.Client, cfg Config, cmd slack.SlashComma
 		for i := 0; i < limit; i++ {
 			opt := result.Options[i]
 			label := opt.Label
+			if strings.TrimSpace(label) == "" {
+				continue
+			}
 			if len(label) > 30 {
 				label = label[:27] + "..."
 			}
 			buttons = append(buttons, slack.NewButtonBlockElement(
-				actionUncertaintySelect,
+				fmt.Sprintf("%s_%d", actionUncertaintySelect, i),
 				fmt.Sprintf("%d:%s", u.itemID, opt.ID),
 				slack.NewTextBlockObject(slack.PlainTextType, label, false, false),
 			))
 		}
+		if len(buttons) == 0 {
+			continue
+		}
 		buttons = append(buttons, slack.NewButtonBlockElement(
-			actionUncertaintyOther,
+			fmt.Sprintf("%s_%d", actionUncertaintyOther, u.itemID),
 			fmt.Sprintf("%d", u.itemID),
 			slack.NewTextBlockObject(slack.PlainTextType, "Other...", false, false),
 		))
@@ -1681,10 +1722,15 @@ func sendUncertaintyMessages(api *slack.Client, cfg Config, cmd slack.SlashComma
 
 		_, err := api.PostEphemeral(cmd.ChannelID, cmd.UserID, slack.MsgOptionBlocks(blocks...))
 		if err != nil {
+			if apiErr, ok := err.(*slack.SlackErrorResponse); ok {
+				log.Printf("uncertainty message error item=%d err=%s messages=%v", u.itemID, apiErr.Err, apiErr.ResponseMetadata.Messages)
+			}
 			log.Printf("uncertainty message error item=%d: %v", u.itemID, err)
+			continue
 		}
+		sent++
 	}
-	log.Printf("uncertainty messages sent count=%d", len(uncertain))
+	log.Printf("uncertainty messages sent count=%d attempted=%d", sent, len(uncertain))
 }
 
 func handleUncertaintySelect(api *slack.Client, db *sql.DB, cfg Config, cb slack.InteractionCallback, act *slack.BlockAction) {
@@ -1770,34 +1816,42 @@ func handleRetrospective(api *slack.Client, db *sql.DB, cfg Config, cmd slack.Sl
 		case "glossary_term":
 			actionDesc = fmt.Sprintf("Add glossary term: \"%s\" -> %s", suggestion.Phrase, suggestion.Section)
 		case "guide_update":
-			text := suggestion.GuideText
-			if len(text) > 200 {
-				text = text[:200] + "..."
-			}
-			actionDesc = fmt.Sprintf("Add guide rule: %s", text)
+			actionDesc = fmt.Sprintf("Add guide rule: %s", suggestion.GuideText)
 		default:
 			actionDesc = suggestion.Action
 		}
 
 		text := fmt.Sprintf("*Suggestion %d: %s*\n%s\n_%s_", i+1, suggestion.Title, suggestion.Reasoning, actionDesc)
 
-		applyBtn := slack.NewButtonBlockElement(
-			actionRetroApply,
-			fmt.Sprintf("%d", i),
-			slack.NewTextBlockObject(slack.PlainTextType, "Apply", false, false),
-		)
-		dismissBtn := slack.NewButtonBlockElement(
+		// Encode suggestion data in button value since ephemeral message
+		// blocks are not returned in interaction callbacks.
+		// Slack button values have a 2000 char limit.
+		applyValue := fmt.Sprintf("%s|%s|%s|%s", suggestion.Action, suggestion.Phrase, suggestion.Section, suggestion.GuideText)
+		applyable := len(applyValue) <= 2000
+		if !applyable {
+			applyValue = fmt.Sprintf("%s|||", suggestion.Action)
+		}
+
+		var actionButtons []slack.BlockElement
+		if applyable {
+			actionButtons = append(actionButtons, slack.NewButtonBlockElement(
+				actionRetroApply,
+				applyValue,
+				slack.NewTextBlockObject(slack.PlainTextType, "Apply", false, false),
+			))
+		}
+		actionButtons = append(actionButtons, slack.NewButtonBlockElement(
 			actionRetroDismiss,
 			fmt.Sprintf("%d", i),
 			slack.NewTextBlockObject(slack.PlainTextType, "Dismiss", false, false),
-		)
+		))
 
 		blocks := []slack.Block{
 			slack.NewSectionBlock(
 				slack.NewTextBlockObject(slack.MarkdownType, text, false, false),
 				nil, nil,
 			),
-			slack.NewActionBlock("", applyBtn, dismissBtn),
+			slack.NewActionBlock("", actionButtons...),
 		}
 
 		_, postErr := api.PostEphemeral(cmd.ChannelID, cmd.UserID, slack.MsgOptionBlocks(blocks...))
@@ -1817,74 +1871,59 @@ func handleRetroApply(api *slack.Client, db *sql.DB, cfg Config, cb slack.Intera
 	}
 	userID := cb.User.ID
 
-	// The button value is the suggestion index. We need to re-derive the suggestion
-	// from the message text since we don't persist them.
-	// Parse the action description from the message blocks.
-	var actionLine string
-	for _, block := range cb.Message.Blocks.BlockSet {
-		section, ok := block.(*slack.SectionBlock)
-		if !ok {
-			continue
-		}
-		if section.Text != nil {
-			actionLine = section.Text.Text
-		}
-	}
-
-	if strings.Contains(actionLine, "Add glossary term:") {
-		// Extract phrase and section from the action line.
-		// Format: Add glossary term: "phrase" -> section
-		idx := strings.Index(actionLine, "Add glossary term:")
-		if idx >= 0 {
-			rest := strings.TrimSpace(actionLine[idx+len("Add glossary term:"):])
-			// Remove italic markers
-			rest = strings.TrimPrefix(rest, "_")
-			rest = strings.TrimSuffix(rest, "_")
-			parts := strings.SplitN(rest, "->", 2)
-			if len(parts) == 2 {
-				phrase := strings.Trim(strings.TrimSpace(parts[0]), "\"")
-				section := strings.TrimSpace(parts[1])
-				if cfg.LLMGlossaryPath != "" && phrase != "" && section != "" {
-					if err := AppendGlossaryTerm(cfg.LLMGlossaryPath, phrase, section); err != nil {
-						postEphemeralTo(api, channelID, userID, fmt.Sprintf("Error applying glossary term: %v", err))
-						return
-					}
-					postEphemeralTo(api, channelID, userID, fmt.Sprintf("Applied: glossary term \"%s\" -> %s", phrase, section))
-					log.Printf("retrospective applied glossary phrase=%q section=%s", phrase, section)
-					return
-				}
-			}
-		}
-		postEphemeralTo(api, channelID, userID, "Could not apply glossary term (glossary path not configured or parse error).")
+	// Button value format: "action|phrase|section|guide_text"
+	parts := strings.SplitN(act.Value, "|", 4)
+	if len(parts) < 4 {
+		postEphemeralTo(api, channelID, userID, "Invalid suggestion data.")
 		return
 	}
+	action, phrase, section, guideText := parts[0], parts[1], parts[2], parts[3]
 
-	if strings.Contains(actionLine, "Add guide rule:") {
-		idx := strings.Index(actionLine, "Add guide rule:")
-		if idx >= 0 {
-			rest := strings.TrimSpace(actionLine[idx+len("Add guide rule:"):])
-			rest = strings.TrimPrefix(rest, "_")
-			rest = strings.TrimSuffix(rest, "_")
-			if strings.HasSuffix(rest, "...") {
-				postEphemeralTo(api, channelID, userID, "Guide text was truncated. Please add manually.")
-				return
-			}
-			guidePath := cfg.LLMGuidePath
-			if guidePath != "" && rest != "" {
-				if err := appendToFile(guidePath, "\n"+rest+"\n"); err != nil {
-					postEphemeralTo(api, channelID, userID, fmt.Sprintf("Error appending to guide: %v", err))
-					return
-				}
-				postEphemeralTo(api, channelID, userID, fmt.Sprintf("Applied: guide rule appended to %s", guidePath))
-				log.Printf("retrospective applied guide update path=%s", guidePath)
-				return
+	switch action {
+	case "glossary_term":
+		if cfg.LLMGlossaryPath == "" {
+			postEphemeralTo(api, channelID, userID, "Glossary path not configured.")
+			return
+		}
+		if phrase == "" || section == "" {
+			postEphemeralTo(api, channelID, userID, "Missing phrase or section for glossary term.")
+			return
+		}
+		// Resolve section ID to label for consistency with auto-grow glossary.
+		sectionOpts := loadSectionOptionsForModal(cfg)
+		for _, opt := range sectionOpts {
+			if opt.ID == section {
+				section = opt.Label
+				break
 			}
 		}
-		postEphemeralTo(api, channelID, userID, "Could not apply guide update (guide path not configured or parse error).")
-		return
-	}
+		if err := AppendGlossaryTerm(cfg.LLMGlossaryPath, phrase, section); err != nil {
+			postEphemeralTo(api, channelID, userID, fmt.Sprintf("Error applying glossary term: %v", err))
+			return
+		}
+		postEphemeralTo(api, channelID, userID, fmt.Sprintf("Applied: glossary term \"%s\" -> %s", phrase, section))
+		log.Printf("retrospective applied glossary phrase=%q section=%s", phrase, section)
 
-	postEphemeralTo(api, channelID, userID, "Unknown suggestion action type.")
+	case "guide_update":
+		guidePath := cfg.LLMGuidePath
+		if guidePath == "" {
+			postEphemeralTo(api, channelID, userID, "Guide path not configured.")
+			return
+		}
+		if guideText == "" {
+			postEphemeralTo(api, channelID, userID, "Empty guide text.")
+			return
+		}
+		if err := appendToFile(guidePath, "\n"+guideText+"\n"); err != nil {
+			postEphemeralTo(api, channelID, userID, fmt.Sprintf("Error appending to guide: %v", err))
+			return
+		}
+		postEphemeralTo(api, channelID, userID, fmt.Sprintf("Applied: guide rule appended to %s", guidePath))
+		log.Printf("retrospective applied guide update path=%s", guidePath)
+
+	default:
+		postEphemeralTo(api, channelID, userID, fmt.Sprintf("Unknown suggestion action type: %s", action))
+	}
 }
 
 func appendToFile(path, text string) error {

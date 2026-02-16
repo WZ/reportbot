@@ -10,7 +10,7 @@
 #     reportbot:
 #       volumes:
 #         - ./my-custom-config.yaml:/app/config.yaml:ro
-#         - ./my-custom-glossary.yaml:/app/llm_glossary.yaml:ro
+#         - ./my-custom-glossary.yaml:/app/llm_glossary.yaml
 services:
   reportbot:
     container_name: reportbot
@@ -23,6 +23,6 @@ services:
     volumes:
       - ./reportbot-data:/app/data
       - ./reportbot-reports:/app/reports
+      - ./llm_glossary.yaml:/app/llm_glossary.yaml
+      - ./llm_classification_guide.md:/app/llm_classification_guide.md
       - ./config.yaml:/app/config.yaml:ro
-      - ./llm_glossary.yaml:/app/llm_glossary.yaml:ro
-      - ./llm_classification_guide.md:/app/llm_classification_guide.md:ro
