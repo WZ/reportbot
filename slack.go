@@ -859,6 +859,21 @@ func handleBlockActions(api *slack.Client, db *sql.DB, cfg Config, cb slack.Inte
 			return
 		}
 	}
+
+	// Support dynamically suffixed uncertainty action IDs.
+	if strings.HasPrefix(act.ActionID, actionUncertaintySelect+"_") {
+		handleUncertaintySelect(api, db, cfg, cb, act)
+		return
+	}
+	if strings.HasPrefix(act.ActionID, actionUncertaintyOther+"_") {
+		itemID, err := strconv.ParseInt(strings.TrimSpace(act.Value), 10, 64)
+		if err != nil {
+			postEphemeralTo(api, channelID, userID, "Invalid item id.")
+			return
+		}
+		openEditModal(api, db, cfg, cb.TriggerID, channelID, userID, itemID)
+		return
+	}
 }
 
 func handleViewSubmission(api *slack.Client, db *sql.DB, cfg Config, cb slack.InteractionCallback) {
@@ -1218,7 +1233,6 @@ func canManageItem(item WorkItem, isManager bool, user *slack.User) bool {
 	return false
 }
 
-
 func openNudgeConfirmModal(api *slack.Client, cfg Config, triggerID, channelID, targetIDs string) {
 	var validIDs []string
 	var names []string
@@ -1457,7 +1471,6 @@ func isManagerUser(_ *slack.Client, cfg Config, userID string) (bool, error) {
 	return cfg.IsManagerID(userID), nil
 }
 
-
 func resolveDelegatedAuthorName(input string, teamMembers []string) string {
 	input = strings.TrimSpace(input)
 	if input == "" || len(teamMembers) == 0 {
@@ -1639,6 +1652,7 @@ func sendUncertaintyMessages(api *slack.Client, cfg Config, cmd slack.SlashComma
 		optionLabels[opt.ID] = opt.Label
 	}
 
+	sent := 0
 	for _, u := range uncertain {
 		bestGuess := u.decision.SectionID
 		if label, ok := optionLabels[bestGuess]; ok {
@@ -1656,17 +1670,23 @@ func sendUncertaintyMessages(api *slack.Client, cfg Config, cmd slack.SlashComma
 		for i := 0; i < limit; i++ {
 			opt := result.Options[i]
 			label := opt.Label
+			if strings.TrimSpace(label) == "" {
+				continue
+			}
 			if len(label) > 30 {
 				label = label[:27] + "..."
 			}
 			buttons = append(buttons, slack.NewButtonBlockElement(
-				actionUncertaintySelect,
+				fmt.Sprintf("%s_%d", actionUncertaintySelect, i),
 				fmt.Sprintf("%d:%s", u.itemID, opt.ID),
 				slack.NewTextBlockObject(slack.PlainTextType, label, false, false),
 			))
 		}
+		if len(buttons) == 0 {
+			continue
+		}
 		buttons = append(buttons, slack.NewButtonBlockElement(
-			actionUncertaintyOther,
+			fmt.Sprintf("%s_%d", actionUncertaintyOther, u.itemID),
 			fmt.Sprintf("%d", u.itemID),
 			slack.NewTextBlockObject(slack.PlainTextType, "Other...", false, false),
 		))
@@ -1681,10 +1701,15 @@ func sendUncertaintyMessages(api *slack.Client, cfg Config, cmd slack.SlashComma
 
 		_, err := api.PostEphemeral(cmd.ChannelID, cmd.UserID, slack.MsgOptionBlocks(blocks...))
 		if err != nil {
+			if apiErr, ok := err.(*slack.SlackErrorResponse); ok {
+				log.Printf("uncertainty message error item=%d err=%s messages=%v", u.itemID, apiErr.Err, apiErr.ResponseMetadata.Messages)
+			}
 			log.Printf("uncertainty message error item=%d: %v", u.itemID, err)
+			continue
 		}
+		sent++
 	}
-	log.Printf("uncertainty messages sent count=%d", len(uncertain))
+	log.Printf("uncertainty messages sent count=%d attempted=%d", sent, len(uncertain))
 }
 
 func handleUncertaintySelect(api *slack.Client, db *sql.DB, cfg Config, cb slack.InteractionCallback, act *slack.BlockAction) {
