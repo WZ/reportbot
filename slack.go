@@ -363,7 +363,16 @@ func handleGenerateReport(api *slack.Client, db *sql.DB, cfg Config, cmd slack.S
 	if mode == "boss" {
 		teamReportFile := fmt.Sprintf("%s_%s.md", cfg.TeamName, friday.Format("20060102"))
 		teamReportPath := filepath.Join(cfg.ReportOutputDir, teamReportFile)
-		if content, readErr := os.ReadFile(teamReportPath); readErr == nil && len(content) > 0 {
+		content, readErr := os.ReadFile(teamReportPath)
+		if readErr != nil {
+			if os.IsNotExist(readErr) {
+				log.Printf("generate-report boss: no existing team report found, running full pipeline")
+			} else {
+				log.Printf("Error reading team report file %s: %v", teamReportPath, readErr)
+				postEphemeral(api, cmd, fmt.Sprintf("Error reading team report file: %v", readErr))
+				return
+			}
+		} else if len(content) > 0 {
 			log.Printf("generate-report boss: deriving from existing team report %s", teamReportPath)
 			template := parseTemplate(string(content))
 			stripCurrentTeamTitleFromPrefix(template, cfg.TeamName)
@@ -414,7 +423,6 @@ func handleGenerateReport(api *slack.Client, db *sql.DB, cfg Config, cmd slack.S
 			log.Printf("generate-report done mode=boss derived-from-team")
 			return
 		}
-		log.Printf("generate-report boss: no existing team report found, running full pipeline")
 	}
 
 	items, err := GetItemsByDateRange(db, monday, nextMonday)
