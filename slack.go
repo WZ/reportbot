@@ -365,13 +365,14 @@ func handleGenerateReport(api *slack.Client, db *sql.DB, cfg Config, cmd slack.S
 		teamReportPath := filepath.Join(cfg.ReportOutputDir, teamReportFile)
 		content, readErr := os.ReadFile(teamReportPath)
 		if readErr != nil {
-			if os.IsNotExist(readErr) {
-				log.Printf("generate-report boss: no existing team report found, running full pipeline")
-			} else {
+			if !os.IsNotExist(readErr) {
+				// Unexpected error (permission, I/O, etc.) - surface it and abort
 				log.Printf("Error reading team report file %s: %v", teamReportPath, readErr)
 				postEphemeral(api, cmd, fmt.Sprintf("Error reading team report file: %v", readErr))
 				return
 			}
+			// File doesn't exist - fall through to full pipeline below
+			log.Printf("generate-report boss: no existing team report found, running full pipeline")
 		} else if len(content) > 0 {
 			log.Printf("generate-report boss: deriving from existing team report %s", teamReportPath)
 			template := parseTemplate(string(content))
