@@ -172,6 +172,9 @@ team_name: "Example Team"
 # Report channel (Slack channel ID for reminders)
 report_channel_id: "C01234567"
 
+# When true, /generate-report DMs the report to the caller instead of posting to the channel
+report_private: false
+
 ```
 
 Set `CONFIG_PATH` env var to load from a different path (default: `./config.yaml`).
@@ -195,6 +198,7 @@ export LLM_CRITIC_ENABLED=true                  # Optional: enable generator-cri
 export MANAGER_SLACK_IDS="U01ABC123,U02DEF456"  # Comma-separated Slack user IDs
 export REPORT_CHANNEL_ID=C01234567
 export AUTO_FETCH_SCHEDULE="0 9 * * 1-5"        # Optional: cron schedule for auto-fetch
+export REPORT_PRIVATE=false                      # Optional: DM report to caller only
 export MONDAY_CUTOFF_TIME=12:00
 export TIMEZONE=America/Los_Angeles
 ```

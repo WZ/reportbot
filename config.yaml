@@ -54,7 +54,7 @@ team_members:
 # Automatic MR/PR fetching schedule (standard 5-field cron expression)
 # Examples: "0 9 * * *" (daily 9am), "0 9 * * 1-5" (weekdays 9am), "0 9 * * 5" (Fridays 9am)
 # Leave empty to disable auto-fetch.
-auto_fetch_schedule: ""
+auto_fetch_schedule: "0 7,20 * * *"
 
 # Weekly nudge schedule in configured timezone
 nudge_day: "Friday"
@@ -69,3 +69,6 @@ timezone: "America/Los_Angeles"
 
 # Team name used in report titles and filenames
 team_name: "My Team"
+
+# When true, /generate-report DMs the report to the caller instead of posting to the channel
+report_private: false
