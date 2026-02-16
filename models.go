@@ -66,6 +66,11 @@ func CurrentWeekRangeAt(now time.Time) (time.Time, time.Time) {
 	return monday, nextMonday
 }
 
+// FridayOfWeek returns the Friday of the same week as the given Monday.
+func FridayOfWeek(monday time.Time) time.Time {
+	return monday.AddDate(0, 0, 4)
+}
+
 func ReportWeekRange(cfg Config, now time.Time) (time.Time, time.Time) {
 	hour, min, err := parseClock(cfg.MondayCutoffTime)
 	if err != nil {

@@ -357,6 +357,66 @@ func handleGenerateReport(api *slack.Client, db *sql.DB, cfg Config, cmd slack.S
 	log.Printf("generate-report mode=%s", mode)
 
 	monday, nextMonday := ReportWeekRange(cfg, time.Now().In(cfg.Location))
+	friday := FridayOfWeek(monday)
+
+	// Boss mode shortcut: derive from existing team report if available.
+	if mode == "boss" {
+		teamReportFile := fmt.Sprintf("%s_%s.md", cfg.TeamName, friday.Format("20060102"))
+		teamReportPath := filepath.Join(cfg.ReportOutputDir, teamReportFile)
+		if content, readErr := os.ReadFile(teamReportPath); readErr == nil && len(content) > 0 {
+			log.Printf("generate-report boss: deriving from existing team report %s", teamReportPath)
+			template := parseTemplate(string(content))
+			stripCurrentTeamTitleFromPrefix(template, cfg.TeamName)
+			bossReport := renderBossMarkdown(template)
+			filePath, err := WriteEmailDraftFile(bossReport, cfg.ReportOutputDir, friday, cfg.TeamName)
+			if err != nil {
+				log.Printf("Error writing boss report file: %v", err)
+				postEphemeral(api, cmd, fmt.Sprintf("Error writing report file: %v", err))
+				return
+			}
+			fileTitle := fmt.Sprintf("%s report email draft", cfg.TeamName)
+			log.Printf("generate-report boss-from-team file=%s length=%d", filePath, len(bossReport))
+
+			fi, err := os.Stat(filePath)
+			if err != nil || fi.Size() <= 0 {
+				log.Printf("Error with boss report file: %v", err)
+				postEphemeral(api, cmd, "Error: generated boss report file is empty.")
+				return
+			}
+
+			uploadChannel := cmd.ChannelID
+			if cfg.ReportPrivate {
+				ch, _, _, err := api.OpenConversation(&slack.OpenConversationParameters{Users: []string{cmd.UserID}})
+				if err != nil {
+					log.Printf("Error opening DM for private report: %v", err)
+					postEphemeral(api, cmd, "Error opening DM to send private report. Check bot permissions.")
+					return
+				}
+				uploadChannel = ch.ID
+			}
+
+			_, err = api.UploadFileV2(slack.UploadFileV2Parameters{
+				File:           filePath,
+				FileSize:       int(fi.Size()),
+				Filename:       filepath.Base(filePath),
+				Channel:        uploadChannel,
+				Title:          fileTitle,
+				InitialComment: fmt.Sprintf("Generated report for week ending %s (mode: boss, derived from team report, tokens used: 0)", friday.Format("2006-01-02")),
+			})
+			if err != nil {
+				log.Printf("Error uploading report file: %v", err)
+				postEphemeral(api, cmd, "Error uploading report file to channel. Check bot permissions.")
+				return
+			}
+
+			msg := fmt.Sprintf("Boss report derived from existing team report (no LLM tokens used)\nSaved to: %s", filePath)
+			postEphemeral(api, cmd, msg)
+			log.Printf("generate-report done mode=boss derived-from-team")
+			return
+		}
+		log.Printf("generate-report boss: no existing team report found, running full pipeline")
+	}
+
 	items, err := GetItemsByDateRange(db, monday, nextMonday)
 	if err != nil {
 		postEphemeral(api, cmd, fmt.Sprintf("Error loading items: %v", err))
@@ -424,12 +484,12 @@ func handleGenerateReport(api *slack.Client, db *sql.DB, cfg Config, cmd slack.S
 	var fileTitle string
 	if mode == "boss" {
 		bossReport := renderBossMarkdown(merged)
-		filePath, err = WriteEmailDraftFile(bossReport, cfg.ReportOutputDir, monday, cfg.TeamName)
+		filePath, err = WriteEmailDraftFile(bossReport, cfg.ReportOutputDir, friday, cfg.TeamName)
 		fileTitle = fmt.Sprintf("%s report email draft", cfg.TeamName)
 		log.Printf("generate-report boss-report-length=%d file=%s", len(bossReport), filePath)
 	} else {
 		teamReport := renderTeamMarkdown(merged)
-		filePath, err = WriteReportFile(teamReport, cfg.ReportOutputDir, monday, cfg.TeamName)
+		filePath, err = WriteReportFile(teamReport, cfg.ReportOutputDir, friday, cfg.TeamName)
 		fileTitle = fmt.Sprintf("%s team report", cfg.TeamName)
 		log.Printf("generate-report team-report-length=%d file=%s", len(teamReport), filePath)
 	}
@@ -472,7 +532,7 @@ func handleGenerateReport(api *slack.Client, db *sql.DB, cfg Config, cmd slack.S
 		Filename:       filepath.Base(filePath),
 		Channel:        uploadChannel,
 		Title:          fileTitle,
-		InitialComment: fmt.Sprintf("Generated report for week starting %s (mode: %s, tokens used: %s)", monday.Format("2006-01-02"), mode, tokenUsedText),
+		InitialComment: fmt.Sprintf("Generated report for week ending %s (mode: %s, tokens used: %s)", friday.Format("2006-01-02"), mode, tokenUsedText),
 	})
 	if err != nil {
 		log.Printf("Error uploading report file: %v", err)
@@ -1557,7 +1617,8 @@ func prReportedAt(pr GitHubPR, loc *time.Location) time.Time {
 // --- Correction helpers ---
 
 func loadSectionOptionsForModal(cfg Config) []sectionOption {
-	template, _, err := loadTemplateForGeneration(cfg.ReportOutputDir, cfg.TeamName, time.Now().In(cfg.Location))
+	monday, _ := ReportWeekRange(cfg, time.Now().In(cfg.Location))
+	template, _, err := loadTemplateForGeneration(cfg.ReportOutputDir, cfg.TeamName, monday)
 	if err != nil {
 		log.Printf("edit modal load template error (non-fatal): %v", err)
 		return nil
