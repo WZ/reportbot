@@ -488,7 +488,7 @@ func handleGenerateReport(api *slack.Client, db *sql.DB, cfg Config, cmd slack.S
 	log.Printf("generate-report done items=%d", len(items))
 
 	// Uncertainty sampling: send messages for low-confidence items.
-	sendUncertaintyMessages(api, cfg, cmd, result)
+	sendUncertaintyMessages(api, cfg, cmd, result, items)
 }
 
 func formatTokenCount(tokens int64) string {
@@ -1633,7 +1633,7 @@ func tryAutoGrowGlossary(db *sql.DB, cfg Config, description, sectionID, section
 
 // --- Uncertainty sampling ---
 
-func sendUncertaintyMessages(api *slack.Client, cfg Config, cmd slack.SlashCommand, result BuildResult) {
+func sendUncertaintyMessages(api *slack.Client, cfg Config, cmd slack.SlashCommand, result BuildResult, items []WorkItem) {
 	if len(result.Decisions) == 0 || len(result.Options) == 0 {
 		return
 	}
@@ -1664,6 +1664,11 @@ func sendUncertaintyMessages(api *slack.Client, cfg Config, cmd slack.SlashComma
 		optionLabels[opt.ID] = opt.Label
 	}
 
+	itemDescriptions := make(map[int64]string, len(items))
+	for _, item := range items {
+		itemDescriptions[item.ID] = item.Description
+	}
+
 	sent := 0
 	for _, u := range uncertain {
 		bestGuess := u.decision.SectionID
@@ -1671,7 +1676,11 @@ func sendUncertaintyMessages(api *slack.Client, cfg Config, cmd slack.SlashComma
 			bestGuess = label
 		}
 
-		headerText := fmt.Sprintf("Uncertain classification (%.0f%% confidence)\nItem ID: %d\nBest guess: %s", u.confidence*100, u.itemID, bestGuess)
+		desc := itemDescriptions[u.itemID]
+		if desc == "" {
+			desc = fmt.Sprintf("#%d", u.itemID)
+		}
+		headerText := fmt.Sprintf("Uncertain classification (%.0f%% confidence)\n_%s_\nBest guess: %s", u.confidence*100, desc, bestGuess)
 
 		// Build section buttons (up to 4 most common sections).
 		var buttons []slack.BlockElement
@@ -1818,9 +1827,16 @@ func handleRetrospective(api *slack.Client, db *sql.DB, cfg Config, cmd slack.Sl
 
 		text := fmt.Sprintf("*Suggestion %d: %s*\n%s\n_%s_", i+1, suggestion.Title, suggestion.Reasoning, actionDesc)
 
+		// Encode suggestion data in button value since ephemeral message
+		// blocks are not returned in interaction callbacks.
+		applyValue := fmt.Sprintf("%s|%s|%s|%s", suggestion.Action, suggestion.Phrase, suggestion.Section, suggestion.GuideText)
+		if len(applyValue) > 2000 {
+			applyValue = applyValue[:2000]
+		}
+
 		applyBtn := slack.NewButtonBlockElement(
 			actionRetroApply,
-			fmt.Sprintf("%d", i),
+			applyValue,
 			slack.NewTextBlockObject(slack.PlainTextType, "Apply", false, false),
 		)
 		dismissBtn := slack.NewButtonBlockElement(
@@ -1854,74 +1870,51 @@ func handleRetroApply(api *slack.Client, db *sql.DB, cfg Config, cb slack.Intera
 	}
 	userID := cb.User.ID
 
-	// The button value is the suggestion index. We need to re-derive the suggestion
-	// from the message text since we don't persist them.
-	// Parse the action description from the message blocks.
-	var actionLine string
-	for _, block := range cb.Message.Blocks.BlockSet {
-		section, ok := block.(*slack.SectionBlock)
-		if !ok {
-			continue
-		}
-		if section.Text != nil {
-			actionLine = section.Text.Text
-		}
-	}
-
-	if strings.Contains(actionLine, "Add glossary term:") {
-		// Extract phrase and section from the action line.
-		// Format: Add glossary term: "phrase" -> section
-		idx := strings.Index(actionLine, "Add glossary term:")
-		if idx >= 0 {
-			rest := strings.TrimSpace(actionLine[idx+len("Add glossary term:"):])
-			// Remove italic markers
-			rest = strings.TrimPrefix(rest, "_")
-			rest = strings.TrimSuffix(rest, "_")
-			parts := strings.SplitN(rest, "->", 2)
-			if len(parts) == 2 {
-				phrase := strings.Trim(strings.TrimSpace(parts[0]), "\"")
-				section := strings.TrimSpace(parts[1])
-				if cfg.LLMGlossaryPath != "" && phrase != "" && section != "" {
-					if err := AppendGlossaryTerm(cfg.LLMGlossaryPath, phrase, section); err != nil {
-						postEphemeralTo(api, channelID, userID, fmt.Sprintf("Error applying glossary term: %v", err))
-						return
-					}
-					postEphemeralTo(api, channelID, userID, fmt.Sprintf("Applied: glossary term \"%s\" -> %s", phrase, section))
-					log.Printf("retrospective applied glossary phrase=%q section=%s", phrase, section)
-					return
-				}
-			}
-		}
-		postEphemeralTo(api, channelID, userID, "Could not apply glossary term (glossary path not configured or parse error).")
+	// Button value format: "action|phrase|section|guide_text"
+	parts := strings.SplitN(act.Value, "|", 4)
+	if len(parts) < 4 {
+		postEphemeralTo(api, channelID, userID, "Invalid suggestion data.")
 		return
 	}
+	action, phrase, section, guideText := parts[0], parts[1], parts[2], parts[3]
 
-	if strings.Contains(actionLine, "Add guide rule:") {
-		idx := strings.Index(actionLine, "Add guide rule:")
-		if idx >= 0 {
-			rest := strings.TrimSpace(actionLine[idx+len("Add guide rule:"):])
-			rest = strings.TrimPrefix(rest, "_")
-			rest = strings.TrimSuffix(rest, "_")
-			if strings.HasSuffix(rest, "...") {
-				postEphemeralTo(api, channelID, userID, "Guide text was truncated. Please add manually.")
-				return
-			}
-			guidePath := cfg.LLMGuidePath
-			if guidePath != "" && rest != "" {
-				if err := appendToFile(guidePath, "\n"+rest+"\n"); err != nil {
-					postEphemeralTo(api, channelID, userID, fmt.Sprintf("Error appending to guide: %v", err))
-					return
-				}
-				postEphemeralTo(api, channelID, userID, fmt.Sprintf("Applied: guide rule appended to %s", guidePath))
-				log.Printf("retrospective applied guide update path=%s", guidePath)
-				return
-			}
+	switch action {
+	case "glossary_term":
+		if cfg.LLMGlossaryPath == "" {
+			postEphemeralTo(api, channelID, userID, "Glossary path not configured.")
+			return
 		}
-		postEphemeralTo(api, channelID, userID, "Could not apply guide update (guide path not configured or parse error).")
-		return
-	}
+		if phrase == "" || section == "" {
+			postEphemeralTo(api, channelID, userID, "Missing phrase or section for glossary term.")
+			return
+		}
+		if err := AppendGlossaryTerm(cfg.LLMGlossaryPath, phrase, section); err != nil {
+			postEphemeralTo(api, channelID, userID, fmt.Sprintf("Error applying glossary term: %v", err))
+			return
+		}
+		postEphemeralTo(api, channelID, userID, fmt.Sprintf("Applied: glossary term \"%s\" -> %s", phrase, section))
+		log.Printf("retrospective applied glossary phrase=%q section=%s", phrase, section)
 
-	postEphemeralTo(api, channelID, userID, "Unknown suggestion action type.")
+	case "guide_update":
+		guidePath := cfg.LLMGuidePath
+		if guidePath == "" {
+			postEphemeralTo(api, channelID, userID, "Guide path not configured.")
+			return
+		}
+		if guideText == "" {
+			postEphemeralTo(api, channelID, userID, "Empty guide text.")
+			return
+		}
+		if err := appendToFile(guidePath, "\n"+guideText+"\n"); err != nil {
+			postEphemeralTo(api, channelID, userID, fmt.Sprintf("Error appending to guide: %v", err))
+			return
+		}
+		postEphemeralTo(api, channelID, userID, fmt.Sprintf("Applied: guide rule appended to %s", guidePath))
+		log.Printf("retrospective applied guide update path=%s", guidePath)
+
+	default:
+		postEphemeralTo(api, channelID, userID, fmt.Sprintf("Unknown suggestion action type: %s", action))
+	}
 }
 
 func appendToFile(path, text string) error {

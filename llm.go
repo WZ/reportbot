@@ -709,11 +709,11 @@ func analyzeCorrections(cfg Config, corrections []ClassificationCorrection, opti
 		}
 		origLabel := c.OriginalSectionID
 		if c.OriginalLabel != "" {
-			origLabel = fmt.Sprintf("%s (%s)", c.OriginalSectionID, c.OriginalLabel)
+			origLabel = c.OriginalLabel
 		}
 		corrLabel := c.CorrectedSectionID
 		if c.CorrectedLabel != "" {
-			corrLabel = fmt.Sprintf("%s (%s)", c.CorrectedSectionID, c.CorrectedLabel)
+			corrLabel = c.CorrectedLabel
 		}
 		corrLines.WriteString(fmt.Sprintf("- \"%s\": %s -> %s\n", desc, origLabel, corrLabel))
 	}
@@ -729,6 +729,8 @@ Only suggest patterns that appear 2+ times. Max 5 suggestions.
 For each suggestion, choose an action:
 - "glossary_term": A keyword/phrase that should always map to a specific section. Provide "phrase" and "section" (section_id).
 - "guide_update": A rule to add to the classification guide. Provide "guide_text" with the rule text.
+
+IMPORTANT: In "title" and "reasoning", always use section LABELS (e.g. "Data Automation & Database"), never raw section IDs (e.g. "S7_0").
 
 Respond with JSON only (no markdown):
 [{"title": "...", "reasoning": "...", "action": "glossary_term", "phrase": "...", "section": "S1_2", "guide_text": ""}, ...]`, sectionLines.String())
