@@ -401,7 +401,7 @@ func handleGenerateReport(api *slack.Client, db *sql.DB, cfg Config, cmd slack.S
 				Filename:       filepath.Base(filePath),
 				Channel:        uploadChannel,
 				Title:          fileTitle,
-				InitialComment: fmt.Sprintf("Generated report for week ending %s (mode: boss, derived from team report, tokens used: 0)", friday.Format("2006-01-02")),
+				InitialComment: fmt.Sprintf("Generated boss report (week reference date: %s, derived from team report, tokens used: 0)", friday.Format("2006-01-02")),
 			})
 			if err != nil {
 				log.Printf("Error uploading report file: %v", err)
