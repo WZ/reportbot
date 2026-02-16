@@ -1816,11 +1816,7 @@ func handleRetrospective(api *slack.Client, db *sql.DB, cfg Config, cmd slack.Sl
 		case "glossary_term":
 			actionDesc = fmt.Sprintf("Add glossary term: \"%s\" -> %s", suggestion.Phrase, suggestion.Section)
 		case "guide_update":
-			text := suggestion.GuideText
-			if len(text) > 200 {
-				text = text[:200] + "..."
-			}
-			actionDesc = fmt.Sprintf("Add guide rule: %s", text)
+			actionDesc = fmt.Sprintf("Add guide rule: %s", suggestion.GuideText)
 		default:
 			actionDesc = suggestion.Action
 		}
@@ -1829,28 +1825,33 @@ func handleRetrospective(api *slack.Client, db *sql.DB, cfg Config, cmd slack.Sl
 
 		// Encode suggestion data in button value since ephemeral message
 		// blocks are not returned in interaction callbacks.
+		// Slack button values have a 2000 char limit.
 		applyValue := fmt.Sprintf("%s|%s|%s|%s", suggestion.Action, suggestion.Phrase, suggestion.Section, suggestion.GuideText)
-		if len(applyValue) > 2000 {
-			applyValue = applyValue[:2000]
+		applyable := len(applyValue) <= 2000
+		if !applyable {
+			applyValue = fmt.Sprintf("%s|||", suggestion.Action)
 		}
 
-		applyBtn := slack.NewButtonBlockElement(
-			actionRetroApply,
-			applyValue,
-			slack.NewTextBlockObject(slack.PlainTextType, "Apply", false, false),
-		)
-		dismissBtn := slack.NewButtonBlockElement(
+		var actionButtons []slack.BlockElement
+		if applyable {
+			actionButtons = append(actionButtons, slack.NewButtonBlockElement(
+				actionRetroApply,
+				applyValue,
+				slack.NewTextBlockObject(slack.PlainTextType, "Apply", false, false),
+			))
+		}
+		actionButtons = append(actionButtons, slack.NewButtonBlockElement(
 			actionRetroDismiss,
 			fmt.Sprintf("%d", i),
 			slack.NewTextBlockObject(slack.PlainTextType, "Dismiss", false, false),
-		)
+		))
 
 		blocks := []slack.Block{
 			slack.NewSectionBlock(
 				slack.NewTextBlockObject(slack.MarkdownType, text, false, false),
 				nil, nil,
 			),
-			slack.NewActionBlock("", applyBtn, dismissBtn),
+			slack.NewActionBlock("", actionButtons...),
 		}
 
 		_, postErr := api.PostEphemeral(cmd.ChannelID, cmd.UserID, slack.MsgOptionBlocks(blocks...))

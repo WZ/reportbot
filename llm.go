@@ -728,7 +728,7 @@ Only suggest patterns that appear 2+ times. Max 5 suggestions.
 
 For each suggestion, choose an action:
 - "glossary_term": A keyword/phrase that should always map to a specific section. Provide "phrase" and "section" (section_id).
-- "guide_update": A rule to add to the classification guide. Provide "guide_text" with the rule text.
+- "guide_update": A rule to add to the classification guide. Provide "guide_text" with the rule text. Keep guide_text under 500 characters.
 
 IMPORTANT: In "title" and "reasoning", always use section LABELS (e.g. "Data Automation & Database"), never raw section IDs (e.g. "S7_0").
 
