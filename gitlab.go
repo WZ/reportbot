@@ -12,13 +12,13 @@ import (
 )
 
 type gitlabMRResponse struct {
-	Title    string `json:"title"`
-	WebURL   string `json:"web_url"`
-	MergedAt string `json:"merged_at"`
+	Title     string `json:"title"`
+	WebURL    string `json:"web_url"`
+	MergedAt  string `json:"merged_at"`
 	UpdatedAt string `json:"updated_at"`
 	CreatedAt string `json:"created_at"`
 	State     string `json:"state"`
-	Author   struct {
+	Author    struct {
 		Username string `json:"username"`
 		Name     string `json:"name"`
 	} `json:"author"`
@@ -47,7 +47,7 @@ func FetchMRs(cfg Config, from, to time.Time) ([]GitLabMR, error) {
 		}
 		req.Header.Set("PRIVATE-TOKEN", cfg.GitLabToken)
 
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := externalHTTPClient.Do(req)
 		if err != nil {
 			return nil, fmt.Errorf("fetching MRs: %w", err)
 		}

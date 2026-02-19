@@ -47,7 +47,7 @@ func TestWriteReportFileSanitizesTeamName(t *testing.T) {
 		{
 			name:         "path separators only",
 			team:         "../Ops\\Team",
-			expectSuffix: ".._Ops_Team_20260220.md",
+			expectSuffix: "_Ops_Team_20260220.md",
 		},
 		{
 			name:         "path traversal with special characters",
@@ -124,6 +124,23 @@ func TestBuildEMLAndMarkdownTransforms(t *testing.T) {
 	}
 }
 
+func TestBuildEMLSanitizesInjectedSubjectHeaders(t *testing.T) {
+	eml := buildEML("Weekly Report\r\nBcc: attacker@example.com", "body")
+
+	parts := strings.SplitN(eml, "\r\n\r\n", 2)
+	if len(parts) != 2 {
+		t.Fatalf("invalid eml format, missing header/body boundary: %q", eml)
+	}
+	headers := parts[0]
+
+	if strings.Contains(headers, "\r\nBcc: attacker@example.com") {
+		t.Fatalf("subject header injection not sanitized: %q", headers)
+	}
+	if !strings.Contains(headers, "Subject: Weekly Report Bcc: attacker@example.com") {
+		t.Fatalf("expected sanitized subject line in headers: %q", headers)
+	}
+}
+
 func TestReportHelpers(t *testing.T) {
 	if got := sanitizeFilename(`a/b\c:d*e?f"g<h>i|j`); strings.ContainsAny(got, `/\\:*?"<>|`) {
 		t.Fatalf("sanitizeFilename left invalid characters: %q", got)
@@ -137,5 +154,39 @@ func TestReportHelpers(t *testing.T) {
 	html := bodyToHTML("line1\nline2")
 	if !strings.Contains(html, "line1<br>") || !strings.Contains(html, "line2") {
 		t.Fatalf("bodyToHTML unexpected output: %s", html)
+	}
+}
+
+func TestSanitizeFilename(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"basic path chars", `a/b\c:d*e?f"g<h>i|j`, "a_b_c_d_e_f_g_h_i_j"},
+		{"null byte", "team\x00name", "teamname"},
+		{"control chars", "team\x01\x02\x1Fname", "teamname"},
+		{"delete char", "team\x7Fname", "teamname"},
+		{"empty after sanitization", "/\\/\\", "report"},
+		{"all dots", "...", "report"},
+		{"leading dots", "...team", "team"},
+		{"trailing dots", "team...", "team"},
+		{"leading spaces", "  team", "team"},
+		{"trailing spaces", "team  ", "team"},
+		{"dots and spaces", " ... ", "report"},
+		{"mixed control and path", "te\x00am/na\x1Fme", "team_name"},
+		{"normal name", "Team A", "Team A"},
+		{"single dot", ".", "report"},
+		{"double dot", "..", "report"},
+		{"empty string", "", "report"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := sanitizeFilename(tt.input)
+			if got != tt.want {
+				t.Errorf("sanitizeFilename(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
 	}
 }

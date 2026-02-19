@@ -70,12 +70,37 @@ func InitDB(path string) (*sql.DB, error) {
 		_, _ = db.Exec(`ALTER TABLE work_items ADD COLUMN author_id TEXT DEFAULT ''`)
 	}
 
+	// Migration: remove duplicate external items before adding uniqueness constraint.
+	_, err = db.Exec(`
+		DELETE FROM work_items
+		WHERE source_ref <> ''
+		  AND id NOT IN (
+		    SELECT MIN(id)
+		    FROM work_items
+		    WHERE source_ref <> ''
+		    GROUP BY source, source_ref
+		  )
+	`)
+	if err != nil {
+		return nil, err
+	}
+
+	// Enforce uniqueness for externally sourced references (MR/PR URL) at DB level.
+	_, err = db.Exec(`
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_work_items_unique_source_ref
+		ON work_items(source, source_ref)
+		WHERE source_ref <> ''
+	`)
+	if err != nil {
+		return nil, err
+	}
+
 	return db, nil
 }
 
 func InsertWorkItem(db *sql.DB, item WorkItem) error {
 	_, err := db.Exec(
-		`INSERT INTO work_items (description, author, author_id, source, source_ref, category, status, ticket_ids, reported_at)
+		`INSERT OR IGNORE INTO work_items (description, author, author_id, source, source_ref, category, status, ticket_ids, reported_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		item.Description, item.Author, item.AuthorID, item.Source, item.SourceRef,
 		item.Category, item.Status, item.TicketIDs, item.ReportedAt,
@@ -91,7 +116,7 @@ func InsertWorkItems(db *sql.DB, items []WorkItem) (int, error) {
 	defer tx.Rollback()
 
 	stmt, err := tx.Prepare(
-		`INSERT INTO work_items (description, author, author_id, source, source_ref, category, status, ticket_ids, reported_at)
+		`INSERT OR IGNORE INTO work_items (description, author, author_id, source, source_ref, category, status, ticket_ids, reported_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 	)
 	if err != nil {
@@ -101,14 +126,20 @@ func InsertWorkItems(db *sql.DB, items []WorkItem) (int, error) {
 
 	inserted := 0
 	for _, item := range items {
-		_, err := stmt.Exec(
+		res, err := stmt.Exec(
 			item.Description, item.Author, item.AuthorID, item.Source, item.SourceRef,
 			item.Category, item.Status, item.TicketIDs, item.ReportedAt,
 		)
 		if err != nil {
 			return inserted, err
 		}
-		inserted++
+		rows, err := res.RowsAffected()
+		if err != nil {
+			return inserted, err
+		}
+		if rows > 0 {
+			inserted++
+		}
 	}
 
 	return inserted, tx.Commit()
@@ -257,6 +288,30 @@ func GetSlackAuthorsByDateRange(db *sql.DB, from, to time.Time) (map[string]bool
 		}
 	}
 	return authors, rows.Err()
+}
+
+func GetSlackAuthorIDsByDateRange(db *sql.DB, from, to time.Time) (map[string]bool, error) {
+	rows, err := db.Query(
+		`SELECT DISTINCT author_id FROM work_items
+		 WHERE reported_at >= ? AND reported_at < ? AND source = 'slack' AND author_id <> ''`,
+		from, to,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	authorIDs := make(map[string]bool)
+	for rows.Next() {
+		var authorID string
+		if err := rows.Scan(&authorID); err != nil {
+			return nil, err
+		}
+		if authorID != "" {
+			authorIDs[authorID] = true
+		}
+	}
+	return authorIDs, rows.Err()
 }
 
 func UpdateCategories(db *sql.DB, categorized map[int64]string) error {

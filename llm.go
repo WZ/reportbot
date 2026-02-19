@@ -61,6 +61,17 @@ func (u *LLMUsage) Add(other LLMUsage) {
 const defaultAnthropicModel = "claude-sonnet-4-5-20250929"
 const defaultOpenAIModel = "gpt-4o-mini"
 const maxTemplateGuidanceChars = 8000
+const defaultLLMMaxConcurrentBatches = 4
+
+func llmBatchConcurrencyLimit(totalBatches int) int {
+	if totalBatches <= 0 {
+		return 1
+	}
+	if totalBatches < defaultLLMMaxConcurrentBatches {
+		return totalBatches
+	}
+	return defaultLLMMaxConcurrentBatches
+}
 
 func CategorizeItemsToSections(
 	cfg Config,
@@ -107,12 +118,15 @@ func CategorizeItemsToSections(
 		err       error
 	}
 	results := make([]batchResult, len(batches))
+	sem := make(chan struct{}, llmBatchConcurrencyLimit(len(batches)))
 
 	var wg sync.WaitGroup
 	for i, batch := range batches {
+		sem <- struct{}{}
 		wg.Add(1)
 		go func(idx int, batch []WorkItem) {
 			defer wg.Done()
+			defer func() { <-sem }()
 			// Select relevant examples for this batch via TF-IDF.
 			var batchExamples []historicalItem
 			if tfidfIdx != nil {
@@ -565,7 +579,7 @@ func callOpenAI(apiKey, model, systemPrompt, userPrompt string) (string, LLMUsag
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := externalHTTPClient.Do(req)
 	if err != nil {
 		log.Printf("llm openai error: %v", err)
 		return "", LLMUsage{}, fmt.Errorf("OpenAI API error: %w", err)

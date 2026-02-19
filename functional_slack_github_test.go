@@ -31,7 +31,8 @@ func (t *rewriteGitHubTransport) RoundTrip(req *http.Request) (*http.Response, e
 func withMockGitHubAPI(t *testing.T) {
 	t.Helper()
 
-	rangeRe := regexp.MustCompile(`merged:([0-9]{4}-[0-9]{2}-[0-9]{2})\.\.([0-9]{4}-[0-9]{2}-[0-9]{2})`)
+	mergedFromRe := regexp.MustCompile(`merged:>=([0-9]{4}-[0-9]{2}-[0-9]{2})`)
+	mergedToRe := regexp.MustCompile(`merged:<([0-9]{4}-[0-9]{2}-[0-9]{2})`)
 	updatedRe := regexp.MustCompile(`updated:>=([0-9]{4}-[0-9]{2}-[0-9]{2})`)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasSuffix(r.URL.Path, "/search/issues") {
@@ -47,15 +48,22 @@ func withMockGitHubAPI(t *testing.T) {
 
 		switch {
 		case strings.Contains(q, "is:merged"):
-			m := rangeRe.FindStringSubmatch(q)
-			if len(m) != 3 {
-				t.Fatalf("merged query missing date range: %q", q)
+			mFrom := mergedFromRe.FindStringSubmatch(q)
+			mTo := mergedToRe.FindStringSubmatch(q)
+			if len(mFrom) != 2 || len(mTo) != 2 {
+				t.Fatalf("merged query missing inclusive/exclusive date constraints: %q", q)
 			}
-			start, err := time.Parse("2006-01-02", m[1])
+			start, err := time.Parse("2006-01-02", mFrom[1])
 			if err != nil {
 				t.Fatalf("parse merged start date: %v", err)
 			}
+			end, err := time.Parse("2006-01-02", mTo[1])
+			if err != nil {
+				t.Fatalf("parse merged end date: %v", err)
+			}
 			closedAt := start.Add(24 * time.Hour).UTC().Format(time.RFC3339)
+			// Boundary item at exact "to" should be excluded by [from, to) filtering.
+			boundaryClosedAt := end.UTC().Format(time.RFC3339)
 			resp.Items = []githubPRItem{
 				{
 					Title:         "Merged PR from GitHub",
@@ -66,6 +74,18 @@ func withMockGitHubAPI(t *testing.T) {
 					ClosedAt:      closedAt,
 					User:          githubUser{Login: "alice"},
 					Labels:        []githubLabel{{Name: "backend"}},
+					PullRequest:   &githubPRLinks{},
+					RepositoryURL: "https://api.github.com/repos/acme/repo-a",
+				},
+				{
+					Title:         "Merged PR on boundary",
+					HTMLURL:       "https://github.com/acme/repo-a/pull/99",
+					State:         "closed",
+					CreatedAt:     end.Add(-24 * time.Hour).UTC().Format(time.RFC3339),
+					UpdatedAt:     boundaryClosedAt,
+					ClosedAt:      boundaryClosedAt,
+					User:          githubUser{Login: "alice"},
+					Labels:        []githubLabel{{Name: "boundary"}},
 					PullRequest:   &githubPRLinks{},
 					RepositoryURL: "https://api.github.com/repos/acme/repo-a",
 				},
@@ -149,6 +169,49 @@ func newMockSlackAPI(t *testing.T) (*slack.Client, *int) {
 	return api, &postEphemeralCalls
 }
 
+func newMockSlackAPIWithUsers(t *testing.T) *slack.Client {
+	t.Helper()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimPrefix(r.URL.Path, "/api/")
+		switch path {
+		case "users.info":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok": true,
+				"user": map[string]any{
+					"id":        "U123",
+					"name":      "alice",
+					"real_name": "Alice Real",
+					"profile": map[string]any{
+						"display_name": "Alice Display",
+					},
+				},
+			})
+		case "users.list":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok": true,
+				"members": []map[string]any{
+					{
+						"id":        "U_BOB",
+						"name":      "bob",
+						"real_name": "Bob Real",
+						"profile": map[string]any{
+							"display_name": "Bob Display",
+						},
+					},
+				},
+			})
+		case "chat.postEphemeral":
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+		default:
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	return slack.New("xoxb-test", slack.OptionAPIURL(server.URL+"/api/"))
+}
+
 func TestFunctional_HandleReport_WithMockSlack(t *testing.T) {
 	db := newTestDB(t)
 	api, postCalls := newMockSlackAPI(t)
@@ -181,6 +244,146 @@ func TestFunctional_HandleReport_WithMockSlack(t *testing.T) {
 	}
 }
 
+func TestFunctional_HandleReport_RejectsUnresolvedDelegatedAuthor(t *testing.T) {
+	db := newTestDB(t)
+	api, postCalls := newMockSlackAPI(t)
+
+	cfg := Config{
+		Location:        time.UTC,
+		ManagerSlackIDs: []string{"U_MANAGER"},
+		TeamMembers:     []string{"Alice Real", "Bob Real"},
+	}
+	cmd := slack.SlashCommand{
+		Command:   "/report",
+		Text:      "{Charlie} Ship release checklist (done)",
+		UserID:    "U_MANAGER",
+		UserName:  "manager",
+		ChannelID: "C123",
+	}
+
+	handleReport(api, db, cfg, cmd)
+
+	from := time.Now().UTC().Add(-1 * time.Hour)
+	to := time.Now().UTC().Add(1 * time.Hour)
+	items, err := GetItemsByDateRange(db, from, to)
+	if err != nil {
+		t.Fatalf("GetItemsByDateRange failed: %v", err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("expected no inserted items for unresolved delegated author, got %d", len(items))
+	}
+	if *postCalls == 0 {
+		t.Fatal("expected chat.postEphemeral to be called for validation feedback")
+	}
+}
+
+func TestFunctional_HandleReport_RejectsAmbiguousDelegatedAuthor(t *testing.T) {
+	db := newTestDB(t)
+	api, postCalls := newMockSlackAPI(t)
+
+	cfg := Config{
+		Location:        time.UTC,
+		ManagerSlackIDs: []string{"U_MANAGER"},
+		// Two team members whose names are likely to both fuzzily match the same delegated input.
+		TeamMembers: []string{"Alice Real", "Alicia Real"},
+	}
+	cmd := slack.SlashCommand{
+		Command:   "/report",
+		// Delegated author name intended to ambiguously match multiple team members.
+		Text:      "{Ali} Ship release checklist (done)",
+		UserID:    "U_MANAGER",
+		UserName:  "manager",
+		ChannelID: "C123",
+	}
+
+	handleReport(api, db, cfg, cmd)
+
+	from := time.Now().UTC().Add(-1 * time.Hour)
+	to := time.Now().UTC().Add(1 * time.Hour)
+	items, err := GetItemsByDateRange(db, from, to)
+	if err != nil {
+		t.Fatalf("GetItemsByDateRange failed: %v", err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("expected no inserted items for ambiguous delegated author, got %d", len(items))
+	}
+	if *postCalls == 0 {
+		t.Fatal("expected chat.postEphemeral to be called for ambiguous match validation feedback")
+	}
+}
+
+func TestFunctional_HandleReport_DelegatedWithSlackIDResolution(t *testing.T) {
+	db := newTestDB(t)
+	api := newMockSlackAPIWithUsers(t)
+
+	cfg := Config{
+		Location:        time.UTC,
+		ManagerSlackIDs: []string{"U_MANAGER"},
+		TeamMembers:     []string{"Bob Real"},
+	}
+	cmd := slack.SlashCommand{
+		Command:   "/report",
+		Text:      "{Bob} Implement feature X (done)",
+		UserID:    "U_MANAGER",
+		UserName:  "manager",
+		ChannelID: "C123",
+	}
+
+	handleReport(api, db, cfg, cmd)
+
+	from := time.Now().UTC().Add(-1 * time.Hour)
+	to := time.Now().UTC().Add(1 * time.Hour)
+	items, err := GetItemsByDateRange(db, from, to)
+	if err != nil {
+		t.Fatalf("GetItemsByDateRange failed: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected 1 inserted item, got %d", len(items))
+	}
+	if items[0].Author != "Bob Real" {
+		t.Errorf("expected author 'Bob Real', got %q", items[0].Author)
+	}
+	if items[0].AuthorID != "U_BOB" {
+		t.Errorf("expected AuthorID 'U_BOB' (delegated member's resolved Slack ID), got %q", items[0].AuthorID)
+	}
+}
+
+func TestFunctional_HandleReport_DelegatedWithoutSlackIDResolution(t *testing.T) {
+	db := newTestDB(t)
+	// Use mock API that doesn't support users.list, so Slack ID resolution fails
+	api, _ := newMockSlackAPI(t)
+
+	cfg := Config{
+		Location:        time.UTC,
+		ManagerSlackIDs: []string{"U_MANAGER"},
+		TeamMembers:     []string{"Charlie Real"},
+	}
+	cmd := slack.SlashCommand{
+		Command:   "/report",
+		Text:      "{Charlie} Implement feature Y (done)",
+		UserID:    "U_MANAGER",
+		UserName:  "manager",
+		ChannelID: "C123",
+	}
+
+	handleReport(api, db, cfg, cmd)
+
+	from := time.Now().UTC().Add(-1 * time.Hour)
+	to := time.Now().UTC().Add(1 * time.Hour)
+	items, err := GetItemsByDateRange(db, from, to)
+	if err != nil {
+		t.Fatalf("GetItemsByDateRange failed: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected 1 inserted item, got %d", len(items))
+	}
+	if items[0].Author != "Charlie Real" {
+		t.Errorf("expected author 'Charlie Real', got %q", items[0].Author)
+	}
+	if items[0].AuthorID != "" {
+		t.Errorf("expected empty AuthorID when Slack ID resolution fails, got %q (must not be manager's ID)", items[0].AuthorID)
+	}
+}
 func TestFunctional_FetchAndImportGitHub_EndToEnd(t *testing.T) {
 	withMockGitHubAPI(t)
 	db := newTestDB(t)

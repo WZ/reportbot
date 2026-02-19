@@ -172,8 +172,17 @@ func handleReport(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashComm
 			delegated := strings.TrimSpace(match[1])
 			remaining := strings.TrimSpace(text[len(match[0]):])
 			if delegated != "" && remaining != "" {
-				author = resolveDelegatedAuthorName(delegated, cfg.TeamMembers)
+				resolvedAuthor, ok := resolveDelegatedAuthorName(delegated, cfg.TeamMembers)
+				if !ok {
+					postEphemeral(api, cmd, fmt.Sprintf("Could not resolve delegated member %q to exactly one team member.", delegated))
+					log.Printf("report delegated author unresolved manager=%s delegated=%q", cmd.UserID, delegated)
+					return
+				}
+				author = resolvedAuthor
 				reportText = remaining
+				// For delegated items, start with empty authorID to avoid misattribution.
+				// Only populate if we can resolve the delegated member's Slack ID.
+				authorID = ""
 				if ids, _, err := resolveUserIDs(api, []string{author}); err == nil && len(ids) > 0 {
 					authorID = ids[0]
 				}
@@ -335,6 +344,57 @@ func handleFetchMRs(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashCo
 	log.Printf("fetch inserted=%d alreadyTracked=%d skippedNonTeam=%d", result.Inserted, result.AlreadyTracked, result.SkippedNonTeam)
 }
 
+// deriveBossReportFromTeamReport attempts to derive a boss report from an existing team report file.
+// It returns:
+// - (filePath, bossReport, nil) if the team report exists and was successfully processed
+// - (empty, empty, nil) if the team report file doesn't exist (caller should fall through)
+// - (empty, empty, error) if there was an error (invalid config, file read error, etc.)
+func deriveBossReportFromTeamReport(reportOutputDir, teamName string, friday time.Time) (string, string, error) {
+	// Validate team name to prevent path traversal
+	if strings.ContainsAny(teamName, `/\`) {
+		return "", "", fmt.Errorf("invalid team name with path separators: %q", teamName)
+	}
+
+	teamReportFile := fmt.Sprintf("%s_%s.md", teamName, friday.Format("20060102"))
+	teamReportPath := filepath.Join(reportOutputDir, teamReportFile)
+
+	// Validate that the computed path stays within ReportOutputDir
+	baseDir := filepath.Clean(reportOutputDir)
+	cleanPath := filepath.Clean(teamReportPath)
+	rel, relErr := filepath.Rel(baseDir, cleanPath)
+	if relErr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return "", "", fmt.Errorf("computed team report path escapes base dir (base=%q, path=%q, rel=%q): %w", baseDir, cleanPath, rel, relErr)
+	}
+
+	content, readErr := os.ReadFile(teamReportPath)
+	if readErr != nil {
+		if os.IsNotExist(readErr) {
+			// File doesn't exist - caller should fall through to full pipeline
+			return "", "", nil
+		}
+		// Unexpected error (permission, I/O, etc.)
+		return "", "", fmt.Errorf("error reading team report file %s: %w", teamReportPath, readErr)
+	}
+
+	if len(content) == 0 {
+		// Empty file - treat as not found
+		return "", "", nil
+	}
+
+	// Parse and transform the team report into a boss report
+	template := parseTemplate(string(content))
+	stripCurrentTeamTitleFromPrefix(template, teamName)
+	bossReport := renderBossMarkdown(template)
+
+	// Write the boss report file
+	filePath, err := WriteEmailDraftFile(bossReport, reportOutputDir, friday, teamName)
+	if err != nil {
+		return "", "", fmt.Errorf("error writing boss report file: %w", err)
+	}
+
+	return filePath, bossReport, nil
+}
+
 func handleGenerateReport(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashCommand) {
 	isManager, err := isManagerUser(api, cfg, cmd.UserID)
 	if err != nil {
@@ -361,69 +421,71 @@ func handleGenerateReport(api *slack.Client, db *sql.DB, cfg Config, cmd slack.S
 
 	// Boss mode shortcut: derive from existing team report if available.
 	if mode == "boss" {
-		teamReportFile := fmt.Sprintf("%s_%s.md", sanitizeFilename(cfg.TeamName), friday.Format("20060102"))
-		teamReportPath := filepath.Join(cfg.ReportOutputDir, teamReportFile)
-		content, readErr := os.ReadFile(teamReportPath)
-		if readErr != nil {
-			if !os.IsNotExist(readErr) {
-				// Unexpected error (permission, I/O, etc.) - surface it and abort
-				log.Printf("Error reading team report file %s: %v", teamReportPath, readErr)
-				postEphemeral(api, cmd, fmt.Sprintf("Error reading team report file: %v", readErr))
-				return
-			}
-			// File doesn't exist - fall through to full pipeline below
-			log.Printf("generate-report boss: no existing team report found, running full pipeline")
-		} else if len(content) > 0 {
-			log.Printf("generate-report boss: deriving from existing team report %s", teamReportPath)
-			template := parseTemplate(string(content))
-			stripCurrentTeamTitleFromPrefix(template, cfg.TeamName)
-			bossReport := renderBossMarkdown(template)
-			filePath, err := WriteEmailDraftFile(bossReport, cfg.ReportOutputDir, friday, cfg.TeamName)
-			if err != nil {
-				log.Printf("Error writing boss report file: %v", err)
-				postEphemeral(api, cmd, fmt.Sprintf("Error writing report file: %v", err))
-				return
-			}
-			fileTitle := fmt.Sprintf("%s report email draft", cfg.TeamName)
-			log.Printf("generate-report boss-from-team file=%s length=%d", filePath, len(bossReport))
+		filePath, bossReport, err := deriveBossReportFromTeamReport(cfg.ReportOutputDir, cfg.TeamName, friday)
+		if err != nil {
+			log.Printf("generate-report boss: error deriving from team report: %v", err)
+			postEphemeral(api, cmd, fmt.Sprintf("Error deriving boss report: %v", err))
+			return
+		}
+		if filePath != "" {
+			// Successfully derived boss report from team report
+			log.Printf("generate-report boss: deriving from existing team report, file=%s length=%d", filePath, len(bossReport))
 
-			fi, err := os.Stat(filePath)
-			if err != nil || fi.Size() <= 0 {
-				log.Printf("Error with boss report file: %v", err)
-				postEphemeral(api, cmd, "Error: generated boss report file is empty.")
-				return
-			}
-
-			uploadChannel := cmd.ChannelID
-			if cfg.ReportPrivate {
-				ch, _, _, err := api.OpenConversation(&slack.OpenConversationParameters{Users: []string{cmd.UserID}})
-				if err != nil {
-					log.Printf("Error opening DM for private report: %v", err)
-					postEphemeral(api, cmd, "Error opening DM to send private report. Check bot permissions.")
-					return
+			uploadGeneratedReport := func(filePath, fileTitle, initialComment, successMsg string) error {
+				fi, err := os.Stat(filePath)
+				if err != nil || fi.Size() <= 0 {
+					log.Printf("Error with boss report file: %v", err)
+					postEphemeral(api, cmd, "Error: generated boss report file is empty.")
+					return fmt.Errorf("generated boss report file is empty or inaccessible: %w", err)
 				}
-				uploadChannel = ch.ID
+
+				uploadChannel := cmd.ChannelID
+				if cfg.ReportPrivate {
+					ch, _, _, err := api.OpenConversation(&slack.OpenConversationParameters{Users: []string{cmd.UserID}})
+					if err != nil {
+						log.Printf("Error opening DM for private report: %v", err)
+						postEphemeral(api, cmd, "Error opening DM to send private report. Check bot permissions.")
+						return fmt.Errorf("failed to open DM for private report: %w", err)
+					}
+					uploadChannel = ch.ID
+				}
+
+				_, err = api.UploadFileV2(slack.UploadFileV2Parameters{
+					File:           filePath,
+					FileSize:       int(fi.Size()),
+					Filename:       filepath.Base(filePath),
+					Channel:        uploadChannel,
+					Title:          fileTitle,
+					InitialComment: initialComment,
+				})
+				if err != nil {
+					log.Printf("Error uploading report file: %v", err)
+					postEphemeral(api, cmd, "Error uploading report file to channel. Check bot permissions.")
+					return fmt.Errorf("failed to upload report file: %w", err)
+				}
+
+				postEphemeral(api, cmd, successMsg)
+				return nil
 			}
 
-			_, err = api.UploadFileV2(slack.UploadFileV2Parameters{
-				File:           filePath,
-				FileSize:       int(fi.Size()),
-				Filename:       filepath.Base(filePath),
-				Channel:        uploadChannel,
-				Title:          fileTitle,
-				InitialComment: fmt.Sprintf("Generated boss report (week reference date: %s, derived from team report, tokens used: 0)", friday.Format("2006-01-02")),
-			})
-			if err != nil {
-				log.Printf("Error uploading report file: %v", err)
-				postEphemeral(api, cmd, "Error uploading report file to channel. Check bot permissions.")
+			fileTitle := fmt.Sprintf("%s report email draft", cfg.TeamName)
+			initialComment := fmt.Sprintf(
+				"Generated boss report (week reference date: %s, derived from team report, tokens used: 0)",
+				friday.Format("2006-01-02"),
+			)
+			successMsg := fmt.Sprintf(
+				"Boss report derived from existing team report (no LLM tokens used)\nSaved to: %s",
+				filePath,
+			)
+
+			if err := uploadGeneratedReport(filePath, fileTitle, initialComment, successMsg); err != nil {
 				return
 			}
-
-			msg := fmt.Sprintf("Boss report derived from existing team report (no LLM tokens used)\nSaved to: %s", filePath)
-			postEphemeral(api, cmd, msg)
 			log.Printf("generate-report done mode=boss derived-from-team")
 			return
 		}
+		// File doesn't exist - fall through to full pipeline below
+		log.Printf("generate-report boss: no existing team report found, running full pipeline")
 	}
 
 	items, err := GetItemsByDateRange(db, monday, nextMonday)
@@ -730,16 +792,11 @@ func handleListMissing(api *slack.Client, db *sql.DB, cfg Config, cmd slack.Slas
 	}
 
 	monday, nextMonday := ReportWeekRange(cfg, time.Now().In(cfg.Location))
-	authors, err := GetSlackAuthorsByDateRange(db, monday, nextMonday)
+	reportedAuthorIDs, err := GetSlackAuthorIDsByDateRange(db, monday, nextMonday)
 	if err != nil {
 		postEphemeral(api, cmd, fmt.Sprintf("Error loading items: %v", err))
 		log.Printf("list-missing load error: %v", err)
 		return
-	}
-
-	var reported []string
-	for author := range authors {
-		reported = append(reported, author)
 	}
 
 	type missingMember struct {
@@ -749,6 +806,10 @@ func handleListMissing(api *slack.Client, db *sql.DB, cfg Config, cmd slack.Slas
 	var missing []missingMember
 	var missingIDs []string
 	for _, uid := range memberIDs {
+		if reportedAuthorIDs[uid] {
+			continue
+		}
+
 		user, err := api.GetUserInfo(uid)
 		if err != nil {
 			missing = append(missing, missingMember{display: uid, userID: uid})
@@ -756,28 +817,18 @@ func handleListMissing(api *slack.Client, db *sql.DB, cfg Config, cmd slack.Slas
 			continue
 		}
 
-		candidates := []string{user.Name, user.RealName, user.Profile.DisplayName}
-		hasReported := false
-		for _, c := range candidates {
-			if c != "" && anyNameMatches(reported, c) {
-				hasReported = true
-				break
-			}
+		display := user.Profile.DisplayName
+		if display == "" {
+			display = user.RealName
 		}
-		if !hasReported {
-			display := user.Profile.DisplayName
-			if display == "" {
-				display = user.RealName
-			}
-			if display == "" {
-				display = user.Name
-			}
-			if display == "" {
-				display = uid
-			}
-			missing = append(missing, missingMember{display: display, userID: uid})
-			missingIDs = append(missingIDs, uid)
+		if display == "" {
+			display = user.Name
 		}
+		if display == "" {
+			display = uid
+		}
+		missing = append(missing, missingMember{display: display, userID: uid})
+		missingIDs = append(missingIDs, uid)
 	}
 
 	if len(missing) == 0 && len(unresolved) == 0 {
@@ -1552,10 +1603,10 @@ func isManagerUser(_ *slack.Client, cfg Config, userID string) (bool, error) {
 	return cfg.IsManagerID(userID), nil
 }
 
-func resolveDelegatedAuthorName(input string, teamMembers []string) string {
+func resolveDelegatedAuthorName(input string, teamMembers []string) (string, bool) {
 	input = strings.TrimSpace(input)
 	if input == "" || len(teamMembers) == 0 {
-		return input
+		return "", false
 	}
 
 	normalizedInput := normalizeTextToken(input)
@@ -1563,7 +1614,7 @@ func resolveDelegatedAuthorName(input string, teamMembers []string) string {
 	// 1) Exact match first.
 	for _, member := range teamMembers {
 		if normalizeTextToken(member) == normalizedInput {
-			return member
+			return member, true
 		}
 	}
 
@@ -1576,11 +1627,11 @@ func resolveDelegatedAuthorName(input string, teamMembers []string) string {
 	}
 
 	if len(matches) == 1 {
-		return matches[0]
+		return matches[0], true
 	}
 
-	// Ambiguous/no match: keep caller input unchanged.
-	return input
+	// Ambiguous/no match: reject unresolved delegated names.
+	return "", false
 }
 
 func mapMRStatus(mr GitLabMR) string {
