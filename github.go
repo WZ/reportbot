@@ -12,21 +12,21 @@ import (
 )
 
 type githubSearchResponse struct {
-	TotalCount int              `json:"total_count"`
-	Items      []githubPRItem   `json:"items"`
+	TotalCount int            `json:"total_count"`
+	Items      []githubPRItem `json:"items"`
 }
 
 type githubPRItem struct {
-	Title       string          `json:"title"`
-	HTMLURL     string          `json:"html_url"`
-	State       string          `json:"state"`      // "open" or "closed"
-	CreatedAt   string          `json:"created_at"`
-	UpdatedAt   string          `json:"updated_at"`
-	ClosedAt    string          `json:"closed_at"`
-	User        githubUser      `json:"user"`
-	Labels      []githubLabel   `json:"labels"`
-	PullRequest *githubPRLinks  `json:"pull_request"`
-	RepositoryURL string        `json:"repository_url"` // e.g. "https://api.github.com/repos/org/repo"
+	Title         string         `json:"title"`
+	HTMLURL       string         `json:"html_url"`
+	State         string         `json:"state"` // "open" or "closed"
+	CreatedAt     string         `json:"created_at"`
+	UpdatedAt     string         `json:"updated_at"`
+	ClosedAt      string         `json:"closed_at"`
+	User          githubUser     `json:"user"`
+	Labels        []githubLabel  `json:"labels"`
+	PullRequest   *githubPRLinks `json:"pull_request"`
+	RepositoryURL string         `json:"repository_url"` // e.g. "https://api.github.com/repos/org/repo"
 }
 
 type githubUser struct {
@@ -102,7 +102,7 @@ func searchGitHubPRs(token, query string) ([]githubPRItem, error) {
 		req.Header.Set("Authorization", "Bearer "+token)
 		req.Header.Set("Accept", "application/vnd.github+json")
 
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := externalHTTPClient.Do(req)
 		if err != nil {
 			return nil, fmt.Errorf("executing request: %w", err)
 		}
