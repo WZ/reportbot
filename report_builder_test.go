@@ -44,6 +44,47 @@ func TestBuildReportsFromLast_FirstEverFallback(t *testing.T) {
 	}
 }
 
+func TestBuildReportsFromLast_LoadsPriorReportWhenTeamNameNeedsSanitization(t *testing.T) {
+	dir := t.TempDir()
+	prev := `### Team/A 20260202
+
+#### Top Focus
+
+- **Feature A**
+  - **Pat One** - Existing ongoing item (in progress)
+`
+	if err := os.WriteFile(filepath.Join(dir, "Team_A_20260202.md"), []byte(prev), 0644); err != nil {
+		t.Fatalf("write previous report: %v", err)
+	}
+
+	cfg := Config{
+		ReportOutputDir: dir,
+		TeamName:        "Team/A",
+	}
+
+	orig := classifySectionsFn
+	classifySectionsFn = func(_ Config, _ []WorkItem, _ []sectionOption, _ []existingItemContext, _ []ClassificationCorrection, _ []historicalItem) (map[int64]LLMSectionDecision, LLMUsage, error) {
+		return map[int64]LLMSectionDecision{}, LLMUsage{}, nil
+	}
+	defer func() { classifySectionsFn = orig }()
+
+	result, err := BuildReportsFromLast(cfg, nil, mustDate(t, "20260209"), nil, nil)
+	if err != nil {
+		t.Fatalf("BuildReportsFromLast failed: %v", err)
+	}
+	team := renderTeamMarkdown(result.Template)
+
+	if !strings.Contains(team, "#### Top Focus") {
+		t.Fatalf("expected prior report category to be loaded:\n%s", team)
+	}
+	if !strings.Contains(team, "**Pat One** - Existing ongoing item (in progress)") {
+		t.Fatalf("expected prior report item to be loaded:\n%s", team)
+	}
+	if strings.Contains(team, "#### Undetermined") {
+		t.Fatalf("should not fall back to first-ever template when sanitized prior report exists:\n%s", team)
+	}
+}
+
 func TestBuildReportsFromLast_MergeSortAndDoneRemoval(t *testing.T) {
 	dir := t.TempDir()
 	prev := `### TEAMX 20260202
