@@ -45,18 +45,24 @@ func TestParseReportItemsInvalidInput(t *testing.T) {
 func TestResolveDelegatedAuthorName(t *testing.T) {
 	team := []string{"Alice Smith", "Bob Lee"}
 
-	if got := resolveDelegatedAuthorName("Alice Smith", team); got != "Alice Smith" {
+	if got, ok := resolveDelegatedAuthorName("Alice Smith", team); !ok || got != "Alice Smith" {
 		t.Fatalf("expected exact delegated name match, got %q", got)
 	}
 
 	// Fuzzy match should resolve to the only compatible team member.
-	if got := resolveDelegatedAuthorName("Alice", team); got != "Alice Smith" {
+	if got, ok := resolveDelegatedAuthorName("Alice", team); !ok || got != "Alice Smith" {
 		t.Fatalf("expected fuzzy delegated name resolution, got %q", got)
 	}
 
-	// Ambiguous/no match should return original input.
-	if got := resolveDelegatedAuthorName("Charlie", team); got != "Charlie" {
-		t.Fatalf("expected unresolved delegated name to be preserved, got %q", got)
+	// No match should be rejected.
+	if got, ok := resolveDelegatedAuthorName("Charlie", team); ok || got != "" {
+		t.Fatalf("expected unresolved delegated name to be rejected, got ok=%v value=%q", ok, got)
+	}
+
+	// Ambiguous match should be rejected.
+	ambiguousTeam := []string{"Alice Smith", "Alice Wong"}
+	if got, ok := resolveDelegatedAuthorName("Alice", ambiguousTeam); ok || got != "" {
+		t.Fatalf("expected ambiguous delegated name to be rejected, got ok=%v value=%q", ok, got)
 	}
 }
 

@@ -181,6 +181,39 @@ func TestFunctional_HandleReport_WithMockSlack(t *testing.T) {
 	}
 }
 
+func TestFunctional_HandleReport_RejectsUnresolvedDelegatedAuthor(t *testing.T) {
+	db := newTestDB(t)
+	api, postCalls := newMockSlackAPI(t)
+
+	cfg := Config{
+		Location:        time.UTC,
+		ManagerSlackIDs: []string{"U_MANAGER"},
+		TeamMembers:     []string{"Alice Real", "Bob Real"},
+	}
+	cmd := slack.SlashCommand{
+		Command:   "/report",
+		Text:      "{Charlie} Ship release checklist (done)",
+		UserID:    "U_MANAGER",
+		UserName:  "manager",
+		ChannelID: "C123",
+	}
+
+	handleReport(api, db, cfg, cmd)
+
+	from := time.Now().UTC().Add(-1 * time.Hour)
+	to := time.Now().UTC().Add(1 * time.Hour)
+	items, err := GetItemsByDateRange(db, from, to)
+	if err != nil {
+		t.Fatalf("GetItemsByDateRange failed: %v", err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("expected no inserted items for unresolved delegated author, got %d", len(items))
+	}
+	if *postCalls == 0 {
+		t.Fatal("expected chat.postEphemeral to be called for validation feedback")
+	}
+}
+
 func TestFunctional_FetchAndImportGitHub_EndToEnd(t *testing.T) {
 	withMockGitHubAPI(t)
 	db := newTestDB(t)
