@@ -35,6 +35,61 @@ func TestWriteReportAndEmailDraftFiles(t *testing.T) {
 	}
 }
 
+func TestWriteReportFileSanitizesTeamName(t *testing.T) {
+	outDir := t.TempDir()
+	date := time.Date(2026, 2, 20, 0, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name         string
+		team         string
+		expectSuffix string
+	}{
+		{
+			name:         "path separators only",
+			team:         "../Ops\\Team",
+			expectSuffix: ".._Ops_Team_20260220.md",
+		},
+		{
+			name:         "path traversal with special characters",
+			team:         "../../Team:Name<>|*?",
+			expectSuffix: "",
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			reportPath, err := WriteReportFile("hello report\n", outDir, date, tc.team)
+			if err != nil {
+				t.Fatalf("WriteReportFile failed: %v", err)
+			}
+			if tc.expectSuffix != "" {
+				if !strings.HasSuffix(reportPath, tc.expectSuffix) {
+					t.Fatalf("unexpected sanitized report file path: %s", reportPath)
+				}
+			} else {
+				base := filepath.Base(reportPath)
+				if strings.ContainsAny(base, `/\:*?"<>|`) {
+					t.Fatalf("sanitized report filename contains invalid characters: %q", base)
+				}
+			}
+			if _, err := os.Stat(filepath.Clean(reportPath)); err != nil {
+				t.Fatalf("expected report file to exist: %v", err)
+			}
+
+			rel, err := filepath.Rel(filepath.Clean(outDir), filepath.Clean(reportPath))
+			if err != nil {
+				t.Fatalf("failed to compute relative path: %v", err)
+			}
+			if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+				t.Fatalf("report path escaped output directory: %s", reportPath)
+			}
+			if strings.Contains(rel, string(os.PathSeparator)) {
+				t.Fatalf("sanitized report filename unexpectedly contains path separators: %s", rel)
+			}
+		})
+	}
+}
 func TestBuildEMLAndMarkdownTransforms(t *testing.T) {
 	body := "### Title\n\n- **Alice** - item one (done)\n- item two (in progress)\n"
 	eml := buildEML("Weekly Subject", body)
