@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func setMinimalValidConfigEnv(t *testing.T) {
@@ -39,6 +40,9 @@ func TestLoadConfigFromEnvWithDefaults(t *testing.T) {
 	if cfg.ReportOutputDir != "./reports" {
 		t.Fatalf("unexpected report output dir default: %q", cfg.ReportOutputDir)
 	}
+	if cfg.ExternalHTTPTimeoutSeconds != int(defaultExternalHTTPTimeout/time.Second) {
+		t.Fatalf("unexpected external HTTP timeout default: %d", cfg.ExternalHTTPTimeoutSeconds)
+	}
 	if cfg.TeamName != "My Team" {
 		t.Fatalf("unexpected team name default: %q", cfg.TeamName)
 	}
@@ -61,6 +65,7 @@ team_name: "YAML Team"
 timezone: "America/Los_Angeles"
 db_path: "/tmp/yaml.db"
 report_output_dir: "/tmp/yaml-reports"
+external_http_timeout_seconds: 75
 `
 	if err := os.WriteFile(cfgPath, []byte(content), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -71,6 +76,7 @@ report_output_dir: "/tmp/yaml-reports"
 	t.Setenv("OPENAI_API_KEY", "sk-env")
 	t.Setenv("TEAM_NAME", "Env Team")
 	t.Setenv("DB_PATH", "/tmp/env.db")
+	t.Setenv("EXTERNAL_HTTP_TIMEOUT_SECONDS", "120")
 
 	cfg := LoadConfig()
 
@@ -88,6 +94,9 @@ report_output_dir: "/tmp/yaml-reports"
 	}
 	if cfg.ReportOutputDir != "/tmp/yaml-reports" {
 		t.Fatalf("expected report output dir from yaml, got %q", cfg.ReportOutputDir)
+	}
+	if cfg.ExternalHTTPTimeoutSeconds != 120 {
+		t.Fatalf("expected external HTTP timeout from env override, got %d", cfg.ExternalHTTPTimeoutSeconds)
 	}
 }
 

@@ -579,7 +579,7 @@ func callOpenAI(apiKey, model, systemPrompt, userPrompt string) (string, LLMUsag
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := externalHTTPClient.Do(req)
 	if err != nil {
 		log.Printf("llm openai error: %v", err)
 		return "", LLMUsage{}, fmt.Errorf("OpenAI API error: %w", err)

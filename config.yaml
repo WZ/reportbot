@@ -38,6 +38,7 @@ openai_api_key: ""
 # Data and output paths
 db_path: "./reportbot.db"
 report_output_dir: "./reportbot-reports"
+external_http_timeout_seconds: 90
 
 # Channel ID used for report reminders and links
 report_channel_id: "C01234567"
