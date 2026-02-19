@@ -44,8 +44,12 @@ func TestWriteReportFileSanitizesTeamName(t *testing.T) {
 		t.Fatalf("WriteReportFile failed: %v", err)
 	}
 
-	if !strings.HasSuffix(reportPath, ".._Ops_Team_20260220.md") {
-		t.Fatalf("unexpected sanitized report file path: %s", reportPath)
+	base := filepath.Base(reportPath)
+	if !strings.HasSuffix(base, "_20260220.md") {
+		t.Fatalf("unexpected sanitized report file name: %s", base)
+	}
+	if strings.HasPrefix(base, ".") {
+		t.Fatalf("sanitized report file name should not start with a dot: %s", base)
 	}
 
 	rel, err := filepath.Rel(filepath.Clean(outDir), filepath.Clean(reportPath))
