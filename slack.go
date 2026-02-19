@@ -180,6 +180,9 @@ func handleReport(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashComm
 				}
 				author = resolvedAuthor
 				reportText = remaining
+				// For delegated items, start with empty authorID to avoid misattribution.
+				// Only populate if we can resolve the delegated member's Slack ID.
+				authorID = ""
 				if ids, _, err := resolveUserIDs(api, []string{author}); err == nil && len(ids) > 0 {
 					authorID = ids[0]
 				}
