@@ -361,7 +361,7 @@ func handleGenerateReport(api *slack.Client, db *sql.DB, cfg Config, cmd slack.S
 
 	// Boss mode shortcut: derive from existing team report if available.
 	if mode == "boss" {
-		teamReportFile := fmt.Sprintf("%s_%s.md", cfg.TeamName, friday.Format("20060102"))
+		teamReportFile := fmt.Sprintf("%s_%s.md", sanitizeFilename(cfg.TeamName), friday.Format("20060102"))
 		teamReportPath := filepath.Join(cfg.ReportOutputDir, teamReportFile)
 		content, readErr := os.ReadFile(teamReportPath)
 		if readErr != nil {
