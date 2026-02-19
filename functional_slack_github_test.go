@@ -31,7 +31,8 @@ func (t *rewriteGitHubTransport) RoundTrip(req *http.Request) (*http.Response, e
 func withMockGitHubAPI(t *testing.T) {
 	t.Helper()
 
-	rangeRe := regexp.MustCompile(`merged:([0-9]{4}-[0-9]{2}-[0-9]{2})\.\.([0-9]{4}-[0-9]{2}-[0-9]{2})`)
+	mergedFromRe := regexp.MustCompile(`merged:>=([0-9]{4}-[0-9]{2}-[0-9]{2})`)
+	mergedToRe := regexp.MustCompile(`merged:<([0-9]{4}-[0-9]{2}-[0-9]{2})`)
 	updatedRe := regexp.MustCompile(`updated:>=([0-9]{4}-[0-9]{2}-[0-9]{2})`)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasSuffix(r.URL.Path, "/search/issues") {
@@ -47,15 +48,22 @@ func withMockGitHubAPI(t *testing.T) {
 
 		switch {
 		case strings.Contains(q, "is:merged"):
-			m := rangeRe.FindStringSubmatch(q)
-			if len(m) != 3 {
-				t.Fatalf("merged query missing date range: %q", q)
+			mFrom := mergedFromRe.FindStringSubmatch(q)
+			mTo := mergedToRe.FindStringSubmatch(q)
+			if len(mFrom) != 2 || len(mTo) != 2 {
+				t.Fatalf("merged query missing inclusive/exclusive date constraints: %q", q)
 			}
-			start, err := time.Parse("2006-01-02", m[1])
+			start, err := time.Parse("2006-01-02", mFrom[1])
 			if err != nil {
 				t.Fatalf("parse merged start date: %v", err)
 			}
+			end, err := time.Parse("2006-01-02", mTo[1])
+			if err != nil {
+				t.Fatalf("parse merged end date: %v", err)
+			}
 			closedAt := start.Add(24 * time.Hour).UTC().Format(time.RFC3339)
+			// Boundary item at exact "to" should be excluded by [from, to) filtering.
+			boundaryClosedAt := end.UTC().Format(time.RFC3339)
 			resp.Items = []githubPRItem{
 				{
 					Title:         "Merged PR from GitHub",
@@ -66,6 +74,18 @@ func withMockGitHubAPI(t *testing.T) {
 					ClosedAt:      closedAt,
 					User:          githubUser{Login: "alice"},
 					Labels:        []githubLabel{{Name: "backend"}},
+					PullRequest:   &githubPRLinks{},
+					RepositoryURL: "https://api.github.com/repos/acme/repo-a",
+				},
+				{
+					Title:         "Merged PR on boundary",
+					HTMLURL:       "https://github.com/acme/repo-a/pull/99",
+					State:         "closed",
+					CreatedAt:     end.Add(-24 * time.Hour).UTC().Format(time.RFC3339),
+					UpdatedAt:     boundaryClosedAt,
+					ClosedAt:      boundaryClosedAt,
+					User:          githubUser{Login: "alice"},
+					Labels:        []githubLabel{{Name: "boundary"}},
 					PullRequest:   &githubPRLinks{},
 					RepositoryURL: "https://api.github.com/repos/acme/repo-a",
 				},

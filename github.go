@@ -12,21 +12,21 @@ import (
 )
 
 type githubSearchResponse struct {
-	TotalCount int              `json:"total_count"`
-	Items      []githubPRItem   `json:"items"`
+	TotalCount int            `json:"total_count"`
+	Items      []githubPRItem `json:"items"`
 }
 
 type githubPRItem struct {
-	Title       string          `json:"title"`
-	HTMLURL     string          `json:"html_url"`
-	State       string          `json:"state"`      // "open" or "closed"
-	CreatedAt   string          `json:"created_at"`
-	UpdatedAt   string          `json:"updated_at"`
-	ClosedAt    string          `json:"closed_at"`
-	User        githubUser      `json:"user"`
-	Labels      []githubLabel   `json:"labels"`
-	PullRequest *githubPRLinks  `json:"pull_request"`
-	RepositoryURL string        `json:"repository_url"` // e.g. "https://api.github.com/repos/org/repo"
+	Title         string         `json:"title"`
+	HTMLURL       string         `json:"html_url"`
+	State         string         `json:"state"` // "open" or "closed"
+	CreatedAt     string         `json:"created_at"`
+	UpdatedAt     string         `json:"updated_at"`
+	ClosedAt      string         `json:"closed_at"`
+	User          githubUser     `json:"user"`
+	Labels        []githubLabel  `json:"labels"`
+	PullRequest   *githubPRLinks `json:"pull_request"`
+	RepositoryURL string         `json:"repository_url"` // e.g. "https://api.github.com/repos/org/repo"
 }
 
 type githubUser struct {
@@ -48,24 +48,39 @@ func FetchGitHubPRs(cfg Config, from, to time.Time) ([]GitHubPR, error) {
 
 	var allPRs []GitHubPR
 
-	// Query 1: Merged PRs in the date range.
-	mergedQuery := fmt.Sprintf("type:pr is:merged merged:%s..%s %s", fromStr, toStr, scope)
+	// Query 1: Merged PRs in [from, to). Use exclusive upper bound to avoid
+	// including next-week items on date-boundary searches.
+	mergedQuery := strings.TrimSpace(fmt.Sprintf("type:pr is:merged merged:>=%s merged:<%s %s", fromStr, toStr, scope))
 	log.Printf("github fetch merged query=%s", mergedQuery)
 	mergedItems, err := searchGitHubPRs(cfg.GitHubToken, mergedQuery)
 	if err != nil {
 		return nil, fmt.Errorf("searching merged PRs: %w", err)
 	}
+	mergedCount := 0
 	for _, item := range mergedItems {
-		allPRs = append(allPRs, convertGitHubItem(item, "merged"))
+		pr := convertGitHubItem(item, "merged")
+		// Keep merged PRs strictly inside [from, to).
+		if pr.MergedAt.IsZero() {
+			continue
+		}
+		if pr.MergedAt.Before(from) {
+			continue
+		}
+		if !pr.MergedAt.Before(to) {
+			continue
+		}
+		allPRs = append(allPRs, pr)
+		mergedCount++
 	}
 
 	// Query 2: Open PRs updated since the start of the range.
-	openQuery := fmt.Sprintf("type:pr is:open updated:>=%s %s", fromStr, scope)
+	openQuery := strings.TrimSpace(fmt.Sprintf("type:pr is:open updated:>=%s %s", fromStr, scope))
 	log.Printf("github fetch open query=%s", openQuery)
 	openItems, err := searchGitHubPRs(cfg.GitHubToken, openQuery)
 	if err != nil {
 		return nil, fmt.Errorf("searching open PRs: %w", err)
 	}
+	openCount := 0
 	for _, item := range openItems {
 		pr := convertGitHubItem(item, "open")
 		// Filter: only include open PRs updated within the date range.
@@ -81,9 +96,10 @@ func FetchGitHubPRs(cfg Config, from, to time.Time) ([]GitHubPR, error) {
 			continue
 		}
 		allPRs = append(allPRs, pr)
+		openCount++
 	}
 
-	log.Printf("github fetch done total=%d (merged=%d open=%d)", len(allPRs), len(mergedItems), len(allPRs)-len(mergedItems))
+	log.Printf("github fetch done total=%d (merged=%d open=%d)", len(allPRs), mergedCount, openCount)
 	return allPRs, nil
 }
 
