@@ -69,6 +69,23 @@ func TestBuildEMLAndMarkdownTransforms(t *testing.T) {
 	}
 }
 
+func TestBuildEMLSanitizesInjectedSubjectHeaders(t *testing.T) {
+	eml := buildEML("Weekly Report\r\nBcc: attacker@example.com", "body")
+
+	parts := strings.SplitN(eml, "\r\n\r\n", 2)
+	if len(parts) != 2 {
+		t.Fatalf("invalid eml format, missing header/body boundary: %q", eml)
+	}
+	headers := parts[0]
+
+	if strings.Contains(headers, "\r\nBcc: attacker@example.com") {
+		t.Fatalf("subject header injection not sanitized: %q", headers)
+	}
+	if !strings.Contains(headers, "Subject: Weekly Report Bcc: attacker@example.com") {
+		t.Fatalf("expected sanitized subject line in headers: %q", headers)
+	}
+}
+
 func TestReportHelpers(t *testing.T) {
 	if got := sanitizeFilename(`a/b\c:d*e?f"g<h>i|j`); strings.ContainsAny(got, `/\\:*?"<>|`) {
 		t.Fatalf("sanitizeFilename left invalid characters: %q", got)
