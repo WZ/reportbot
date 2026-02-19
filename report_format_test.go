@@ -90,7 +90,6 @@ func TestWriteReportFileSanitizesTeamName(t *testing.T) {
 		})
 	}
 }
-
 func TestBuildEMLAndMarkdownTransforms(t *testing.T) {
 	body := "### Title\n\n- **Alice** - item one (done)\n- item two (in progress)\n"
 	eml := buildEML("Weekly Subject", body)
