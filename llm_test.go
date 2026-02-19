@@ -6,6 +6,24 @@ import (
 	"testing"
 )
 
+func TestLLMBatchConcurrencyLimit(t *testing.T) {
+	tests := []struct {
+		total int
+		want  int
+	}{
+		{total: 0, want: 1},
+		{total: 1, want: 1},
+		{total: 2, want: 2},
+		{total: 4, want: 4},
+		{total: 10, want: 4},
+	}
+	for _, tt := range tests {
+		if got := llmBatchConcurrencyLimit(tt.total); got != tt.want {
+			t.Fatalf("llmBatchConcurrencyLimit(%d) = %d, want %d", tt.total, got, tt.want)
+		}
+	}
+}
+
 func TestApplyGlossaryOverrides(t *testing.T) {
 	glossary := &LLMGlossary{
 		Terms: []GlossaryTerm{
