@@ -1,4 +1,4 @@
-reportbot
+/reportbot
 *.db
 reports/
 env

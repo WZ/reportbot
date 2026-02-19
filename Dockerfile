@@ -5,9 +5,10 @@ RUN apk add --no-cache gcc musl-dev
 WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
-COPY *.go ./
+COPY cmd ./cmd
+COPY internal ./internal
 
-RUN CGO_ENABLED=1 go build -o reportbot .
+RUN CGO_ENABLED=1 go build -o reportbot ./cmd/reportbot
 
 FROM alpine:3.20
 

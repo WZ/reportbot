@@ -240,7 +240,7 @@ status_hints:
 
 ```bash
 # Build (requires CGO for SQLite)
-CGO_ENABLED=1 go build -o reportbot .
+CGO_ENABLED=1 go build -o reportbot ./cmd/reportbot
 
 # Run
 ./reportbot
@@ -397,21 +397,24 @@ Report sections and sub-sections are sourced from the previous generated team re
 
 ```
 reportbot/
-  main.go              Entry point
-  config.go            YAML + env var loading, permission check
-  models.go            WorkItem, GitLabMR types, calendar week helper
-  db.go                SQLite schema and CRUD (work_items, classification_history, corrections, stats)
-  llm.go               LLM integration (Anthropic + OpenAI), prompt caching, parallel batch classification, generator-critic loop, retrospective analysis
-  llm_examples.go      TF-IDF index for relevance-based few-shot example selection
-  glossary.go          Glossary loading, auto-growth from corrections
-  gitlab.go            GitLab API client for fetching merged MRs
-  github.go            GitHub Search API client for fetching merged/open PRs
-  auto_fetch.go        Reusable fetch-import logic, cron-based auto-fetch scheduler
-  report.go            Markdown/EML report file generation
-  report_builder.go    Template parsing, LLM classification pipeline, merge logic
-  slack.go             Slack Socket Mode bot, slash commands, nudge UI, /stats, correction capture, uncertainty sampling
-  slack_users.go       User resolution helpers: Slack API lookups, name matching
-  nudge.go             Scheduled weekly reminder and DM sender
+  cmd/
+    reportbot/main.go  Entry point
+  internal/
+    reportbot/
+      config.go            YAML + env var loading, permission check
+      models.go            WorkItem, GitLabMR types, calendar week helper
+      db.go                SQLite schema and CRUD (work_items, classification_history, corrections, stats)
+      llm.go               LLM integration (Anthropic + OpenAI), prompt caching, parallel batch classification, generator-critic loop, retrospective analysis
+      llm_examples.go      TF-IDF index for relevance-based few-shot example selection
+      glossary.go          Glossary loading, auto-growth from corrections
+      gitlab.go            GitLab API client for fetching merged MRs
+      github.go            GitHub Search API client for fetching merged/open PRs
+      auto_fetch.go        Reusable fetch-import logic, cron-based auto-fetch scheduler
+      report.go            Markdown/EML report file generation
+      report_builder.go    Template parsing, LLM classification pipeline, merge logic
+      slack.go             Slack Socket Mode bot, slash commands, nudge UI, /stats, correction capture, uncertainty sampling
+      slack_users.go       User resolution helpers: Slack API lookups, name matching
+      nudge.go             Scheduled weekly reminder and DM sender
   Dockerfile           Multi-stage Docker build
   docs/                Architecture diagrams and feature documentation
 ```
