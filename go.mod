@@ -2,6 +2,8 @@ module reportbot
 
 go 1.23.0
 
+toolchain go1.23.6
+
 require (
 	github.com/anthropics/anthropic-sdk-go v1.22.0
 	github.com/mattn/go-sqlite3 v1.14.33
