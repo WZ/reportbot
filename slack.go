@@ -388,8 +388,13 @@ func handleGenerateReport(api *slack.Client, db *sql.DB, cfg Config, cmd slack.S
 			log.Printf("generate-report boss-from-team file=%s length=%d", filePath, len(bossReport))
 
 			fi, err := os.Stat(filePath)
-			if err != nil || fi.Size() <= 0 {
-				log.Printf("Error with boss report file: %v", err)
+			if err != nil {
+				log.Printf("Error stating boss report file %s: %v", filePath, err)
+				postEphemeral(api, cmd, "Error: generated boss report file is empty.")
+				return
+			}
+			if fi.Size() <= 0 {
+				log.Printf("Generated boss report file is empty: path=%s size=%d", filePath, fi.Size())
 				postEphemeral(api, cmd, "Error: generated boss report file is empty.")
 				return
 			}
