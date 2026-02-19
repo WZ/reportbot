@@ -47,7 +47,7 @@ func TestWriteReportFileSanitizesTeamName(t *testing.T) {
 		{
 			name:         "path separators only",
 			team:         "../Ops\\Team",
-			expectSuffix: ".._Ops_Team_20260220.md",
+			expectSuffix: "_Ops_Team_20260220.md",
 		},
 		{
 			name:         "path traversal with special characters",
