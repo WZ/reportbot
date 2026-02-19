@@ -14,7 +14,7 @@ func WriteReportFile(content, outputDir string, reportDate time.Time, teamName s
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
 		return "", err
 	}
-	filename := fmt.Sprintf("%s_%s.md", teamName, reportDate.Format("20060102"))
+	filename := fmt.Sprintf("%s_%s.md", sanitizeFilename(teamName), reportDate.Format("20060102"))
 	path := filepath.Join(outputDir, filename)
 	return path, os.WriteFile(path, []byte(content), 0644)
 }
@@ -67,8 +67,29 @@ func sanitizeHeaderValue(s string) string {
 }
 
 func sanitizeFilename(s string) string {
+	// First remove null bytes and control characters (U+0000-U+001F, U+007F)
+	var cleaned strings.Builder
+	for _, r := range s {
+		if r == 0 || (r >= 0x01 && r <= 0x1F) || r == 0x7F {
+			continue
+		}
+		cleaned.WriteRune(r)
+	}
+	sanitized := cleaned.String()
+	
+	// Then replace common path traversal characters
 	replacer := strings.NewReplacer("/", "_", "\\", "_", ":", "_", "*", "_", "?", "_", "\"", "_", "<", "_", ">", "_", "|", "_")
-	return replacer.Replace(s)
+	sanitized = replacer.Replace(sanitized)
+	
+	// Trim spaces and dots from both ends
+	sanitized = strings.Trim(sanitized, " .")
+	
+	// If empty or only underscores after sanitization, use a default name
+	if sanitized == "" || strings.Trim(sanitized, "_") == "" {
+		return "report"
+	}
+	
+	return sanitized
 }
 
 func normalizeCRLF(s string) string {
