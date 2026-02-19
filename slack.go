@@ -730,16 +730,11 @@ func handleListMissing(api *slack.Client, db *sql.DB, cfg Config, cmd slack.Slas
 	}
 
 	monday, nextMonday := ReportWeekRange(cfg, time.Now().In(cfg.Location))
-	authors, err := GetSlackAuthorsByDateRange(db, monday, nextMonday)
+	reportedAuthorIDs, err := GetSlackAuthorIDsByDateRange(db, monday, nextMonday)
 	if err != nil {
 		postEphemeral(api, cmd, fmt.Sprintf("Error loading items: %v", err))
 		log.Printf("list-missing load error: %v", err)
 		return
-	}
-
-	var reported []string
-	for author := range authors {
-		reported = append(reported, author)
 	}
 
 	type missingMember struct {
@@ -749,6 +744,10 @@ func handleListMissing(api *slack.Client, db *sql.DB, cfg Config, cmd slack.Slas
 	var missing []missingMember
 	var missingIDs []string
 	for _, uid := range memberIDs {
+		if reportedAuthorIDs[uid] {
+			continue
+		}
+
 		user, err := api.GetUserInfo(uid)
 		if err != nil {
 			missing = append(missing, missingMember{display: uid, userID: uid})
@@ -756,28 +755,18 @@ func handleListMissing(api *slack.Client, db *sql.DB, cfg Config, cmd slack.Slas
 			continue
 		}
 
-		candidates := []string{user.Name, user.RealName, user.Profile.DisplayName}
-		hasReported := false
-		for _, c := range candidates {
-			if c != "" && anyNameMatches(reported, c) {
-				hasReported = true
-				break
-			}
+		display := user.Profile.DisplayName
+		if display == "" {
+			display = user.RealName
 		}
-		if !hasReported {
-			display := user.Profile.DisplayName
-			if display == "" {
-				display = user.RealName
-			}
-			if display == "" {
-				display = user.Name
-			}
-			if display == "" {
-				display = uid
-			}
-			missing = append(missing, missingMember{display: display, userID: uid})
-			missingIDs = append(missingIDs, uid)
+		if display == "" {
+			display = user.Name
 		}
+		if display == "" {
+			display = uid
+		}
+		missing = append(missing, missingMember{display: display, userID: uid})
+		missingIDs = append(missingIDs, uid)
 	}
 
 	if len(missing) == 0 && len(unresolved) == 0 {
