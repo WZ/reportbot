@@ -35,6 +35,31 @@ func TestWriteReportAndEmailDraftFiles(t *testing.T) {
 	}
 }
 
+func TestWriteReportFileSanitizesTeamName(t *testing.T) {
+	outDir := t.TempDir()
+	date := time.Date(2026, 2, 20, 0, 0, 0, 0, time.UTC)
+
+	reportPath, err := WriteReportFile("hello report\n", outDir, date, "../Ops\\Team")
+	if err != nil {
+		t.Fatalf("WriteReportFile failed: %v", err)
+	}
+
+	if !strings.HasSuffix(reportPath, ".._Ops_Team_20260220.md") {
+		t.Fatalf("unexpected sanitized report file path: %s", reportPath)
+	}
+
+	rel, err := filepath.Rel(filepath.Clean(outDir), filepath.Clean(reportPath))
+	if err != nil {
+		t.Fatalf("failed to compute relative path: %v", err)
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		t.Fatalf("report path escaped output directory: %s", reportPath)
+	}
+	if strings.Contains(rel, string(os.PathSeparator)) {
+		t.Fatalf("sanitized report filename unexpectedly contains path separators: %s", rel)
+	}
+}
+
 func TestBuildEMLAndMarkdownTransforms(t *testing.T) {
 	body := "### Title\n\n- **Alice** - item one (done)\n- item two (in progress)\n"
 	eml := buildEML("Weekly Subject", body)

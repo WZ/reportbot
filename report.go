@@ -14,7 +14,7 @@ func WriteReportFile(content, outputDir string, reportDate time.Time, teamName s
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
 		return "", err
 	}
-	filename := fmt.Sprintf("%s_%s.md", teamName, reportDate.Format("20060102"))
+	filename := fmt.Sprintf("%s_%s.md", sanitizeFilename(teamName), reportDate.Format("20060102"))
 	path := filepath.Join(outputDir, filename)
 	return path, os.WriteFile(path, []byte(content), 0644)
 }
