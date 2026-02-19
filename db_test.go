@@ -72,6 +72,16 @@ func TestWorkItemCRUDAndQueries(t *testing.T) {
 	if inserted != 2 {
 		t.Fatalf("expected inserted=2, got %d", inserted)
 	}
+	if err := InsertWorkItem(db, WorkItem{
+		Description: "Legacy Slack entry",
+		Author:      "Charlie",
+		AuthorID:    "",
+		Source:      "slack",
+		Status:      "done",
+		ReportedAt:  base.Add(30 * time.Minute),
+	}); err != nil {
+		t.Fatalf("InsertWorkItem legacy slack failed: %v", err)
+	}
 
 	exists, err := SourceRefExists(db, "https://gitlab.example.com/group/proj/-/merge_requests/1")
 	if err != nil {
@@ -87,8 +97,8 @@ func TestWorkItemCRUDAndQueries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetItemsByDateRange failed: %v", err)
 	}
-	if len(all) != 3 {
-		t.Fatalf("expected 3 items, got %d", len(all))
+	if len(all) != 4 {
+		t.Fatalf("expected 4 items, got %d", len(all))
 	}
 
 	idByDesc := make(map[string]int64, len(all))
@@ -124,6 +134,17 @@ func TestWorkItemCRUDAndQueries(t *testing.T) {
 	}
 	if authors["Bob"] {
 		t.Fatal("did not expect Bob in slack authors map")
+	}
+
+	authorIDs, err := GetSlackAuthorIDsByDateRange(db, from, to)
+	if err != nil {
+		t.Fatalf("GetSlackAuthorIDsByDateRange failed: %v", err)
+	}
+	if !authorIDs["U001"] {
+		t.Fatal("expected U001 in slack author_id map")
+	}
+	if len(authorIDs) != 1 {
+		t.Fatalf("expected only one non-empty slack author_id, got %d", len(authorIDs))
 	}
 
 	updateID := idByDesc["Implement feature A"]
