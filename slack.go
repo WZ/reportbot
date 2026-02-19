@@ -172,8 +172,17 @@ func handleReport(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashComm
 			delegated := strings.TrimSpace(match[1])
 			remaining := strings.TrimSpace(text[len(match[0]):])
 			if delegated != "" && remaining != "" {
-				author = resolveDelegatedAuthorName(delegated, cfg.TeamMembers)
+				resolvedAuthor, ok := resolveDelegatedAuthorName(delegated, cfg.TeamMembers)
+				if !ok {
+					postEphemeral(api, cmd, fmt.Sprintf("Could not resolve delegated member %q to exactly one team member.", delegated))
+					log.Printf("report delegated author unresolved manager=%s delegated=%q", cmd.UserID, delegated)
+					return
+				}
+				author = resolvedAuthor
 				reportText = remaining
+				// For delegated items, start with empty authorID to avoid misattribution.
+				// Only populate if we can resolve the delegated member's Slack ID.
+				authorID = ""
 				if ids, _, err := resolveUserIDs(api, []string{author}); err == nil && len(ids) > 0 {
 					authorID = ids[0]
 				}
@@ -1474,10 +1483,10 @@ func isManagerUser(_ *slack.Client, cfg Config, userID string) (bool, error) {
 	return cfg.IsManagerID(userID), nil
 }
 
-func resolveDelegatedAuthorName(input string, teamMembers []string) string {
+func resolveDelegatedAuthorName(input string, teamMembers []string) (string, bool) {
 	input = strings.TrimSpace(input)
 	if input == "" || len(teamMembers) == 0 {
-		return input
+		return "", false
 	}
 
 	normalizedInput := normalizeTextToken(input)
@@ -1485,7 +1494,7 @@ func resolveDelegatedAuthorName(input string, teamMembers []string) string {
 	// 1) Exact match first.
 	for _, member := range teamMembers {
 		if normalizeTextToken(member) == normalizedInput {
-			return member
+			return member, true
 		}
 	}
 
@@ -1498,11 +1507,11 @@ func resolveDelegatedAuthorName(input string, teamMembers []string) string {
 	}
 
 	if len(matches) == 1 {
-		return matches[0]
+		return matches[0], true
 	}
 
-	// Ambiguous/no match: keep caller input unchanged.
-	return input
+	// Ambiguous/no match: reject unresolved delegated names.
+	return "", false
 }
 
 func mapMRStatus(mr GitLabMR) string {
