@@ -315,3 +315,127 @@ func TestClassificationHistoryCorrectionsAndStats(t *testing.T) {
 		t.Fatal("expected weekly trend to be non-empty")
 	}
 }
+
+func TestSourceRefUniquenessIgnoresDuplicates(t *testing.T) {
+	db := newTestDB(t)
+	base := time.Now().UTC().Truncate(time.Second)
+
+	items := []WorkItem{
+		{
+			Description: "First import",
+			Author:      "Alice",
+			Source:      "gitlab",
+			SourceRef:   "https://gitlab.example.com/group/proj/-/merge_requests/99",
+			Status:      "done",
+			ReportedAt:  base,
+		},
+		{
+			Description: "Duplicate import",
+			Author:      "Alice",
+			Source:      "gitlab",
+			SourceRef:   "https://gitlab.example.com/group/proj/-/merge_requests/99",
+			Status:      "done",
+			ReportedAt:  base.Add(1 * time.Minute),
+		},
+	}
+	inserted, err := InsertWorkItems(db, items)
+	if err != nil {
+		t.Fatalf("InsertWorkItems failed: %v", err)
+	}
+	if inserted != 1 {
+		t.Fatalf("expected only one inserted row for duplicate source_ref, got %d", inserted)
+	}
+
+	// InsertWorkItem should also be idempotent for duplicate source/source_ref.
+	if err := InsertWorkItem(db, WorkItem{
+		Description: "Third duplicate",
+		Author:      "Alice",
+		Source:      "gitlab",
+		SourceRef:   "https://gitlab.example.com/group/proj/-/merge_requests/99",
+		Status:      "done",
+		ReportedAt:  base.Add(2 * time.Minute),
+	}); err != nil {
+		t.Fatalf("InsertWorkItem duplicate should not fail: %v", err)
+	}
+
+	var count int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM work_items WHERE source = ? AND source_ref = ?`,
+		"gitlab", "https://gitlab.example.com/group/proj/-/merge_requests/99",
+	).Scan(&count); err != nil {
+		t.Fatalf("count query failed: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected exactly one row for duplicated source/source_ref, got %d", count)
+	}
+}
+
+func TestInitDBMigrationDeduplicatesExistingSourceRefs(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "migration-test.db")
+	rawDB, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		t.Fatalf("sql.Open failed: %v", err)
+	}
+
+	_, err = rawDB.Exec(`
+		CREATE TABLE work_items (
+			id          INTEGER PRIMARY KEY AUTOINCREMENT,
+			description TEXT NOT NULL,
+			author      TEXT NOT NULL,
+			source      TEXT NOT NULL DEFAULT 'slack',
+			source_ref  TEXT DEFAULT '',
+			category    TEXT DEFAULT '',
+			status      TEXT DEFAULT 'done',
+			ticket_ids  TEXT DEFAULT '',
+			reported_at DATETIME NOT NULL,
+			created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+		);
+	`)
+	if err != nil {
+		_ = rawDB.Close()
+		t.Fatalf("create legacy table failed: %v", err)
+	}
+
+	base := time.Now().UTC().Truncate(time.Second)
+	_, err = rawDB.Exec(
+		`INSERT INTO work_items (description, author, source, source_ref, status, reported_at) VALUES
+		 (?, ?, ?, ?, ?, ?),
+		 (?, ?, ?, ?, ?, ?),
+		 (?, ?, ?, ?, ?, ?)`,
+		"dup-1", "Alice", "github", "https://github.com/acme/repo/pull/1", "done", base,
+		"dup-2", "Alice", "github", "https://github.com/acme/repo/pull/1", "done", base.Add(1*time.Minute),
+		"unique", "Bob", "github", "https://github.com/acme/repo/pull/2", "done", base.Add(2*time.Minute),
+	)
+	if err != nil {
+		_ = rawDB.Close()
+		t.Fatalf("seed legacy duplicates failed: %v", err)
+	}
+	_ = rawDB.Close()
+
+	migratedDB, err := InitDB(dbPath)
+	if err != nil {
+		t.Fatalf("InitDB migration failed: %v", err)
+	}
+	defer migratedDB.Close()
+
+	var dupCount int
+	if err := migratedDB.QueryRow(
+		`SELECT COUNT(*) FROM work_items WHERE source = ? AND source_ref = ?`,
+		"github", "https://github.com/acme/repo/pull/1",
+	).Scan(&dupCount); err != nil {
+		t.Fatalf("post-migration duplicate count query failed: %v", err)
+	}
+	if dupCount != 1 {
+		t.Fatalf("expected migration to keep only one duplicate row, got %d", dupCount)
+	}
+
+	// Verify unique index exists and enforces uniqueness.
+	_, err = migratedDB.Exec(
+		`INSERT INTO work_items (description, author, source, source_ref, status, reported_at)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		"dup-after-migration", "Alice", "github", "https://github.com/acme/repo/pull/1", "done", base.Add(3*time.Minute),
+	)
+	if err == nil {
+		t.Fatal("expected unique constraint error when inserting duplicate source/source_ref after migration")
+	}
+}
