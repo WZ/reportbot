@@ -1,7 +1,7 @@
 package main
 
-import "reportbot/internal/reportbot"
+import "reportbot/internal/app"
 
 func main() {
-	reportbot.Main()
+	app.Main()
 }

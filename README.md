@@ -397,24 +397,19 @@ Report sections and sub-sections are sourced from the previous generated team re
 
 ```
 reportbot/
-  cmd/
-    reportbot/main.go  Entry point
-  internal/
-    reportbot/
-      config.go            YAML + env var loading, permission check
-      models.go            WorkItem, GitLabMR types, calendar week helper
-      db.go                SQLite schema and CRUD (work_items, classification_history, corrections, stats)
-      llm.go               LLM integration (Anthropic + OpenAI), prompt caching, parallel batch classification, generator-critic loop, retrospective analysis
-      llm_examples.go      TF-IDF index for relevance-based few-shot example selection
-      glossary.go          Glossary loading, auto-growth from corrections
-      gitlab.go            GitLab API client for fetching merged MRs
-      github.go            GitHub Search API client for fetching merged/open PRs
-      auto_fetch.go        Reusable fetch-import logic, cron-based auto-fetch scheduler
-      report.go            Markdown/EML report file generation
-      report_builder.go    Template parsing, LLM classification pipeline, merge logic
-      slack.go             Slack Socket Mode bot, slash commands, nudge UI, /stats, correction capture, uncertainty sampling
-      slack_users.go       User resolution helpers: Slack API lookups, name matching
-      nudge.go             Scheduled weekly reminder and DM sender
+  cmd/reportbot/main.go     Entry point
+  internal/app/             Bootstrap/wiring
+  internal/config/          YAML + env var loading, validation, permission checks
+  internal/domain/          Core types and calendar/week helpers
+  internal/storage/sqlite/  SQLite schema and CRUD
+  internal/httpx/           Shared external HTTP client/timeout config
+  internal/integrations/slack/   Socket Mode bot, slash commands, member resolution helpers
+  internal/integrations/github/  GitHub Search API client for merged/open PRs
+  internal/integrations/gitlab/  GitLab API client for merged/open MRs
+  internal/integrations/llm/     LLM integration, TF-IDF examples, glossary helpers
+  internal/report/          Report template parsing, merge pipeline, markdown/EML rendering
+  internal/fetch/           Reusable fetch-import logic and cron auto-fetch scheduler
+  internal/nudge/           Scheduled and on-demand nudge DM sender
   Dockerfile           Multi-stage Docker build
   docs/                Architecture diagrams and feature documentation
 ```

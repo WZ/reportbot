@@ -128,7 +128,7 @@ Traditional AI integration is **call-and-forget**: send data to an LLM, get a re
 
 **How it works:**
 - On report generation, the system loads up to 500 classified items from the last 12 weeks (confidence >= 0.70)
-- A TF-IDF index is built in memory (`internal/reportbot/llm_examples.go`) with tokenization, IDF weighting, and sparse vectors
+- A TF-IDF index is built in memory (`internal/integrations/llm/llm_examples.go`) with tokenization, IDF weighting, and sparse vectors
 - For each classification batch, `topKForBatch` finds the most similar historical items across all batch queries
 - Selected examples are included in the prompt with their correct section IDs
 - Falls back to the previous behavior (existing items from current report) when no historical data exists

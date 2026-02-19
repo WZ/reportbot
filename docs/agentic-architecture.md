@@ -120,7 +120,7 @@ Anthropic system prompts are marked with `CacheControl: ephemeral`. Since all pa
 
 Instead of using the first N items from the previous report as few-shot examples, we select the most relevant historical items via TF-IDF cosine similarity.
 
-- `internal/reportbot/llm_examples.go` implements a pure Go TF-IDF index (no external deps)
+- `internal/integrations/llm/llm_examples.go` implements a pure Go TF-IDF index (no external deps)
 - Up to 500 classified items from the last 12 weeks (confidence >= 0.70) are loaded from `classification_history`
 - For each batch, `topKForBatch` finds the union of per-query top-K results, deduplicated
 - Falls back to existing-item examples when no history is available
