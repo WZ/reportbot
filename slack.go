@@ -392,40 +392,55 @@ func handleGenerateReport(api *slack.Client, db *sql.DB, cfg Config, cmd slack.S
 				log.Printf("Error stating boss report file %s: %v", filePath, err)
 				postEphemeral(api, cmd, "Error: generated boss report file is empty.")
 				return
-			}
-			if fi.Size() <= 0 {
-				log.Printf("Generated boss report file is empty: path=%s size=%d", filePath, fi.Size())
-				postEphemeral(api, cmd, "Error: generated boss report file is empty.")
-				return
-			}
-
-			uploadChannel := cmd.ChannelID
-			if cfg.ReportPrivate {
-				ch, _, _, err := api.OpenConversation(&slack.OpenConversationParameters{Users: []string{cmd.UserID}})
-				if err != nil {
-					log.Printf("Error opening DM for private report: %v", err)
-					postEphemeral(api, cmd, "Error opening DM to send private report. Check bot permissions.")
-					return
+			uploadGeneratedReport := func(filePath, fileTitle, initialComment, successMsg string) error {
+				fi, err := os.Stat(filePath)
+				if err != nil || fi.Size() <= 0 {
+					log.Printf("Error with boss report file: %v", err)
+					postEphemeral(api, cmd, "Error: generated boss report file is empty.")
+					return fmt.Errorf("generated boss report file is empty or inaccessible: %w", err)
 				}
-				uploadChannel = ch.ID
+
+				uploadChannel := cmd.ChannelID
+				if cfg.ReportPrivate {
+					ch, _, _, err := api.OpenConversation(&slack.OpenConversationParameters{Users: []string{cmd.UserID}})
+					if err != nil {
+						log.Printf("Error opening DM for private report: %v", err)
+						postEphemeral(api, cmd, "Error opening DM to send private report. Check bot permissions.")
+						return fmt.Errorf("failed to open DM for private report: %w", err)
+					}
+					uploadChannel = ch.ID
+				}
+
+				_, err = api.UploadFileV2(slack.UploadFileV2Parameters{
+					File:           filePath,
+					FileSize:       int(fi.Size()),
+					Filename:       filepath.Base(filePath),
+					Channel:        uploadChannel,
+					Title:          fileTitle,
+					InitialComment: initialComment,
+				})
+				if err != nil {
+					log.Printf("Error uploading report file: %v", err)
+					postEphemeral(api, cmd, "Error uploading report file to channel. Check bot permissions.")
+					return fmt.Errorf("failed to upload report file: %w", err)
+				}
+
+				postEphemeral(api, cmd, successMsg)
+				return nil
 			}
 
-			_, err = api.UploadFileV2(slack.UploadFileV2Parameters{
-				File:           filePath,
-				FileSize:       int(fi.Size()),
-				Filename:       filepath.Base(filePath),
-				Channel:        uploadChannel,
-				Title:          fileTitle,
-				InitialComment: fmt.Sprintf("Generated boss report (week reference date: %s, derived from team report, tokens used: 0)", friday.Format("2006-01-02")),
-			})
-			if err != nil {
-				log.Printf("Error uploading report file: %v", err)
-				postEphemeral(api, cmd, "Error uploading report file to channel. Check bot permissions.")
+			initialComment := fmt.Sprintf(
+				"Generated boss report (week reference date: %s, derived from team report, tokens used: 0)",
+				friday.Format("2006-01-02"),
+			)
+			successMsg := fmt.Sprintf(
+				"Boss report derived from existing team report (no LLM tokens used)\nSaved to: %s",
+				filePath,
+			)
+
+			if err := uploadGeneratedReport(filePath, fileTitle, initialComment, successMsg); err != nil {
 				return
 			}
-
-			msg := fmt.Sprintf("Boss report derived from existing team report (no LLM tokens used)\nSaved to: %s", filePath)
-			postEphemeral(api, cmd, msg)
 			log.Printf("generate-report done mode=boss derived-from-team")
 			return
 		}
