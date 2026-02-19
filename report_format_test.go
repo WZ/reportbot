@@ -39,35 +39,19 @@ func TestWriteReportFileSanitizesTeamName(t *testing.T) {
 	outDir := t.TempDir()
 	date := time.Date(2026, 2, 20, 0, 0, 0, 0, time.UTC)
 
-	reportPath, err := WriteReportFile("hello report\n", outDir, date, "../Ops\\Team")
-	if err != nil {
-		t.Fatalf("WriteReportFile failed: %v", err)
-	}
-
-	base := filepath.Base(reportPath)
-	if !strings.HasSuffix(base, "_20260220.md") {
-		t.Fatalf("unexpected sanitized report file name: %s", base)
-	}
-	if strings.HasPrefix(base, ".") {
-		t.Fatalf("sanitized report file name should not start with a dot: %s", base)
-	}
-
-	// ensure the report file was actually created in the expected directory
-	cleanReportPath := filepath.Clean(reportPath)
-	if _, err := os.Stat(cleanReportPath); err != nil {
 	tests := []struct {
-		name        string
-		team        string
+		name         string
+		team         string
 		expectSuffix string
 	}{
 		{
-			name:        "path separators only",
-			team:        "../Ops\\Team",
+			name:         "path separators only",
+			team:         "../Ops\\Team",
 			expectSuffix: ".._Ops_Team_20260220.md",
 		},
 		{
-			name:        "path traversal with special characters",
-			team:        "../../Team:Name<>|*?",
+			name:         "path traversal with special characters",
+			team:         "../../Team:Name<>|*?",
 			expectSuffix: "",
 		},
 	}
@@ -79,7 +63,6 @@ func TestWriteReportFileSanitizesTeamName(t *testing.T) {
 			if err != nil {
 				t.Fatalf("WriteReportFile failed: %v", err)
 			}
-
 			if tc.expectSuffix != "" {
 				if !strings.HasSuffix(reportPath, tc.expectSuffix) {
 					t.Fatalf("unexpected sanitized report file path: %s", reportPath)
@@ -89,6 +72,9 @@ func TestWriteReportFileSanitizesTeamName(t *testing.T) {
 				if strings.ContainsAny(base, `/\:*?"<>|`) {
 					t.Fatalf("sanitized report filename contains invalid characters: %q", base)
 				}
+			}
+			if _, err := os.Stat(filepath.Clean(reportPath)); err != nil {
+				t.Fatalf("expected report file to exist: %v", err)
 			}
 
 			rel, err := filepath.Rel(filepath.Clean(outDir), filepath.Clean(reportPath))
