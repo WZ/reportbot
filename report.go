@@ -59,8 +59,29 @@ func buildEML(subject, body string) string {
 }
 
 func sanitizeFilename(s string) string {
+	// First remove null bytes and control characters (U+0000-U+001F, U+007F)
+	var cleaned strings.Builder
+	for _, r := range s {
+		if r == 0 || (r >= 0x01 && r <= 0x1F) || r == 0x7F {
+			continue
+		}
+		cleaned.WriteRune(r)
+	}
+	sanitized := cleaned.String()
+	
+	// Then replace common path traversal characters
 	replacer := strings.NewReplacer("/", "_", "\\", "_", ":", "_", "*", "_", "?", "_", "\"", "_", "<", "_", ">", "_", "|", "_")
-	return replacer.Replace(s)
+	sanitized = replacer.Replace(sanitized)
+	
+	// Trim spaces and dots from both ends
+	sanitized = strings.Trim(sanitized, " .")
+	
+	// If empty or only underscores after sanitization, use a default name
+	if sanitized == "" || strings.Trim(sanitized, "_") == "" {
+		return "report"
+	}
+	
+	return sanitized
 }
 
 func normalizeCRLF(s string) string {
