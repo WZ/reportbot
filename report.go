@@ -32,10 +32,11 @@ func WriteEmailDraftFile(body, outputDir string, reportDate time.Time, subjectPr
 
 func buildEML(subject, body string) string {
 	const boundary = "reportbot-alt"
+	safeSubject := sanitizeHeaderValue(subject)
 	headers := []string{
 		"MIME-Version: 1.0",
 		fmt.Sprintf("Content-Type: multipart/alternative; boundary=%q", boundary),
-		fmt.Sprintf("Subject: %s", subject),
+		fmt.Sprintf("Subject: %s", safeSubject),
 	}
 	plain := normalizeCRLF(markdownToEmailPlain(body))
 	htmlBody := markdownToEmailHTML(body)
@@ -56,6 +57,13 @@ func buildEML(subject, body string) string {
 	out.WriteString(htmlBody)
 	out.WriteString("\r\n--" + boundary + "--\r\n")
 	return out.String()
+}
+
+func sanitizeHeaderValue(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", " ")
+	s = strings.ReplaceAll(s, "\r", " ")
+	s = strings.ReplaceAll(s, "\n", " ")
+	return strings.Join(strings.Fields(s), " ")
 }
 
 func sanitizeFilename(s string) string {
