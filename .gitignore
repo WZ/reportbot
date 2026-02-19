@@ -11,3 +11,6 @@ docker-compose-*
 .DS_Store
 .claude/
 .gomodcache/
+coverage.out
+coverage.txt
+coverage.html

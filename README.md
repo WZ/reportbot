@@ -412,3 +412,18 @@ reportbot/
   Dockerfile           Multi-stage Docker build
   docs/                Architecture diagrams and feature documentation
 ```
+
+## CI Coverage Visualization
+
+Code coverage is published automatically by GitHub Actions workflow:
+`/.github/workflows/ci-coverage.yml`
+
+- On every PR and push to `main`, CI runs `go test ./...` with coverage.
+- The run summary includes total and per-function coverage.
+- A downloadable artifact is uploaded for each run:
+  - `coverage.out`
+  - `coverage.txt`
+  - `coverage.html` (line-level visualization)
+
+Optional external dashboard:
+- Set repository secret `CODECOV_TOKEN` to enable automatic upload to Codecov.
