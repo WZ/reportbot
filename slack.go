@@ -361,8 +361,25 @@ func handleGenerateReport(api *slack.Client, db *sql.DB, cfg Config, cmd slack.S
 
 	// Boss mode shortcut: derive from existing team report if available.
 	if mode == "boss" {
+		// Defensively ensure TeamName cannot cause path traversal when used in a filename.
+		if strings.ContainsAny(cfg.TeamName, `/\`) {
+			log.Printf("generate-report boss: invalid team name with path separators: %q", cfg.TeamName)
+			postEphemeral(api, cmd, "Configuration error: invalid team name for report generation.")
+			return
+		}
+
 		teamReportFile := fmt.Sprintf("%s_%s.md", cfg.TeamName, friday.Format("20060102"))
 		teamReportPath := filepath.Join(cfg.ReportOutputDir, teamReportFile)
+
+		// Validate that the computed path stays within ReportOutputDir.
+		baseDir := filepath.Clean(cfg.ReportOutputDir)
+		cleanPath := filepath.Clean(teamReportPath)
+		rel, relErr := filepath.Rel(baseDir, cleanPath)
+		if relErr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+			log.Printf("generate-report boss: computed team report path escapes base dir (base=%q, path=%q, rel=%q, err=%v)", baseDir, cleanPath, rel, relErr)
+			postEphemeral(api, cmd, "Error generating report: invalid report output path.")
+			return
+		}
 		content, readErr := os.ReadFile(teamReportPath)
 		if readErr != nil {
 			if !os.IsNotExist(readErr) {
