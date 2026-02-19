@@ -171,6 +171,7 @@ team_name: "Example Team"
 
 # Report channel (Slack channel ID for reminders)
 report_channel_id: "C01234567"
+external_http_timeout_seconds: 90  # optional: timeout for GitLab/GitHub/LLM HTTP calls
 
 # When true, /generate-report DMs the report to the caller instead of posting to the channel
 report_private: false
@@ -197,6 +198,7 @@ export LLM_GLOSSARY_PATH=./llm_glossary.yaml
 export LLM_CRITIC_ENABLED=true                  # Optional: enable generator-critic loop
 export MANAGER_SLACK_IDS="U01ABC123,U02DEF456"  # Comma-separated Slack user IDs
 export REPORT_CHANNEL_ID=C01234567
+export EXTERNAL_HTTP_TIMEOUT_SECONDS=90          # Optional: timeout for external API HTTP calls
 export AUTO_FETCH_SCHEDULE="0 9 * * 1-5"        # Optional: cron schedule for auto-fetch
 export REPORT_PRIVATE=false                      # Optional: DM report to caller only
 export MONDAY_CUTOFF_TIME=12:00
@@ -216,6 +218,7 @@ Set `llm_model` in YAML or `LLM_MODEL` env var to override.
 Set `llm_batch_size` / `LLM_BATCH_SIZE`, `llm_confidence_threshold` / `LLM_CONFIDENCE_THRESHOLD`, and `llm_example_count` / `llm_example_max_chars` to tune throughput, confidence gating, and prompt context size.
 Set `llm_glossary_path` / `LLM_GLOSSARY_PATH` to apply glossary memory rules (see `llm_glossary.yaml`).
 Set `llm_critic_enabled` / `LLM_CRITIC_ENABLED` to enable a second LLM pass that reviews classifications for errors.
+Set `external_http_timeout_seconds` / `EXTERNAL_HTTP_TIMEOUT_SECONDS` to tune timeout limits for GitLab/GitHub/LLM API requests.
 
 Glossary example (`llm_glossary.yaml`):
 

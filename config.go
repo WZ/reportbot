@@ -37,19 +37,20 @@ type Config struct {
 	AnthropicAPIKey    string `yaml:"anthropic_api_key"`
 	OpenAIAPIKey       string `yaml:"openai_api_key"`
 
-	DBPath          string `yaml:"db_path"`
-	ReportOutputDir string `yaml:"report_output_dir"`
-	ReportChannelID string `yaml:"report_channel_id"`
+	DBPath                     string `yaml:"db_path"`
+	ReportOutputDir            string `yaml:"report_output_dir"`
+	ReportChannelID            string `yaml:"report_channel_id"`
+	ExternalHTTPTimeoutSeconds int    `yaml:"external_http_timeout_seconds"`
 
-	ManagerSlackIDs  []string `yaml:"manager_slack_ids"`
-	TeamMembers      []string `yaml:"team_members"`
-	NudgeDay         string   `yaml:"nudge_day"`
-	NudgeTime        string   `yaml:"nudge_time"`
-	AutoFetchSchedule string `yaml:"auto_fetch_schedule"`
-	MondayCutoffTime string   `yaml:"monday_cutoff_time"`
-	Timezone         string   `yaml:"timezone"`
-	TeamName         string   `yaml:"team_name"`
-	ReportPrivate    bool     `yaml:"report_private"`
+	ManagerSlackIDs   []string `yaml:"manager_slack_ids"`
+	TeamMembers       []string `yaml:"team_members"`
+	NudgeDay          string   `yaml:"nudge_day"`
+	NudgeTime         string   `yaml:"nudge_time"`
+	AutoFetchSchedule string   `yaml:"auto_fetch_schedule"`
+	MondayCutoffTime  string   `yaml:"monday_cutoff_time"`
+	Timezone          string   `yaml:"timezone"`
+	TeamName          string   `yaml:"team_name"`
+	ReportPrivate     bool     `yaml:"report_private"`
 
 	Location *time.Location `yaml:"-"` // computed from Timezone, not from YAML
 }
@@ -102,6 +103,7 @@ func LoadConfig() Config {
 	envOverride(&cfg.DBPath, "DB_PATH")
 	envOverride(&cfg.ReportOutputDir, "REPORT_OUTPUT_DIR")
 	envOverride(&cfg.ReportChannelID, "REPORT_CHANNEL_ID")
+	envOverrideInt(&cfg.ExternalHTTPTimeoutSeconds, "EXTERNAL_HTTP_TIMEOUT_SECONDS")
 	envOverride(&cfg.TeamName, "TEAM_NAME")
 	envOverride(&cfg.NudgeDay, "NUDGE_DAY")
 	envOverride(&cfg.NudgeTime, "NUDGE_TIME")
@@ -147,6 +149,9 @@ func LoadConfig() Config {
 	}
 	if cfg.ReportOutputDir == "" {
 		cfg.ReportOutputDir = "./reports"
+	}
+	if cfg.ExternalHTTPTimeoutSeconds == 0 {
+		cfg.ExternalHTTPTimeoutSeconds = int(defaultExternalHTTPTimeout / time.Second)
 	}
 	if cfg.NudgeDay == "" {
 		cfg.NudgeDay = "Friday"
@@ -240,6 +245,9 @@ func LoadConfig() Config {
 	}
 	if cfg.LLMExampleMaxLen < 20 {
 		log.Fatalf("invalid llm_example_max_chars '%d': must be >= 20", cfg.LLMExampleMaxLen)
+	}
+	if cfg.ExternalHTTPTimeoutSeconds < 5 {
+		log.Fatalf("invalid external_http_timeout_seconds '%d': must be >= 5", cfg.ExternalHTTPTimeoutSeconds)
 	}
 	if cfg.LLMGlossaryPath != "" {
 		if _, err := LoadLLMGlossary(cfg.LLMGlossaryPath); err != nil {

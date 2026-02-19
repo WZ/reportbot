@@ -9,8 +9,9 @@ import (
 
 func main() {
 	cfg := LoadConfig()
+	appliedHTTPTimeout := ConfigureExternalHTTPClient(cfg.ExternalHTTPTimeoutSeconds)
 	log.Printf(
-		"Config loaded. Team=%s Managers=%d TeamMembers=%d Timezone=%s LLMBatchSize=%d LLMConfidenceThreshold=%.2f LLMExampleCount=%d LLMExampleMaxChars=%d LLMGlossaryPath=%s",
+		"Config loaded. Team=%s Managers=%d TeamMembers=%d Timezone=%s LLMBatchSize=%d LLMConfidenceThreshold=%.2f LLMExampleCount=%d LLMExampleMaxChars=%d LLMGlossaryPath=%s ExternalHTTPTimeout=%s",
 		cfg.TeamName,
 		len(cfg.ManagerSlackIDs),
 		len(cfg.TeamMembers),
@@ -20,6 +21,7 @@ func main() {
 		cfg.LLMExampleCount,
 		cfg.LLMExampleMaxLen,
 		cfg.LLMGlossaryPath,
+		appliedHTTPTimeout,
 	)
 
 	db, err := InitDB(cfg.DBPath)
