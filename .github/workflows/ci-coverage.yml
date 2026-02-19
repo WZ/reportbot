@@ -1,0 +1,77 @@
+name: CI and Coverage
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-coverage:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.23.6"
+          cache: true
+
+      - name: Show Go version
+        run: go version
+
+      - name: Download modules
+        run: go mod download
+
+      - name: Run tests with coverage
+        run: go test ./... -coverprofile=coverage.out -covermode=atomic
+
+      - name: Build coverage artifacts
+        id: coverage
+        run: |
+          go tool cover -func=coverage.out | tee coverage.txt
+          go tool cover -html=coverage.out -o coverage.html
+          total=$(awk '/^total:/ {gsub("%", "", $3); print $3}' coverage.txt)
+          echo "total=${total}" >> "$GITHUB_OUTPUT"
+
+      - name: Publish coverage summary
+        run: |
+          {
+            echo "## Coverage Summary"
+            echo ""
+            echo "| Metric | Value |"
+            echo "|---|---:|"
+            echo "| Total statement coverage | ${{ steps.coverage.outputs.total }}% |"
+            echo ""
+            echo "<details><summary>Per-function coverage</summary>"
+            echo ""
+            echo '```text'
+            cat coverage.txt
+            echo '```'
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report-${{ github.run_id }}
+          path: |
+            coverage.out
+            coverage.txt
+            coverage.html
+          retention-days: 14
+
+      - name: Upload to Codecov (optional)
+        if: ${{ secrets.CODECOV_TOKEN != '' }}
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./coverage.out
+          fail_ci_if_error: false
+          verbose: true
