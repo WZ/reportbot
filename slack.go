@@ -404,11 +404,6 @@ func handleGenerateReport(api *slack.Client, db *sql.DB, cfg Config, cmd slack.S
 			fileTitle := fmt.Sprintf("%s report email draft", cfg.TeamName)
 			log.Printf("generate-report boss-from-team file=%s length=%d", filePath, len(bossReport))
 
-			fi, err := os.Stat(filePath)
-			if err != nil {
-				log.Printf("Error stating boss report file %s: %v", filePath, err)
-				postEphemeral(api, cmd, "Error: generated boss report file is empty.")
-				return
 			uploadGeneratedReport := func(filePath, fileTitle, initialComment, successMsg string) error {
 				fi, err := os.Stat(filePath)
 				if err != nil || fi.Size() <= 0 {
