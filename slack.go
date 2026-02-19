@@ -335,6 +335,57 @@ func handleFetchMRs(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashCo
 	log.Printf("fetch inserted=%d alreadyTracked=%d skippedNonTeam=%d", result.Inserted, result.AlreadyTracked, result.SkippedNonTeam)
 }
 
+// deriveBossReportFromTeamReport attempts to derive a boss report from an existing team report file.
+// It returns:
+// - (filePath, bossReport, nil) if the team report exists and was successfully processed
+// - (empty, empty, nil) if the team report file doesn't exist (caller should fall through)
+// - (empty, empty, error) if there was an error (invalid config, file read error, etc.)
+func deriveBossReportFromTeamReport(reportOutputDir, teamName string, friday time.Time) (string, string, error) {
+	// Validate team name to prevent path traversal
+	if strings.ContainsAny(teamName, `/\`) {
+		return "", "", fmt.Errorf("invalid team name with path separators: %q", teamName)
+	}
+
+	teamReportFile := fmt.Sprintf("%s_%s.md", teamName, friday.Format("20060102"))
+	teamReportPath := filepath.Join(reportOutputDir, teamReportFile)
+
+	// Validate that the computed path stays within ReportOutputDir
+	baseDir := filepath.Clean(reportOutputDir)
+	cleanPath := filepath.Clean(teamReportPath)
+	rel, relErr := filepath.Rel(baseDir, cleanPath)
+	if relErr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return "", "", fmt.Errorf("computed team report path escapes base dir (base=%q, path=%q, rel=%q): %w", baseDir, cleanPath, rel, relErr)
+	}
+
+	content, readErr := os.ReadFile(teamReportPath)
+	if readErr != nil {
+		if os.IsNotExist(readErr) {
+			// File doesn't exist - caller should fall through to full pipeline
+			return "", "", nil
+		}
+		// Unexpected error (permission, I/O, etc.)
+		return "", "", fmt.Errorf("error reading team report file %s: %w", teamReportPath, readErr)
+	}
+
+	if len(content) == 0 {
+		// Empty file - treat as not found
+		return "", "", nil
+	}
+
+	// Parse and transform the team report into a boss report
+	template := parseTemplate(string(content))
+	stripCurrentTeamTitleFromPrefix(template, teamName)
+	bossReport := renderBossMarkdown(template)
+
+	// Write the boss report file
+	filePath, err := WriteEmailDraftFile(bossReport, reportOutputDir, friday, teamName)
+	if err != nil {
+		return "", "", fmt.Errorf("error writing boss report file: %w", err)
+	}
+
+	return filePath, bossReport, nil
+}
+
 func handleGenerateReport(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashCommand) {
 	isManager, err := isManagerUser(api, cfg, cmd.UserID)
 	if err != nil {
@@ -361,54 +412,16 @@ func handleGenerateReport(api *slack.Client, db *sql.DB, cfg Config, cmd slack.S
 
 	// Boss mode shortcut: derive from existing team report if available.
 	if mode == "boss" {
-		// Defensively ensure TeamName cannot cause path traversal when used in a filename.
-		if strings.ContainsAny(cfg.TeamName, `/\`) {
-			log.Printf("generate-report boss: invalid team name with path separators: %q", cfg.TeamName)
-			postEphemeral(api, cmd, "Configuration error: invalid team name for report generation.")
+		filePath, bossReport, err := deriveBossReportFromTeamReport(cfg.ReportOutputDir, cfg.TeamName, friday)
+		if err != nil {
+			log.Printf("generate-report boss: error deriving from team report: %v", err)
+			postEphemeral(api, cmd, fmt.Sprintf("Error deriving boss report: %v", err))
 			return
 		}
+		if filePath != "" {
+			// Successfully derived boss report from team report
+			log.Printf("generate-report boss: deriving from existing team report, file=%s length=%d", filePath, len(bossReport))
 
-		teamReportFile := fmt.Sprintf("%s_%s.md", cfg.TeamName, friday.Format("20060102"))
-		teamReportPath := filepath.Join(cfg.ReportOutputDir, teamReportFile)
-
-		// Validate that the computed path stays within ReportOutputDir.
-		baseDir := filepath.Clean(cfg.ReportOutputDir)
-		cleanPath := filepath.Clean(teamReportPath)
-		rel, relErr := filepath.Rel(baseDir, cleanPath)
-		if relErr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
-			log.Printf("generate-report boss: computed team report path escapes base dir (base=%q, path=%q, rel=%q, err=%v)", baseDir, cleanPath, rel, relErr)
-			postEphemeral(api, cmd, "Error generating report: invalid report output path.")
-			return
-		}
-		content, readErr := os.ReadFile(teamReportPath)
-		if readErr != nil {
-			if !os.IsNotExist(readErr) {
-				// Unexpected error (permission, I/O, etc.) - surface it and abort
-				log.Printf("Error reading team report file %s: %v", teamReportPath, readErr)
-				postEphemeral(api, cmd, fmt.Sprintf("Error reading team report file: %v", readErr))
-				return
-			}
-			// File doesn't exist - fall through to full pipeline below
-			log.Printf("generate-report boss: no existing team report found, running full pipeline")
-		} else if len(content) > 0 {
-			log.Printf("generate-report boss: deriving from existing team report %s", teamReportPath)
-			template := parseTemplate(string(content))
-			stripCurrentTeamTitleFromPrefix(template, cfg.TeamName)
-			bossReport := renderBossMarkdown(template)
-			filePath, err := WriteEmailDraftFile(bossReport, cfg.ReportOutputDir, friday, cfg.TeamName)
-			if err != nil {
-				log.Printf("Error writing boss report file: %v", err)
-				postEphemeral(api, cmd, fmt.Sprintf("Error writing report file: %v", err))
-				return
-			}
-			fileTitle := fmt.Sprintf("%s report email draft", cfg.TeamName)
-			log.Printf("generate-report boss-from-team file=%s length=%d", filePath, len(bossReport))
-
-			fi, err := os.Stat(filePath)
-			if err != nil {
-				log.Printf("Error stating boss report file %s: %v", filePath, err)
-				postEphemeral(api, cmd, "Error: generated boss report file is empty.")
-				return
 			uploadGeneratedReport := func(filePath, fileTitle, initialComment, successMsg string) error {
 				fi, err := os.Stat(filePath)
 				if err != nil || fi.Size() <= 0 {
@@ -446,6 +459,7 @@ func handleGenerateReport(api *slack.Client, db *sql.DB, cfg Config, cmd slack.S
 				return nil
 			}
 
+			fileTitle := fmt.Sprintf("%s report email draft", cfg.TeamName)
 			initialComment := fmt.Sprintf(
 				"Generated boss report (week reference date: %s, derived from team report, tokens used: 0)",
 				friday.Format("2006-01-02"),
@@ -461,6 +475,8 @@ func handleGenerateReport(api *slack.Client, db *sql.DB, cfg Config, cmd slack.S
 			log.Printf("generate-report done mode=boss derived-from-team")
 			return
 		}
+		// File doesn't exist - fall through to full pipeline below
+		log.Printf("generate-report boss: no existing team report found, running full pipeline")
 	}
 
 	items, err := GetItemsByDateRange(db, monday, nextMonday)
