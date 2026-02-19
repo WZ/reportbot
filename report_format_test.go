@@ -52,15 +52,27 @@ func TestWriteReportFileSanitizesTeamName(t *testing.T) {
 		t.Fatalf("sanitized report file name should not start with a dot: %s", base)
 	}
 
-	rel, err := filepath.Rel(filepath.Clean(outDir), filepath.Clean(reportPath))
+	// ensure the report file was actually created in the expected directory
+	cleanReportPath := filepath.Clean(reportPath)
+	if _, err := os.Stat(cleanReportPath); err != nil {
+		t.Fatalf("expected report file to exist: %v", err)
+	}
+	reportDir := filepath.Dir(cleanReportPath)
+	cleanOutDir := filepath.Clean(outDir)
+	if reportDir != cleanOutDir {
+		t.Fatalf("report file directory mismatch: got %s, want %s", reportDir, cleanOutDir)
+	}
+
+	rel, err := filepath.Rel(cleanOutDir, cleanReportPath)
 	if err != nil {
 		t.Fatalf("failed to compute relative path: %v", err)
 	}
-	if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+	cleanRel := filepath.Clean(rel)
+	if filepath.IsAbs(cleanRel) || cleanRel == ".." || strings.HasPrefix(cleanRel, ".."+string(os.PathSeparator)) {
 		t.Fatalf("report path escaped output directory: %s", reportPath)
 	}
-	if strings.Contains(rel, string(os.PathSeparator)) {
-		t.Fatalf("sanitized report filename unexpectedly contains path separators: %s", rel)
+	if strings.Contains(cleanRel, string(os.PathSeparator)) {
+		t.Fatalf("sanitized report filename unexpectedly contains path separators: %s", cleanRel)
 	}
 }
 
