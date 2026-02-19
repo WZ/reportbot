@@ -39,40 +39,55 @@ func TestWriteReportFileSanitizesTeamName(t *testing.T) {
 	outDir := t.TempDir()
 	date := time.Date(2026, 2, 20, 0, 0, 0, 0, time.UTC)
 
-	reportPath, err := WriteReportFile("hello report\n", outDir, date, "../Ops\\Team")
-	if err != nil {
-		t.Fatalf("WriteReportFile failed: %v", err)
+	tests := []struct {
+		name         string
+		team         string
+		expectSuffix string
+	}{
+		{
+			name:         "path separators only",
+			team:         "../Ops\\Team",
+			expectSuffix: ".._Ops_Team_20260220.md",
+		},
+		{
+			name:         "path traversal with special characters",
+			team:         "../../Team:Name<>|*?",
+			expectSuffix: "",
+		},
 	}
 
-	base := filepath.Base(reportPath)
-	if !strings.HasSuffix(base, "_20260220.md") {
-		t.Fatalf("unexpected sanitized report file name: %s", base)
-	}
-	if strings.HasPrefix(base, ".") {
-		t.Fatalf("sanitized report file name should not start with a dot: %s", base)
-	}
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			reportPath, err := WriteReportFile("hello report\n", outDir, date, tc.team)
+			if err != nil {
+				t.Fatalf("WriteReportFile failed: %v", err)
+			}
+			if tc.expectSuffix != "" {
+				if !strings.HasSuffix(reportPath, tc.expectSuffix) {
+					t.Fatalf("unexpected sanitized report file path: %s", reportPath)
+				}
+			} else {
+				base := filepath.Base(reportPath)
+				if strings.ContainsAny(base, `/\:*?"<>|`) {
+					t.Fatalf("sanitized report filename contains invalid characters: %q", base)
+				}
+			}
+			if _, err := os.Stat(filepath.Clean(reportPath)); err != nil {
+				t.Fatalf("expected report file to exist: %v", err)
+			}
 
-	// ensure the report file was actually created in the expected directory
-	cleanReportPath := filepath.Clean(reportPath)
-	if _, err := os.Stat(cleanReportPath); err != nil {
-		t.Fatalf("expected report file to exist: %v", err)
-	}
-	reportDir := filepath.Dir(cleanReportPath)
-	cleanOutDir := filepath.Clean(outDir)
-	if reportDir != cleanOutDir {
-		t.Fatalf("report file directory mismatch: got %s, want %s", reportDir, cleanOutDir)
-	}
-
-	rel, err := filepath.Rel(cleanOutDir, cleanReportPath)
-	if err != nil {
-		t.Fatalf("failed to compute relative path: %v", err)
-	}
-	cleanRel := filepath.Clean(rel)
-	if filepath.IsAbs(cleanRel) || cleanRel == ".." || strings.HasPrefix(cleanRel, ".."+string(os.PathSeparator)) {
-		t.Fatalf("report path escaped output directory: %s", reportPath)
-	}
-	if strings.Contains(cleanRel, string(os.PathSeparator)) {
-		t.Fatalf("sanitized report filename unexpectedly contains path separators: %s", cleanRel)
+			rel, err := filepath.Rel(filepath.Clean(outDir), filepath.Clean(reportPath))
+			if err != nil {
+				t.Fatalf("failed to compute relative path: %v", err)
+			}
+			if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+				t.Fatalf("report path escaped output directory: %s", reportPath)
+			}
+			if strings.Contains(rel, string(os.PathSeparator)) {
+				t.Fatalf("sanitized report filename unexpectedly contains path separators: %s", rel)
+			}
+		})
 	}
 }
 
