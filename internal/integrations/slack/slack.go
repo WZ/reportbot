@@ -708,8 +708,9 @@ func renderListItems(api *slack.Client, db *sql.DB, cfg Config, channelID, userI
 		if item.Category != "" {
 			category = fmt.Sprintf(" _%s_", item.Category)
 		}
+		description := formatItemDescriptionForList(item)
 		text := fmt.Sprintf("*%s*: %s (%s)%s%s",
-			item.Author, item.Description, item.Status, source, category)
+			item.Author, description, item.Status, source, category)
 		if canManageItem(item, isManager, user) {
 			editOpt := slack.NewOptionBlockObject(
 				fmt.Sprintf("edit:%d", item.ID),
@@ -1335,6 +1336,46 @@ func openDeleteModal(api *slack.Client, db *sql.DB, cfg Config, triggerID, chann
 
 func itemInRange(item WorkItem, from, to time.Time) bool {
 	return !item.ReportedAt.Before(from) && item.ReportedAt.Before(to)
+}
+
+func formatItemDescriptionForList(item WorkItem) string {
+	description := strings.TrimSpace(item.Description)
+	tickets := canonicalTicketList(item.TicketIDs)
+	if tickets == "" {
+		return description
+	}
+	if leading, ok := leadingTicketPrefix(description); ok && canonicalTicketList(leading) == tickets {
+		return description
+	}
+	return fmt.Sprintf("[%s] %s", tickets, description)
+}
+
+func leadingTicketPrefix(description string) (string, bool) {
+	description = strings.TrimSpace(description)
+	if !strings.HasPrefix(description, "[") {
+		return "", false
+	}
+	end := strings.Index(description, "]")
+	if end <= 1 {
+		return "", false
+	}
+	return description[1:end], true
+}
+
+func canonicalTicketList(ticketIDs string) string {
+	if strings.TrimSpace(ticketIDs) == "" {
+		return ""
+	}
+	parts := strings.Split(ticketIDs, ",")
+	cleaned := make([]string, 0, len(parts))
+	for _, part := range parts {
+		p := strings.TrimSpace(part)
+		if p == "" {
+			continue
+		}
+		cleaned = append(cleaned, p)
+	}
+	return strings.Join(cleaned, ",")
 }
 
 func canManageItem(item WorkItem, isManager bool, user *slack.User) bool {

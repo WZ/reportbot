@@ -97,6 +97,56 @@ func TestMapMRStatusAndReportedAt(t *testing.T) {
 	}
 }
 
+func TestFormatItemDescriptionForList(t *testing.T) {
+	tests := []struct {
+		name string
+		item WorkItem
+		want string
+	}{
+		{
+			name: "prepend single ticket id",
+			item: WorkItem{
+				Description: "Tune query timeout for widget pipeline",
+				TicketIDs:   "7003001",
+			},
+			want: "[7003001] Tune query timeout for widget pipeline",
+		},
+		{
+			name: "prepend comma list and trim spaces",
+			item: WorkItem{
+				Description: "Improve cache warm-up sequence",
+				TicketIDs:   "7003002, 7003003",
+			},
+			want: "[7003002,7003003] Improve cache warm-up sequence",
+		},
+		{
+			name: "no duplicate when description already has same prefix",
+			item: WorkItem{
+				Description: "[7003004] Add schema validation guard",
+				TicketIDs:   "7003004",
+			},
+			want: "[7003004] Add schema validation guard",
+		},
+		{
+			name: "no ticket ids leaves description unchanged",
+			item: WorkItem{
+				Description: "Cleanup stale deployment artifacts",
+				TicketIDs:   "",
+			},
+			want: "Cleanup stale deployment artifacts",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := formatItemDescriptionForList(tt.item)
+			if got != tt.want {
+				t.Fatalf("formatItemDescriptionForList() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestDeriveBossReportFromTeamReport_FileExists(t *testing.T) {
 	dir := t.TempDir()
 	teamName := "TestTeam"
