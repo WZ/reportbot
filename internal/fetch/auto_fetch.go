@@ -66,6 +66,7 @@ func FetchAndImportMRs(cfg Config, db *sql.DB) (FetchResult, error) {
 					Source:      "gitlab",
 					SourceRef:   mr.WebURL,
 					Status:      mapMRStatus(mr),
+					TicketIDs:   mr.TicketIDs,
 					ReportedAt:  mrReportedAt(mr, cfg.Location),
 				})
 			}

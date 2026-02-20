@@ -10,6 +10,9 @@ slack_app_token: "xapp-your-app-token"
 gitlab_url: "https://gitlab.example.com"
 gitlab_token: "glpat-your-gitlab-token"
 gitlab_group_id: "my-team-group"
+# GitLab MR description field label used to parse ticket IDs (e.g. "Jira:")
+# Leave empty to disable ticket parsing from MR descriptions.
+gitlab_ref_ticket_label: "Jira"
 
 # GitHub access (optional — set to fetch PRs via /fetch)
 github_token: ""

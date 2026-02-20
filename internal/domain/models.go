@@ -25,6 +25,7 @@ type GitLabMR struct {
 	Author      string // username
 	AuthorName  string // display name
 	WebURL      string
+	TicketIDs   string // comma-separated ticket IDs parsed from configured MR field
 	MergedAt    time.Time
 	UpdatedAt   time.Time
 	CreatedAt   time.Time

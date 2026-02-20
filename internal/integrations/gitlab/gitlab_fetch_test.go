@@ -212,3 +212,52 @@ func TestExtractProjectPath(t *testing.T) {
 		}
 	}
 }
+
+func TestFetchMRsParsesTicketIDsFromConfiguredField(t *testing.T) {
+	from := time.Date(2026, 2, 16, 0, 0, 0, 0, time.UTC)
+	to := from.AddDate(0, 0, 7)
+	mergedAt := from.Add(12 * time.Hour).Format(time.RFC3339)
+	createdAt := from.Add(6 * time.Hour).Format(time.RFC3339)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		payload := []map[string]any{
+			{
+				"title":   "Improve beacon pipeline cache key",
+				"web_url": "https://gitlab.example.com/group/proj/-/merge_requests/77",
+				"description": `## Purpose:
+Improve beacon pipeline cache key stability
+## Tracker:
+#7002001, TRACKER-7002002`,
+				"merged_at":  mergedAt,
+				"updated_at": mergedAt,
+				"created_at": createdAt,
+				"state":      "merged",
+				"author": map[string]any{
+					"username": "jordan",
+					"name":     "Jordan",
+				},
+				"labels": []string{"backend"},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(payload)
+	}))
+	defer server.Close()
+
+	cfg := Config{
+		GitLabURL:            server.URL,
+		GitLabToken:          "glpat-test",
+		GitLabGroupID:        "my-group",
+		GitLabRefTicketLabel: "Tracker",
+	}
+	mrs, err := FetchMRs(cfg, from, to)
+	if err != nil {
+		t.Fatalf("FetchMRs failed: %v", err)
+	}
+	if len(mrs) != 1 {
+		t.Fatalf("expected 1 MR, got %d", len(mrs))
+	}
+	if mrs[0].TicketIDs != "7002001,7002002" {
+		t.Fatalf("unexpected ticket IDs: %q", mrs[0].TicketIDs)
+	}
+}

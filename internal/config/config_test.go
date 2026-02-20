@@ -46,6 +46,9 @@ func TestLoadConfigFromEnvWithDefaults(t *testing.T) {
 	if cfg.TeamName != "My Team" {
 		t.Fatalf("unexpected team name default: %q", cfg.TeamName)
 	}
+	if cfg.GitLabRefTicketLabel != "" {
+		t.Fatalf("unexpected gitlab ref ticket label default: %q", cfg.GitLabRefTicketLabel)
+	}
 	if cfg.Location == nil || cfg.Location.String() != "UTC" {
 		t.Fatalf("unexpected location: %v", cfg.Location)
 	}
@@ -77,6 +80,7 @@ external_http_timeout_seconds: 75
 	t.Setenv("TEAM_NAME", "Env Team")
 	t.Setenv("DB_PATH", "/tmp/env.db")
 	t.Setenv("EXTERNAL_HTTP_TIMEOUT_SECONDS", "120")
+	t.Setenv("GITLAB_REF_TICKET_LABEL", "Jira")
 
 	cfg := LoadConfig()
 
@@ -97,6 +101,20 @@ external_http_timeout_seconds: 75
 	}
 	if cfg.ExternalHTTPTimeoutSeconds != 120 {
 		t.Fatalf("expected external HTTP timeout from env override, got %d", cfg.ExternalHTTPTimeoutSeconds)
+	}
+	if cfg.GitLabRefTicketLabel != "Jira" {
+		t.Fatalf("expected ticket field label from env override, got %q", cfg.GitLabRefTicketLabel)
+	}
+}
+
+func TestLoadConfigAllowsEmptyGitLabRefTicketLabelEnv(t *testing.T) {
+	t.Setenv("CONFIG_PATH", filepath.Join(t.TempDir(), "missing-config.yaml"))
+	setMinimalValidConfigEnv(t)
+	t.Setenv("GITLAB_REF_TICKET_LABEL", "")
+
+	cfg := LoadConfig()
+	if cfg.GitLabRefTicketLabel != "" {
+		t.Fatalf("expected empty gitlab ref ticket label, got %q", cfg.GitLabRefTicketLabel)
 	}
 }
 

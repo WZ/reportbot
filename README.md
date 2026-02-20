@@ -135,6 +135,7 @@ slack_app_token: "xapp-..."
 gitlab_url: "https://gitlab.example.com"
 gitlab_token: "glpat-..."
 gitlab_group_id: "my-team"
+gitlab_ref_ticket_label: "Jira"   # optional: parse ticket IDs from "Jira:" field in GitLab MR description; empty disables parsing
 
 # LLM
 llm_provider: "anthropic"       # "anthropic" or "openai"
@@ -188,6 +189,7 @@ export SLACK_APP_TOKEN=xapp-...
 export GITLAB_URL=https://gitlab.example.com
 export GITLAB_TOKEN=glpat-...
 export GITLAB_GROUP_ID=my-team
+export GITLAB_REF_TICKET_LABEL=Jira            # Optional: field label used for GitLab MR ticket parsing
 export LLM_PROVIDER=anthropic
 export ANTHROPIC_API_KEY=sk-ant-...
 export LLM_BATCH_SIZE=50
