@@ -83,7 +83,7 @@ func sendNudges(api *slack.Client, cfg Config, memberIDs []string, reportChannel
 	}
 	msg := fmt.Sprintf(
 		"Hey! Friendly reminder to report your work items for this week (%s - %s) using `/report`.%s\n"+
-			"Example: `/report [mantis_id] Add pagination to user list API (done)`",
+			"Example: `/report [ticket_id] Add pagination to user list API (done)`",
 		monday.Format("Jan 2"), nextMonday.AddDate(0, 0, -1).Format("Jan 2"),
 		channelRef,
 	)

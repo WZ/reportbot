@@ -219,7 +219,7 @@ Manager-only command that loads all corrections from the last 4 weeks and sends 
 → Suggestion 1: "TimescaleDB items always go to Query Service"
    Action: Add glossary term "timescaledb" → S1_0
    [Apply] [Dismiss]
-→ Suggestion 2: "Support tickets with [mantis] prefix..."
+→ Suggestion 2: "Support tickets with [ticket] prefix..."
    Action: Add guide rule
    [Apply] [Dismiss]
 ```

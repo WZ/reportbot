@@ -150,7 +150,7 @@ func handleMemberJoined(api *slack.Client, cfg Config, ev *slackevents.MemberJoi
 func handleReport(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashCommand) {
 	text := strings.TrimSpace(cmd.Text)
 	if text == "" {
-		postEphemeral(api, cmd, "Usage: /report <description> (status)\nExample: /report [mantis_id] Add pagination to user list API (done)\nMultiline (separate items with newlines, e.g. Shift+Enter): /report Item A (in progress)\\nItem B (done)")
+		postEphemeral(api, cmd, "Usage: /report <description> (status)\nExample: /report [ticket_id] Add pagination to user list API (done)\nMultiline (separate items with newlines, e.g. Shift+Enter): /report Item A (in progress)\\nItem B (done)")
 		return
 	}
 
@@ -1569,7 +1569,7 @@ func handleHelp(api *slack.Client, cfg Config, cmd slack.SlashCommand) {
 		"",
 		"`/report <description> (status)` — Report a work item.",
 		"`/rpt` — Alias of `/report`.",
-		">*Example:* `/report [mantis_id] Add pagination to user list API (done)`",
+		">*Example:* `/report [ticket_id] Add pagination to user list API (done)`",
 		">*Multiline* (each with own status, use Shift+Enter for newlines):",
 		">```/report Item A (in progress)",
 		">Item B (done)```",

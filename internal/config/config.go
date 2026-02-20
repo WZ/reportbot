@@ -18,9 +18,10 @@ type Config struct {
 	SlackBotToken string `yaml:"slack_bot_token"`
 	SlackAppToken string `yaml:"slack_app_token"`
 
-	GitLabURL     string `yaml:"gitlab_url"`
-	GitLabToken   string `yaml:"gitlab_token"`
-	GitLabGroupID string `yaml:"gitlab_group_id"`
+	GitLabURL            string `yaml:"gitlab_url"`
+	GitLabToken          string `yaml:"gitlab_token"`
+	GitLabGroupID        string `yaml:"gitlab_group_id"`
+	GitLabRefTicketLabel string `yaml:"gitlab_ref_ticket_label"`
 
 	GitHubToken string   `yaml:"github_token"`
 	GitHubOrg   string   `yaml:"github_org"`
@@ -77,6 +78,7 @@ func LoadConfig() Config {
 	envOverride(&cfg.GitLabURL, "GITLAB_URL")
 	envOverride(&cfg.GitLabToken, "GITLAB_TOKEN")
 	envOverride(&cfg.GitLabGroupID, "GITLAB_GROUP_ID")
+	envOverrideAllowEmpty(&cfg.GitLabRefTicketLabel, "GITLAB_REF_TICKET_LABEL")
 	envOverride(&cfg.GitHubToken, "GITHUB_TOKEN")
 	envOverride(&cfg.GitHubOrg, "GITHUB_ORG")
 	if repos := os.Getenv("GITHUB_REPOS"); repos != "" {
@@ -257,6 +259,12 @@ func LoadConfig() Config {
 
 func envOverride(field *string, envKey string) {
 	if val := os.Getenv(envKey); val != "" {
+		*field = val
+	}
+}
+
+func envOverrideAllowEmpty(field *string, envKey string) {
+	if val, ok := os.LookupEnv(envKey); ok {
 		*field = val
 	}
 }
