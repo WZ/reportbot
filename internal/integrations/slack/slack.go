@@ -213,6 +213,8 @@ func handleReport(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashComm
 		}
 	}
 
+	notifyManagersOnMemberReport(api, cfg, cmd, author, items)
+
 	monday, nextMonday := ReportWeekRange(cfg, time.Now().In(cfg.Location))
 	weekItems, err := GetSlackItemsByAuthorAndDateRange(db, author, monday, nextMonday)
 	if err != nil {
@@ -246,6 +248,53 @@ func handleReport(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashComm
 	}
 	postEphemeral(api, cmd, msg)
 	log.Printf("report saved user=%s author=%s count=%d", cmd.UserID, author, len(items))
+}
+
+func notifyManagersOnMemberReport(api *slack.Client, cfg Config, cmd slack.SlashCommand, author string, items []WorkItem) {
+	if len(items) == 0 || len(cfg.ManagerSlackIDs) == 0 {
+		return
+	}
+	if cfg.IsManagerID(cmd.UserID) {
+		return
+	}
+
+	msg := buildManagerReportNotificationMessage(cmd.ChannelID, author, items)
+	seen := make(map[string]bool)
+	for _, managerID := range cfg.ManagerSlackIDs {
+		managerID = strings.TrimSpace(managerID)
+		if managerID == "" || managerID == cmd.UserID || seen[managerID] {
+			continue
+		}
+		seen[managerID] = true
+
+		ch, _, _, err := api.OpenConversation(&slack.OpenConversationParameters{Users: []string{managerID}})
+		if err != nil {
+			log.Printf("report manager notify open conversation error manager=%s reporter=%s: %v", managerID, cmd.UserID, err)
+			continue
+		}
+		if _, _, err := api.PostMessage(ch.ID, slack.MsgOptionText(msg, false)); err != nil {
+			log.Printf("report manager notify post error manager=%s reporter=%s: %v", managerID, cmd.UserID, err)
+			continue
+		}
+	}
+}
+
+func buildManagerReportNotificationMessage(channelID, author string, items []WorkItem) string {
+	header := fmt.Sprintf("New /report from *%s*:", author)
+	if strings.TrimSpace(channelID) != "" {
+		header = fmt.Sprintf("New /report from *%s* in <#%s>:", author, channelID)
+	}
+
+	msg := header
+	const limit = 5
+	for i, item := range items {
+		if i >= limit {
+			msg += fmt.Sprintf("\n• ... and %d more", len(items)-limit)
+			break
+		}
+		msg += fmt.Sprintf("\n• %s (%s)", item.Description, normalizeStatus(item.Status))
+	}
+	return msg
 }
 
 func parseReportItems(reportText, author string, loc *time.Location) ([]WorkItem, error) {
@@ -395,6 +444,26 @@ func deriveBossReportFromTeamReport(reportOutputDir, teamName string, friday tim
 	return filePath, bossReport, nil
 }
 
+func parseGenerateReportArgs(text string) (mode string, sendPrivate bool, err error) {
+	mode = "team"
+	sendPrivate = false
+
+	fields := strings.Fields(strings.ToLower(strings.TrimSpace(text)))
+	for _, f := range fields {
+		switch f {
+		case "team", "boss":
+			mode = f
+		case "private":
+			sendPrivate = true
+		case "channel":
+			sendPrivate = false
+		default:
+			return "", false, fmt.Errorf("Usage: /generate-report [team|boss] [private]\nExamples: /generate-report team, /generate-report boss private, /gen private")
+		}
+	}
+	return mode, sendPrivate, nil
+}
+
 func handleGenerateReport(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashCommand) {
 	isManager, err := isManagerUser(api, cfg, cmd.UserID)
 	if err != nil {
@@ -408,13 +477,18 @@ func handleGenerateReport(api *slack.Client, db *sql.DB, cfg Config, cmd slack.S
 		return
 	}
 
-	mode := strings.TrimSpace(cmd.Text)
-	if mode != "team" && mode != "boss" {
-		mode = "team"
+	mode, sendPrivate, parseErr := parseGenerateReportArgs(cmd.Text)
+	if parseErr != nil {
+		postEphemeral(api, cmd, parseErr.Error())
+		return
 	}
 
-	postEphemeral(api, cmd, fmt.Sprintf("Generating report (mode: %s)...", mode))
-	log.Printf("generate-report mode=%s", mode)
+	visibility := "channel"
+	if sendPrivate {
+		visibility = "private"
+	}
+	postEphemeral(api, cmd, fmt.Sprintf("Generating report (mode: %s, delivery: %s)...", mode, visibility))
+	log.Printf("generate-report mode=%s private=%t", mode, sendPrivate)
 
 	monday, nextMonday := ReportWeekRange(cfg, time.Now().In(cfg.Location))
 	friday := FridayOfWeek(monday)
@@ -440,7 +514,7 @@ func handleGenerateReport(api *slack.Client, db *sql.DB, cfg Config, cmd slack.S
 				}
 
 				uploadChannel := cmd.ChannelID
-				if cfg.ReportPrivate {
+				if sendPrivate {
 					ch, _, _, err := api.OpenConversation(&slack.OpenConversationParameters{Users: []string{cmd.UserID}})
 					if err != nil {
 						log.Printf("Error opening DM for private report: %v", err)
@@ -586,7 +660,7 @@ func handleGenerateReport(api *slack.Client, db *sql.DB, cfg Config, cmd slack.S
 	tokenUsedText := formatTokenCount(llmUsage.TotalTokens())
 
 	uploadChannel := cmd.ChannelID
-	if cfg.ReportPrivate {
+	if sendPrivate {
 		// Send report as a DM to the caller instead of the channel.
 		ch, _, _, err := api.OpenConversation(&slack.OpenConversationParameters{Users: []string{cmd.UserID}})
 		if err != nil {
@@ -1629,7 +1703,7 @@ func handleHelp(api *slack.Client, cfg Config, cmd slack.SlashCommand) {
 			"*Manager Commands*",
 			"",
 			"`/fetch` — Fetch *merged + open* GitLab MRs and/or GitHub PRs for this week.",
-			"`/generate-report team|boss` — Generate weekly report.",
+			"`/generate-report [team|boss] [private]` — Generate weekly report (channel by default).",
 			"`/gen` — Alias of `/generate-report`.",
 			"`/check` — List missing members with inline nudge buttons.",
 			"`/retrospect` — Analyze recent corrections and suggest improvements.",

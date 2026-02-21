@@ -631,10 +631,12 @@ func formatTeamItem(item TemplateItem) string {
 		status = "done"
 	}
 	author := synthesizeName(item.Author)
-	description := synthesizeDescription(item.Description)
+	tickets := canonicalTicketIDs(item.TicketIDs)
+	description := stripLeadingTicketPrefixIfSame(item.Description, tickets)
+	description = synthesizeDescription(description)
 	ticketPrefix := ""
-	if strings.TrimSpace(item.TicketIDs) != "" {
-		ticketPrefix = fmt.Sprintf("[%s] ", strings.TrimSpace(item.TicketIDs))
+	if tickets != "" {
+		ticketPrefix = fmt.Sprintf("[%s] ", tickets)
 	}
 	if author == "" {
 		return fmt.Sprintf("%s%s (%s)", ticketPrefix, description, status)
@@ -647,12 +649,49 @@ func formatBossItem(item TemplateItem) string {
 	if status == "" {
 		status = "done"
 	}
-	description := synthesizeDescription(item.Description)
+	tickets := canonicalTicketIDs(item.TicketIDs)
+	description := stripLeadingTicketPrefixIfSame(item.Description, tickets)
+	description = synthesizeDescription(description)
 	ticketPrefix := ""
-	if strings.TrimSpace(item.TicketIDs) != "" {
-		ticketPrefix = fmt.Sprintf("[%s] ", strings.TrimSpace(item.TicketIDs))
+	if tickets != "" {
+		ticketPrefix = fmt.Sprintf("[%s] ", tickets)
 	}
 	return fmt.Sprintf("%s%s (%s)", ticketPrefix, description, status)
+}
+
+func canonicalTicketIDs(ticketIDs string) string {
+	if strings.TrimSpace(ticketIDs) == "" {
+		return ""
+	}
+	parts := strings.Split(ticketIDs, ",")
+	cleaned := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		cleaned = append(cleaned, p)
+	}
+	return strings.Join(cleaned, ",")
+}
+
+func stripLeadingTicketPrefixIfSame(description, tickets string) string {
+	description = strings.TrimSpace(description)
+	if description == "" || tickets == "" {
+		return description
+	}
+	for {
+		matches := ticketPrefixRe.FindStringSubmatch(description)
+		if len(matches) != 2 {
+			break
+		}
+		leading := canonicalTicketIDs(matches[1])
+		if leading != tickets {
+			break
+		}
+		description = strings.TrimSpace(description[len(matches[0]):])
+	}
+	return description
 }
 
 func normalizeStatus(status string) string {

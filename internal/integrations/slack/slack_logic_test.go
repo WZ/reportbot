@@ -46,6 +46,42 @@ func TestParseReportItemsInvalidInput(t *testing.T) {
 	}
 }
 
+func TestParseGenerateReportArgs(t *testing.T) {
+	tests := []struct {
+		name        string
+		input       string
+		wantMode    string
+		wantPrivate bool
+		wantErr     bool
+	}{
+		{name: "default", input: "", wantMode: "team", wantPrivate: false},
+		{name: "team private", input: "team private", wantMode: "team", wantPrivate: true},
+		{name: "boss private", input: "boss private", wantMode: "boss", wantPrivate: true},
+		{name: "private only", input: "private", wantMode: "team", wantPrivate: true},
+		{name: "boss channel", input: "boss channel", wantMode: "boss", wantPrivate: false},
+		{name: "unknown token", input: "boss now", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotMode, gotPrivate, err := parseGenerateReportArgs(tt.input)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected parseGenerateReportArgs to fail")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseGenerateReportArgs returned error: %v", err)
+			}
+			if gotMode != tt.wantMode || gotPrivate != tt.wantPrivate {
+				t.Fatalf("parseGenerateReportArgs(%q) = mode=%q private=%v, want mode=%q private=%v",
+					tt.input, gotMode, gotPrivate, tt.wantMode, tt.wantPrivate)
+			}
+		})
+	}
+}
+
 func TestResolveDelegatedAuthorName(t *testing.T) {
 	team := []string{"Alice Smith", "Bob Lee"}
 

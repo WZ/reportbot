@@ -73,6 +73,3 @@ timezone: "America/Los_Angeles"
 
 # Team name used in report titles and filenames
 team_name: "My Team"
-
-# When true, /generate-report DMs the report to the caller instead of posting to the channel
-report_private: false
