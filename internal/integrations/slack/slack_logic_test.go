@@ -46,6 +46,42 @@ func TestParseReportItemsInvalidInput(t *testing.T) {
 	}
 }
 
+func TestParseGenerateReportArgs(t *testing.T) {
+	tests := []struct {
+		name        string
+		input       string
+		wantMode    string
+		wantPrivate bool
+		wantErr     bool
+	}{
+		{name: "default", input: "", wantMode: "team", wantPrivate: false},
+		{name: "team private", input: "team private", wantMode: "team", wantPrivate: true},
+		{name: "boss private", input: "boss private", wantMode: "boss", wantPrivate: true},
+		{name: "private only", input: "private", wantMode: "team", wantPrivate: true},
+		{name: "boss channel", input: "boss channel", wantMode: "boss", wantPrivate: false},
+		{name: "unknown token", input: "boss now", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotMode, gotPrivate, err := parseGenerateReportArgs(tt.input)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected parseGenerateReportArgs to fail")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseGenerateReportArgs returned error: %v", err)
+			}
+			if gotMode != tt.wantMode || gotPrivate != tt.wantPrivate {
+				t.Fatalf("parseGenerateReportArgs(%q) = mode=%q private=%v, want mode=%q private=%v",
+					tt.input, gotMode, gotPrivate, tt.wantMode, tt.wantPrivate)
+			}
+		})
+	}
+}
+
 func TestResolveDelegatedAuthorName(t *testing.T) {
 	team := []string{"Alice Smith", "Bob Lee"}
 
@@ -150,7 +186,7 @@ func TestFormatItemDescriptionForList(t *testing.T) {
 func TestDeriveBossReportFromTeamReport_FileExists(t *testing.T) {
 	dir := t.TempDir()
 	teamName := "TestTeam"
-	friday := time.Date(2026, 2, 20, 0, 0, 0, 0, time.UTC)
+	weekStart := time.Date(2026, 2, 16, 0, 0, 0, 0, time.UTC)
 
 	// Create a team report file
 	teamReportContent := `### TestTeam 20260220
@@ -159,14 +195,14 @@ func TestDeriveBossReportFromTeamReport_FileExists(t *testing.T) {
 - **Alice** - Implement feature X (in progress)
 - **Bob** - Fix bug Y (done)
 `
-	teamReportFile := fmt.Sprintf("%s_%s.md", teamName, friday.Format("20060102"))
+	teamReportFile := fmt.Sprintf("%s_%s.md", teamName, weekStart.Format("20060102"))
 	teamReportPath := filepath.Join(dir, teamReportFile)
 	if err := os.WriteFile(teamReportPath, []byte(teamReportContent), 0644); err != nil {
 		t.Fatalf("failed to create team report: %v", err)
 	}
 
 	// Call the helper function
-	filePath, bossReport, err := deriveBossReportFromTeamReport(dir, teamName, friday)
+	filePath, bossReport, err := deriveBossReportFromTeamReport(dir, teamName, weekStart)
 	if err != nil {
 		t.Fatalf("deriveBossReportFromTeamReport returned error: %v", err)
 	}
@@ -195,12 +231,12 @@ func TestDeriveBossReportFromTeamReport_FileExists(t *testing.T) {
 func TestDeriveBossReportFromTeamReport_FileMissing(t *testing.T) {
 	dir := t.TempDir()
 	teamName := "TestTeam"
-	friday := time.Date(2026, 2, 20, 0, 0, 0, 0, time.UTC)
+	weekStart := time.Date(2026, 2, 16, 0, 0, 0, 0, time.UTC)
 
 	// Do not create a team report file
 
 	// Call the helper function
-	filePath, bossReport, err := deriveBossReportFromTeamReport(dir, teamName, friday)
+	filePath, bossReport, err := deriveBossReportFromTeamReport(dir, teamName, weekStart)
 	if err != nil {
 		t.Fatalf("deriveBossReportFromTeamReport returned error for missing file: %v", err)
 	}
@@ -215,17 +251,17 @@ func TestDeriveBossReportFromTeamReport_FileMissing(t *testing.T) {
 func TestDeriveBossReportFromTeamReport_EmptyFile(t *testing.T) {
 	dir := t.TempDir()
 	teamName := "TestTeam"
-	friday := time.Date(2026, 2, 20, 0, 0, 0, 0, time.UTC)
+	weekStart := time.Date(2026, 2, 16, 0, 0, 0, 0, time.UTC)
 
 	// Create an empty team report file
-	teamReportFile := fmt.Sprintf("%s_%s.md", teamName, friday.Format("20060102"))
+	teamReportFile := fmt.Sprintf("%s_%s.md", teamName, weekStart.Format("20060102"))
 	teamReportPath := filepath.Join(dir, teamReportFile)
 	if err := os.WriteFile(teamReportPath, []byte(""), 0644); err != nil {
 		t.Fatalf("failed to create empty team report: %v", err)
 	}
 
 	// Call the helper function
-	filePath, bossReport, err := deriveBossReportFromTeamReport(dir, teamName, friday)
+	filePath, bossReport, err := deriveBossReportFromTeamReport(dir, teamName, weekStart)
 	if err != nil {
 		t.Fatalf("deriveBossReportFromTeamReport returned error for empty file: %v", err)
 	}
@@ -239,12 +275,12 @@ func TestDeriveBossReportFromTeamReport_EmptyFile(t *testing.T) {
 
 func TestDeriveBossReportFromTeamReport_InvalidTeamName(t *testing.T) {
 	dir := t.TempDir()
-	friday := time.Date(2026, 2, 20, 0, 0, 0, 0, time.UTC)
+	weekStart := time.Date(2026, 2, 16, 0, 0, 0, 0, time.UTC)
 
 	// Test with path separators in team name
 	invalidNames := []string{"Team/Name", "Team\\Name", "../Team"}
 	for _, teamName := range invalidNames {
-		filePath, bossReport, err := deriveBossReportFromTeamReport(dir, teamName, friday)
+		filePath, bossReport, err := deriveBossReportFromTeamReport(dir, teamName, weekStart)
 		if err == nil {
 			t.Errorf("expected error for invalid team name %q, got none", teamName)
 		}
@@ -260,18 +296,18 @@ func TestDeriveBossReportFromTeamReport_InvalidTeamName(t *testing.T) {
 func TestDeriveBossReportFromTeamReport_MalformedContent(t *testing.T) {
 	dir := t.TempDir()
 	teamName := "TestTeam"
-	friday := time.Date(2026, 2, 20, 0, 0, 0, 0, time.UTC)
+	weekStart := time.Date(2026, 2, 16, 0, 0, 0, 0, time.UTC)
 
 	// Create a team report with malformed content (but non-empty)
 	teamReportContent := "This is not a valid markdown report\nJust some random text\n"
-	teamReportFile := fmt.Sprintf("%s_%s.md", teamName, friday.Format("20060102"))
+	teamReportFile := fmt.Sprintf("%s_%s.md", teamName, weekStart.Format("20060102"))
 	teamReportPath := filepath.Join(dir, teamReportFile)
 	if err := os.WriteFile(teamReportPath, []byte(teamReportContent), 0644); err != nil {
 		t.Fatalf("failed to create malformed team report: %v", err)
 	}
 
 	// Call the helper function - it should still succeed (parseTemplate handles any input)
-	filePath, bossReport, err := deriveBossReportFromTeamReport(dir, teamName, friday)
+	filePath, bossReport, err := deriveBossReportFromTeamReport(dir, teamName, weekStart)
 	if err != nil {
 		t.Fatalf("deriveBossReportFromTeamReport returned error for malformed content: %v", err)
 	}

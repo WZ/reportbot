@@ -105,7 +105,7 @@ See [docs/agentic-features-overview.md](docs/agentic-features-overview.md) for a
    | `/report` | Report a work item |
    | `/rpt` | Alias of `/report` |
    | `/fetch` | Fetch merged and open GitLab MRs and/or GitHub PRs for this week |
-   | `/generate-report` | Generate the weekly report |
+   | `/generate-report` | Generate the weekly report (`team`/`boss`, optional `private`) |
    | `/gen` | Alias of `/generate-report` |
    | `/list` | List this week's work items |
    | `/check` | List missing members with nudge buttons |
@@ -174,9 +174,6 @@ team_name: "Example Team"
 report_channel_id: "C01234567"
 external_http_timeout_seconds: 90  # optional: timeout for GitLab/GitHub/LLM HTTP calls
 
-# When true, /generate-report DMs the report to the caller instead of posting to the channel
-report_private: false
-
 ```
 
 Set `CONFIG_PATH` env var to load from a different path (default: `./config.yaml`).
@@ -202,7 +199,6 @@ export MANAGER_SLACK_IDS="U01ABC123,U02DEF456"  # Comma-separated Slack user IDs
 export REPORT_CHANNEL_ID=C01234567
 export EXTERNAL_HTTP_TIMEOUT_SECONDS=90          # Optional: timeout for external API HTTP calls
 export AUTO_FETCH_SCHEDULE="0 9 * * 1-5"        # Optional: cron schedule for auto-fetch
-export REPORT_PRIVATE=false                      # Optional: DM report to caller only
 export MONDAY_CUTOFF_TIME=12:00
 export TIMEZONE=America/Los_Angeles
 ```
@@ -332,8 +328,10 @@ auto_fetch_schedule: "0 9 * * 5"     # Fridays at 9am
 Manager only. Two modes:
 
 ```
-/generate-report team    # Generate team markdown (.md) and upload file to Slack (default)
-/generate-report boss    # Generate boss email draft (.eml) and upload file to Slack
+/generate-report team            # Generate team markdown (.md) and upload to channel (default)
+/generate-report boss            # Generate boss email draft (.eml) and upload to channel (default)
+/generate-report boss private    # Send generated boss report to your DM
+/gen private                     # Generate team report and send to your DM
 /gen team                # Alias of /generate-report team
 ```
 
@@ -355,7 +353,8 @@ Manager only. Two modes:
 - Optimize database query for dashboard metrics (done)
 ```
 
-Generated files are saved to `REPORT_OUTPUT_DIR` and uploaded to the Slack channel as files.
+Generated files are saved to `REPORT_OUTPUT_DIR` and uploaded to Slack as files.
+Filename date suffix uses the reporting week start (Monday), e.g. `TEAMX_20260216.md`.
 
 ### Listing Items
 

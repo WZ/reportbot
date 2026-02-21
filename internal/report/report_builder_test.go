@@ -309,6 +309,31 @@ func TestFormatItemDescriptionCapitalization(t *testing.T) {
 	}
 }
 
+func TestFormatItemDedupesLeadingTicketPrefix(t *testing.T) {
+	teamItem := TemplateItem{
+		Author:      "Jordan Hart",
+		Description: "[7004001] [7004001] build cache index for snapshot restore",
+		TicketIDs:   "7004001",
+		Status:      "done",
+	}
+	gotTeam := formatTeamItem(teamItem)
+	wantTeam := "**Jordan Hart** - [7004001] Build cache index for snapshot restore (done)"
+	if gotTeam != wantTeam {
+		t.Fatalf("unexpected deduped team item:\nwant: %s\ngot:  %s", wantTeam, gotTeam)
+	}
+
+	bossItem := TemplateItem{
+		Description: "[7004002] [7004002] replace worker queue retry policy",
+		TicketIDs:   "7004002",
+		Status:      "in progress",
+	}
+	gotBoss := formatBossItem(bossItem)
+	wantBoss := "[7004002] Replace worker queue retry policy (in progress)"
+	if gotBoss != wantBoss {
+		t.Fatalf("unexpected deduped boss item:\nwant: %s\ngot:  %s", wantBoss, gotBoss)
+	}
+}
+
 func TestMergeCategoryHeadingAuthors(t *testing.T) {
 	got := mergeCategoryHeadingAuthors(
 		"Data Services (Casey, Quinn) (Casey Lane, Skyler Park)",

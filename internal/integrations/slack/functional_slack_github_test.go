@@ -212,6 +212,50 @@ func newMockSlackAPIWithUsers(t *testing.T) *slack.Client {
 	return slack.New("xoxb-test", slack.OptionAPIURL(server.URL+"/api/"))
 }
 
+func newMockSlackAPIWithManagerNotify(t *testing.T) (*slack.Client, *int, *string) {
+	t.Helper()
+
+	managerMsgCalls := 0
+	lastManagerMsg := ""
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimPrefix(r.URL.Path, "/api/")
+		switch path {
+		case "users.info":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok": true,
+				"user": map[string]any{
+					"id":        "U_MEMBER",
+					"name":      "member",
+					"real_name": "Member Real",
+					"profile": map[string]any{
+						"display_name": "Member Display",
+					},
+				},
+			})
+		case "conversations.open":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok": true,
+				"channel": map[string]any{
+					"id": "D_MANAGER",
+				},
+			})
+		case "chat.postMessage":
+			_ = r.ParseForm()
+			managerMsgCalls++
+			lastManagerMsg = r.Form.Get("text")
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "channel": "D_MANAGER", "ts": "1.23"})
+		case "chat.postEphemeral":
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+		default:
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	return slack.New("xoxb-test", slack.OptionAPIURL(server.URL+"/api/")), &managerMsgCalls, &lastManagerMsg
+}
+
 func TestFunctional_HandleReport_WithMockSlack(t *testing.T) {
 	db := newTestDB(t)
 	api, postCalls := newMockSlackAPI(t)
@@ -384,6 +428,59 @@ func TestFunctional_HandleReport_DelegatedWithoutSlackIDResolution(t *testing.T)
 		t.Errorf("expected empty AuthorID when Slack ID resolution fails, got %q (must not be manager's ID)", items[0].AuthorID)
 	}
 }
+
+func TestFunctional_HandleReport_NotifiesManagersForMemberReport(t *testing.T) {
+	db := newTestDB(t)
+	api, managerCalls, lastManagerMsg := newMockSlackAPIWithManagerNotify(t)
+
+	cfg := Config{
+		Location:        time.UTC,
+		ManagerSlackIDs: []string{"U_MANAGER"},
+	}
+	cmd := slack.SlashCommand{
+		Command:   "/report",
+		Text:      "Ship release checklist (done)",
+		UserID:    "U_MEMBER",
+		UserName:  "member-raw",
+		ChannelID: "C_TEST",
+	}
+
+	handleReport(api, db, cfg, cmd)
+
+	if *managerCalls != 1 {
+		t.Fatalf("expected 1 manager notification, got %d", *managerCalls)
+	}
+	if !strings.Contains(*lastManagerMsg, "New /report from *Member Display*") {
+		t.Fatalf("unexpected manager notification text: %q", *lastManagerMsg)
+	}
+	if !strings.Contains(*lastManagerMsg, "• Ship release checklist (done)") {
+		t.Fatalf("manager notification missing reported item: %q", *lastManagerMsg)
+	}
+}
+
+func TestFunctional_HandleReport_DoesNotNotifyWhenReporterIsManager(t *testing.T) {
+	db := newTestDB(t)
+	api, managerCalls, _ := newMockSlackAPIWithManagerNotify(t)
+
+	cfg := Config{
+		Location:        time.UTC,
+		ManagerSlackIDs: []string{"U_MANAGER"},
+	}
+	cmd := slack.SlashCommand{
+		Command:   "/report",
+		Text:      "Review roadmap (in progress)",
+		UserID:    "U_MANAGER",
+		UserName:  "manager-raw",
+		ChannelID: "C_TEST",
+	}
+
+	handleReport(api, db, cfg, cmd)
+
+	if *managerCalls != 0 {
+		t.Fatalf("expected no manager notification when manager reports, got %d", *managerCalls)
+	}
+}
+
 func TestFunctional_FetchAndImportGitHub_EndToEnd(t *testing.T) {
 	withMockGitHubAPI(t)
 	db := newTestDB(t)
