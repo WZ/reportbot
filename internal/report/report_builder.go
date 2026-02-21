@@ -51,6 +51,7 @@ var (
 	bulletLineRe      = regexp.MustCompile(`^\s*-\s+(.+?)\s*$`)
 	statusSuffixRe    = regexp.MustCompile(`\(([^)]+)\)\s*$`)
 	ticketPrefixRe    = regexp.MustCompile(`^\[([^\]]+)\]\s+`)
+	bareTicketLeadRe  = regexp.MustCompile(`^\s*(?:#\s*)?(?:[A-Za-z][A-Za-z0-9_]*-)?([0-9A-Za-z]+)(?:\s*[:,-]\s*|\s+)`)
 	authorPrefixRe    = regexp.MustCompile(`^\*\*(.+?)\*\*\s*-\s*`)
 	nameAliasParenRe  = regexp.MustCompile(`\([^)]*\)|（[^）]*）`)
 )
@@ -680,16 +681,41 @@ func stripLeadingTicketPrefixIfSame(description, tickets string) string {
 	if description == "" || tickets == "" {
 		return description
 	}
+	ticketSet := make(map[string]bool)
+	for _, t := range strings.Split(tickets, ",") {
+		t = strings.TrimSpace(t)
+		if t == "" {
+			continue
+		}
+		ticketSet[strings.ToLower(t)] = true
+	}
+
 	for {
+		trimmed := false
 		matches := ticketPrefixRe.FindStringSubmatch(description)
-		if len(matches) != 2 {
-			break
+		if len(matches) == 2 {
+			leading := canonicalTicketIDs(matches[1])
+			if leading == tickets {
+				description = strings.TrimSpace(description[len(matches[0]):])
+				trimmed = true
+			}
 		}
-		leading := canonicalTicketIDs(matches[1])
-		if leading != tickets {
-			break
+		if trimmed {
+			continue
 		}
-		description = strings.TrimSpace(description[len(matches[0]):])
+
+		// Handle plain leading ticket mentions like:
+		// "1234567 Implement ...", "#1234567 Implement ...", "JIRA-1234567 Implement ..."
+		bare := bareTicketLeadRe.FindStringSubmatchIndex(description)
+		if len(bare) == 4 {
+			candidate := strings.ToLower(strings.TrimSpace(description[bare[2]:bare[3]]))
+			if ticketSet[candidate] {
+				description = strings.TrimSpace(description[bare[1]:])
+				continue
+			}
+		}
+
+		break
 	}
 	return description
 }

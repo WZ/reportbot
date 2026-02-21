@@ -332,6 +332,18 @@ func TestFormatItemDedupesLeadingTicketPrefix(t *testing.T) {
 	if gotBoss != wantBoss {
 		t.Fatalf("unexpected deduped boss item:\nwant: %s\ngot:  %s", wantBoss, gotBoss)
 	}
+
+	plainPrefix := TemplateItem{
+		Author:      "Marik Hsiao",
+		Description: "1259566 added consul gossip encryption support",
+		TicketIDs:   "1259566",
+		Status:      "done",
+	}
+	gotPlain := formatTeamItem(plainPrefix)
+	wantPlain := "**Marik Hsiao** - [1259566] Added consul gossip encryption support (done)"
+	if gotPlain != wantPlain {
+		t.Fatalf("unexpected deduped plain-prefix item:\nwant: %s\ngot:  %s", wantPlain, gotPlain)
+	}
 }
 
 func TestMergeCategoryHeadingAuthors(t *testing.T) {
