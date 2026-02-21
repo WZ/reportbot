@@ -354,7 +354,7 @@ Manager only. Two modes:
 ```
 
 Generated files are saved to `REPORT_OUTPUT_DIR` and uploaded to Slack as files.
-Filename date suffix uses the reporting week start (Monday), e.g. `TEAMX_20260216.md`.
+Filename date suffix uses Friday of the reporting week, e.g. `TEAMX_20260220.md`.
 
 ### Listing Items
 

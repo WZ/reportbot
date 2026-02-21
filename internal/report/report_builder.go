@@ -139,7 +139,8 @@ func findLatestReportBefore(outputDir, teamName string, reportDate time.Time) (s
 
 	sanitized := sanitizeFilename(teamName)
 	prefix := sanitized + "_"
-	currentFile := fmt.Sprintf("%s_%s.md", sanitized, reportDate.Format("20060102"))
+	friday := FridayOfWeek(reportDate)
+	currentFile := fmt.Sprintf("%s_%s.md", sanitized, friday.Format("20060102"))
 	type candidate struct {
 		path string
 		date time.Time

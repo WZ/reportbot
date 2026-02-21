@@ -398,13 +398,13 @@ func handleFetchMRs(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashCo
 // - (filePath, bossReport, nil) if the team report exists and was successfully processed
 // - (empty, empty, nil) if the team report file doesn't exist (caller should fall through)
 // - (empty, empty, error) if there was an error (invalid config, file read error, etc.)
-func deriveBossReportFromTeamReport(reportOutputDir, teamName string, weekStart time.Time) (string, string, error) {
+func deriveBossReportFromTeamReport(reportOutputDir, teamName string, friday time.Time) (string, string, error) {
 	// Validate team name to prevent path traversal
 	if strings.ContainsAny(teamName, `/\`) {
 		return "", "", fmt.Errorf("invalid team name with path separators: %q", teamName)
 	}
 
-	teamReportFile := fmt.Sprintf("%s_%s.md", teamName, weekStart.Format("20060102"))
+	teamReportFile := fmt.Sprintf("%s_%s.md", teamName, friday.Format("20060102"))
 	teamReportPath := filepath.Join(reportOutputDir, teamReportFile)
 
 	// Validate that the computed path stays within ReportOutputDir
@@ -436,7 +436,7 @@ func deriveBossReportFromTeamReport(reportOutputDir, teamName string, weekStart 
 	bossReport := renderBossMarkdown(template)
 
 	// Write the boss report file
-	filePath, err := WriteEmailDraftFile(bossReport, reportOutputDir, weekStart, teamName)
+	filePath, err := WriteEmailDraftFile(bossReport, reportOutputDir, friday, teamName)
 	if err != nil {
 		return "", "", fmt.Errorf("error writing boss report file: %w", err)
 	}
@@ -491,11 +491,11 @@ func handleGenerateReport(api *slack.Client, db *sql.DB, cfg Config, cmd slack.S
 	log.Printf("generate-report mode=%s private=%t", mode, sendPrivate)
 
 	monday, nextMonday := ReportWeekRange(cfg, time.Now().In(cfg.Location))
-	weekStart := monday
+	friday := FridayOfWeek(monday)
 
 	// Boss mode shortcut: derive from existing team report if available.
 	if mode == "boss" {
-		filePath, bossReport, err := deriveBossReportFromTeamReport(cfg.ReportOutputDir, cfg.TeamName, weekStart)
+		filePath, bossReport, err := deriveBossReportFromTeamReport(cfg.ReportOutputDir, cfg.TeamName, friday)
 		if err != nil {
 			log.Printf("generate-report boss: error deriving from team report: %v", err)
 			postEphemeral(api, cmd, fmt.Sprintf("Error deriving boss report: %v", err))
@@ -544,8 +544,8 @@ func handleGenerateReport(api *slack.Client, db *sql.DB, cfg Config, cmd slack.S
 
 			fileTitle := fmt.Sprintf("%s report email draft", cfg.TeamName)
 			initialComment := fmt.Sprintf(
-				"Generated boss report for week starting %s (derived from team report, tokens used: 0)",
-				weekStart.Format("2006-01-02"),
+				"Generated boss report (week reference date: %s, derived from team report, tokens used: 0)",
+				friday.Format("2006-01-02"),
 			)
 			successMsg := fmt.Sprintf(
 				"Boss report derived from existing team report (no LLM tokens used)\nSaved to: %s",
@@ -629,12 +629,12 @@ func handleGenerateReport(api *slack.Client, db *sql.DB, cfg Config, cmd slack.S
 	var fileTitle string
 	if mode == "boss" {
 		bossReport := renderBossMarkdown(merged)
-		filePath, err = WriteEmailDraftFile(bossReport, cfg.ReportOutputDir, weekStart, cfg.TeamName)
+		filePath, err = WriteEmailDraftFile(bossReport, cfg.ReportOutputDir, friday, cfg.TeamName)
 		fileTitle = fmt.Sprintf("%s report email draft", cfg.TeamName)
 		log.Printf("generate-report boss-report-length=%d file=%s", len(bossReport), filePath)
 	} else {
 		teamReport := renderTeamMarkdown(merged)
-		filePath, err = WriteReportFile(teamReport, cfg.ReportOutputDir, weekStart, cfg.TeamName)
+		filePath, err = WriteReportFile(teamReport, cfg.ReportOutputDir, friday, cfg.TeamName)
 		fileTitle = fmt.Sprintf("%s team report", cfg.TeamName)
 		log.Printf("generate-report team-report-length=%d file=%s", len(teamReport), filePath)
 	}
@@ -677,7 +677,7 @@ func handleGenerateReport(api *slack.Client, db *sql.DB, cfg Config, cmd slack.S
 		Filename:       filepath.Base(filePath),
 		Channel:        uploadChannel,
 		Title:          fileTitle,
-		InitialComment: fmt.Sprintf("Generated report for week starting %s (mode: %s, tokens used: %s)", weekStart.Format("2006-01-02"), mode, tokenUsedText),
+		InitialComment: fmt.Sprintf("Generated report for reporting week containing %s (mode: %s, tokens used: %s)", friday.Format("2006-01-02"), mode, tokenUsedText),
 	})
 	if err != nil {
 		log.Printf("Error uploading report file: %v", err)
