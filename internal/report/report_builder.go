@@ -663,14 +663,31 @@ func canonicalTicketIDs(ticketIDs string) string {
 	}
 	parts := strings.Split(ticketIDs, ",")
 	cleaned := make([]string, 0, len(parts))
+	seen := make(map[string]bool, len(parts))
 	for _, p := range parts {
-		p = strings.TrimSpace(p)
+		p = normalizeTicketTokenForOutput(p)
 		if p == "" {
 			continue
 		}
+		key := strings.ToLower(p)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
 		cleaned = append(cleaned, p)
 	}
 	return strings.Join(cleaned, ",")
+}
+
+func normalizeTicketTokenForOutput(token string) string {
+	t := strings.TrimSpace(token)
+	if t == "" {
+		return ""
+	}
+	t = strings.Trim(t, "[]")
+	t = strings.TrimSpace(t)
+	t = strings.TrimLeft(t, "#")
+	return strings.TrimSpace(t)
 }
 
 func stripLeadingTicketPrefixIfSame(description, tickets string) string {

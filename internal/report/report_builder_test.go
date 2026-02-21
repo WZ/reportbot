@@ -392,6 +392,18 @@ func TestFormatItemDedupesLeadingTicketPrefix(t *testing.T) {
 	if gotPlain != wantPlain {
 		t.Fatalf("unexpected deduped plain-prefix item:\nwant: %s\ngot:  %s", wantPlain, gotPlain)
 	}
+
+	bracketedTicketIDs := TemplateItem{
+		Author:      "Howard Shen",
+		Description: "[1201950] make up siem MVs prepare test document and assist QA on testing",
+		TicketIDs:   "[1201950]",
+		Status:      "in progress",
+	}
+	gotBracketed := formatTeamItem(bracketedTicketIDs)
+	wantBracketed := "**Howard Shen** - [1201950] Make up siem MVs prepare test document and assist QA on testing (in progress)"
+	if gotBracketed != wantBracketed {
+		t.Fatalf("unexpected bracketed ticket normalization:\nwant: %s\ngot:  %s", wantBracketed, gotBracketed)
+	}
 }
 
 func TestMergeCategoryHeadingAuthors(t *testing.T) {
