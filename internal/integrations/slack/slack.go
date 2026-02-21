@@ -867,6 +867,14 @@ func handleListMissing(api *slack.Client, db *sql.DB, cfg Config, cmd slack.Slas
 	}
 
 	monday, nextMonday := ReportWeekRange(cfg, time.Now().In(cfg.Location))
+	weekItems, err := GetItemsByDateRange(db, monday, nextMonday)
+	if err != nil {
+		postEphemeral(api, cmd, fmt.Sprintf("Error loading items: %v", err))
+		log.Printf("list-missing load error: %v", err)
+		return
+	}
+	reportedAuthors := uniqueReportedAuthors(weekItems)
+
 	reportedAuthorIDs, err := GetSlackAuthorIDsByDateRange(db, monday, nextMonday)
 	if err != nil {
 		postEphemeral(api, cmd, fmt.Sprintf("Error loading items: %v", err))
@@ -881,11 +889,22 @@ func handleListMissing(api *slack.Client, db *sql.DB, cfg Config, cmd slack.Slas
 	var missing []missingMember
 	var missingIDs []string
 	for _, uid := range memberIDs {
-		if reportedAuthorIDs[uid] {
+		user, err := api.GetUserInfo(uid)
+		nameCandidates := []string{uid}
+		if err == nil {
+			if user.Profile.DisplayName != "" {
+				nameCandidates = append(nameCandidates, user.Profile.DisplayName)
+			}
+			if user.RealName != "" {
+				nameCandidates = append(nameCandidates, user.RealName)
+			}
+			if user.Name != "" {
+				nameCandidates = append(nameCandidates, user.Name)
+			}
+		}
+		if memberReportedThisWeek(uid, nameCandidates, reportedAuthorIDs, reportedAuthors) {
 			continue
 		}
-
-		user, err := api.GetUserInfo(uid)
 		if err != nil {
 			missing = append(missing, missingMember{display: uid, userID: uid})
 			missingIDs = append(missingIDs, uid)
@@ -961,6 +980,38 @@ func handleListMissing(api *slack.Client, db *sql.DB, cfg Config, cmd slack.Slas
 		return
 	}
 	log.Printf("list-missing count=%d", len(missing)+len(unresolved))
+}
+
+func uniqueReportedAuthors(items []WorkItem) []string {
+	seen := make(map[string]bool)
+	var out []string
+	for _, item := range items {
+		author := strings.TrimSpace(item.Author)
+		if author == "" || seen[author] {
+			continue
+		}
+		seen[author] = true
+		out = append(out, author)
+	}
+	return out
+}
+
+func memberReportedThisWeek(userID string, nameCandidates []string, reportedAuthorIDs map[string]bool, reportedAuthors []string) bool {
+	if reportedAuthorIDs[userID] {
+		return true
+	}
+	for _, candidate := range nameCandidates {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" {
+			continue
+		}
+		for _, author := range reportedAuthors {
+			if strings.EqualFold(candidate, author) || nameMatches(candidate, author) || nameMatches(author, candidate) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func postEphemeral(api *slack.Client, cmd slack.SlashCommand, text string) {
