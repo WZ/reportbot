@@ -1342,7 +1342,7 @@ func openEditModal(api *slack.Client, db *sql.DB, cfg Config, triggerID, channel
 		}
 		noChangeOpt := slack.NewOptionBlockObject(
 			noCategoryChangeValue,
-			slack.NewTextBlockObject(slack.PlainTextType, "(no change)", false, false),
+			slack.NewTextBlockObject(slack.PlainTextType, "Auto", false, false),
 			nil,
 		)
 		catOptions := []*slack.OptionBlockObject{noChangeOpt}

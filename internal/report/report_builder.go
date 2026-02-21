@@ -403,6 +403,9 @@ func mergeIncomingItems(
 }
 
 func chooseNormalizedStatus(incomingStatus, llmStatus string, useLLM bool) string {
+	if isFreeTextStatus(incomingStatus) {
+		return strings.TrimSpace(incomingStatus)
+	}
 	if useLLM {
 		switch normalizeStatus(llmStatus) {
 		case "done", "in testing", "in progress":
@@ -627,10 +630,7 @@ func categoryAuthors(cat TemplateCategory) []string {
 }
 
 func formatTeamItem(item TemplateItem) string {
-	status := normalizeStatus(item.Status)
-	if status == "" {
-		status = "done"
-	}
+	status := statusForDisplay(item.Status)
 	author := synthesizeName(item.Author)
 	tickets := canonicalTicketIDs(item.TicketIDs)
 	description := stripLeadingTicketPrefixIfSame(item.Description, tickets)
@@ -646,10 +646,7 @@ func formatTeamItem(item TemplateItem) string {
 }
 
 func formatBossItem(item TemplateItem) string {
-	status := normalizeStatus(item.Status)
-	if status == "" {
-		status = "done"
-	}
+	status := statusForDisplay(item.Status)
 	tickets := canonicalTicketIDs(item.TicketIDs)
 	description := stripLeadingTicketPrefixIfSame(item.Description, tickets)
 	description = synthesizeDescription(description)
@@ -731,6 +728,26 @@ func normalizeStatus(status string) string {
 		return "in progress"
 	default:
 		return strings.TrimSpace(status)
+	}
+}
+
+func statusForDisplay(status string) string {
+	trimmed := strings.TrimSpace(status)
+	if trimmed == "" {
+		return "done"
+	}
+	if isFreeTextStatus(trimmed) {
+		return trimmed
+	}
+	return normalizeStatus(trimmed)
+}
+
+func isFreeTextStatus(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "done", "in testing", "in test", "in progress":
+		return false
+	default:
+		return strings.TrimSpace(status) != ""
 	}
 }
 

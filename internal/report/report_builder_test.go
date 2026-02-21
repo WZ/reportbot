@@ -231,6 +231,54 @@ func TestBuildReportsFromLast_LLMConfidenceAndDuplicate(t *testing.T) {
 	}
 }
 
+func TestBuildReportsFromLast_PreservesFreeTextStatus(t *testing.T) {
+	dir := t.TempDir()
+	prev := `### TEAMX 20260202
+
+#### Top Focus
+
+- **Feature A**
+  - **Pat One** - Existing ongoing item (in progress)
+`
+	if err := os.WriteFile(filepath.Join(dir, "TEAMX_20260202.md"), []byte(prev), 0644); err != nil {
+		t.Fatalf("write previous report: %v", err)
+	}
+
+	cfg := Config{
+		ReportOutputDir: dir,
+		TeamName:        "TEAMX",
+	}
+
+	orig := classifySectionsFn
+	classifySectionsFn = func(_ Config, items []WorkItem, _ []sectionOption, _ []existingItemContext, _ []ClassificationCorrection, _ []historicalItem) (map[int64]LLMSectionDecision, LLMUsage, error) {
+		out := make(map[int64]LLMSectionDecision, len(items))
+		for _, item := range items {
+			out[item.ID] = LLMSectionDecision{
+				SectionID:        "S0_0",
+				NormalizedStatus: "in progress",
+				Confidence:       0.95,
+			}
+		}
+		return out, LLMUsage{}, nil
+	}
+	defer func() { classifySectionsFn = orig }()
+
+	freeTextStatus := "resolved in session; root cause analysis in progress"
+	items := []WorkItem{
+		{ID: 41, Author: "Pat Two", Description: "Investigate customer database startup issue", Status: freeTextStatus},
+	}
+
+	result, err := BuildReportsFromLast(cfg, items, mustDate(t, "20260209"), nil, nil)
+	if err != nil {
+		t.Fatalf("BuildReportsFromLast failed: %v", err)
+	}
+
+	team := renderTeamMarkdown(result.Template)
+	if !strings.Contains(team, "Investigate customer database startup issue ("+freeTextStatus+")") {
+		t.Fatalf("free-text status should be preserved in team report:\n%s", team)
+	}
+}
+
 func TestBuildReportsFromLast_PreservesPrefixBlocks(t *testing.T) {
 	dir := t.TempDir()
 	prev := `### Product Alpha - 20260130
