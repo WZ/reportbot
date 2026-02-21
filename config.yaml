@@ -23,10 +23,10 @@ github_repos: []  # optional: limit to specific repos, e.g. ["org/repo1", "org/r
 # supported values: anthropic, openai
 llm_provider: "anthropic"
 llm_model: "" # optional; uses provider default when empty
-llm_batch_size: 50
+llm_batch_size: 20
 llm_confidence_threshold: 0.70
-llm_example_count: 20
-llm_example_max_chars: 140
+llm_example_count: 8
+llm_example_max_chars: 100
 
 # Optional glossary memory file for phrase/status hints
 llm_glossary_path: "./llm_glossary.yaml"
