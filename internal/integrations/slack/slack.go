@@ -882,6 +882,17 @@ func handleListMissing(api *slack.Client, db *sql.DB, cfg Config, cmd slack.Slas
 		return
 	}
 
+	// Build an ID→User map from the cached users list to avoid N individual
+	// GetUserInfo calls (one per team member) inside the loop below.
+	cachedUsers, err := getCachedUsers(api)
+	if err != nil {
+		log.Printf("list-missing: getCachedUsers error: %v", err)
+	}
+	userByID := make(map[string]slack.User, len(cachedUsers))
+	for _, u := range cachedUsers {
+		userByID[u.ID] = u
+	}
+
 	type missingMember struct {
 		display string
 		userID  string
@@ -889,34 +900,34 @@ func handleListMissing(api *slack.Client, db *sql.DB, cfg Config, cmd slack.Slas
 	var missing []missingMember
 	var missingIDs []string
 	for _, uid := range memberIDs {
-		user, err := api.GetUserInfo(uid)
+		u, found := userByID[uid]
 		nameCandidates := []string{uid}
-		if err == nil {
-			if user.Profile.DisplayName != "" {
-				nameCandidates = append(nameCandidates, user.Profile.DisplayName)
+		if found {
+			if u.Profile.DisplayName != "" {
+				nameCandidates = append(nameCandidates, u.Profile.DisplayName)
 			}
-			if user.RealName != "" {
-				nameCandidates = append(nameCandidates, user.RealName)
+			if u.RealName != "" {
+				nameCandidates = append(nameCandidates, u.RealName)
 			}
-			if user.Name != "" {
-				nameCandidates = append(nameCandidates, user.Name)
+			if u.Name != "" {
+				nameCandidates = append(nameCandidates, u.Name)
 			}
 		}
 		if memberReportedThisWeek(uid, nameCandidates, reportedAuthorIDs, reportedAuthors) {
 			continue
 		}
-		if err != nil {
+		if !found {
 			missing = append(missing, missingMember{display: uid, userID: uid})
 			missingIDs = append(missingIDs, uid)
 			continue
 		}
 
-		display := user.Profile.DisplayName
+		display := u.Profile.DisplayName
 		if display == "" {
-			display = user.RealName
+			display = u.RealName
 		}
 		if display == "" {
-			display = user.Name
+			display = u.Name
 		}
 		if display == "" {
 			display = uid
