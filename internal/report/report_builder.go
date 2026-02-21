@@ -516,7 +516,12 @@ func mergeExistingItem(existing, incoming TemplateItem) TemplateItem {
 func reorderTemplateItems(t *ReportTemplate) {
 	for ci := range t.Categories {
 		for si := range t.Categories[ci].Subsections {
-			t.Categories[ci].Subsections[si].Items = reorderItems(t.Categories[ci].Subsections[si].Items)
+			sub := &t.Categories[ci].Subsections[si]
+			if isSupportCasesSubsection(*sub) {
+				sub.Items = reorderSupportCasesItems(sub.Items)
+				continue
+			}
+			sub.Items = reorderItems(sub.Items)
 		}
 	}
 }
@@ -538,6 +543,37 @@ func reorderItems(items []TemplateItem) []TemplateItem {
 		return sorted[i].ReportedAt.Before(sorted[j].ReportedAt)
 	})
 	return sorted
+}
+
+func isSupportCasesSubsection(sub TemplateSubsection) bool {
+	if strings.EqualFold(strings.TrimSpace(sub.Name), "Support Cases") {
+		return true
+	}
+	header := strings.ToLower(strings.TrimSpace(sub.HeaderLine))
+	return strings.Contains(header, "support cases")
+}
+
+func reorderSupportCasesItems(items []TemplateItem) []TemplateItem {
+	existing := make([]TemplateItem, 0, len(items))
+	newlyAdded := make([]TemplateItem, 0, len(items))
+	for _, item := range items {
+		if item.IsNew {
+			newlyAdded = append(newlyAdded, item)
+			continue
+		}
+		existing = append(existing, item)
+	}
+
+	existing = reorderItems(existing)
+	sort.SliceStable(newlyAdded, func(i, j int) bool {
+		zi, zj := newlyAdded[i].ReportedAt.IsZero(), newlyAdded[j].ReportedAt.IsZero()
+		if zi != zj {
+			return zi
+		}
+		return newlyAdded[i].ReportedAt.Before(newlyAdded[j].ReportedAt)
+	})
+
+	return append(existing, newlyAdded...)
 }
 
 func itemIdentityKey(item TemplateItem) string {

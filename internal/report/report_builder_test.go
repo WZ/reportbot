@@ -593,6 +593,52 @@ func TestReorderItems_ComprehensiveSorting(t *testing.T) {
 	}
 }
 
+func TestReorderTemplateItems_SupportCasesKeepsNewItemsAtBottom(t *testing.T) {
+	template := &ReportTemplate{
+		Categories: []TemplateCategory{
+			{
+				Name: "Release and Support",
+				Subsections: []TemplateSubsection{
+					{
+						Name: "Support Cases",
+						Items: []TemplateItem{
+							{
+								Description: "Existing case in progress",
+								Status:      "in progress",
+								IsNew:       false,
+							},
+							{
+								Description: "Newly reported resolved case",
+								Status:      "resolved in session; root cause analysis in progress",
+								IsNew:       true,
+								ReportedAt:  time.Date(2026, 2, 21, 9, 0, 0, 0, time.UTC),
+							},
+							{
+								Description: "Existing done case",
+								Status:      "done",
+								IsNew:       false,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	reorderTemplateItems(template)
+	items := template.Categories[0].Subsections[0].Items
+
+	if items[0].Description != "Existing done case" {
+		t.Fatalf("expected existing done case first, got %q", items[0].Description)
+	}
+	if items[1].Description != "Existing case in progress" {
+		t.Fatalf("expected existing in-progress case second, got %q", items[1].Description)
+	}
+	if items[2].Description != "Newly reported resolved case" {
+		t.Fatalf("expected new support case at bottom, got %q", items[2].Description)
+	}
+}
+
 func mustDate(t *testing.T, ymd string) time.Time {
 	t.Helper()
 	d, err := time.Parse("20060102", ymd)
