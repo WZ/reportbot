@@ -183,6 +183,21 @@ func TestFormatItemDescriptionForList(t *testing.T) {
 	}
 }
 
+func TestMemberReportedThisWeek(t *testing.T) {
+	reportedIDs := map[string]bool{"U123": true}
+	reportedAuthors := []string{"Alex Rivera", "Jordan Patel"}
+
+	if !memberReportedThisWeek("U123", []string{"Alex Rivera"}, reportedIDs, reportedAuthors) {
+		t.Fatal("expected member to be reported when author_id is present")
+	}
+	if !memberReportedThisWeek("U999", []string{"Alex"}, map[string]bool{}, reportedAuthors) {
+		t.Fatal("expected fuzzy name match against fetched author to count as reported")
+	}
+	if memberReportedThisWeek("U999", []string{"Taylor"}, map[string]bool{}, reportedAuthors) {
+		t.Fatal("expected unmatched member name to be considered missing")
+	}
+}
+
 func TestDeriveBossReportFromTeamReport_FileExists(t *testing.T) {
 	dir := t.TempDir()
 	teamName := "TestTeam"

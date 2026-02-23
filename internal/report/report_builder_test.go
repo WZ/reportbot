@@ -231,6 +231,54 @@ func TestBuildReportsFromLast_LLMConfidenceAndDuplicate(t *testing.T) {
 	}
 }
 
+func TestBuildReportsFromLast_PreservesFreeTextStatus(t *testing.T) {
+	dir := t.TempDir()
+	prev := `### TEAMX 20260202
+
+#### Top Focus
+
+- **Feature A**
+  - **Pat One** - Existing ongoing item (in progress)
+`
+	if err := os.WriteFile(filepath.Join(dir, "TEAMX_20260202.md"), []byte(prev), 0644); err != nil {
+		t.Fatalf("write previous report: %v", err)
+	}
+
+	cfg := Config{
+		ReportOutputDir: dir,
+		TeamName:        "TEAMX",
+	}
+
+	orig := classifySectionsFn
+	classifySectionsFn = func(_ Config, items []WorkItem, _ []sectionOption, _ []existingItemContext, _ []ClassificationCorrection, _ []historicalItem) (map[int64]LLMSectionDecision, LLMUsage, error) {
+		out := make(map[int64]LLMSectionDecision, len(items))
+		for _, item := range items {
+			out[item.ID] = LLMSectionDecision{
+				SectionID:        "S0_0",
+				NormalizedStatus: "in progress",
+				Confidence:       0.95,
+			}
+		}
+		return out, LLMUsage{}, nil
+	}
+	defer func() { classifySectionsFn = orig }()
+
+	freeTextStatus := "resolved in session; root cause analysis in progress"
+	items := []WorkItem{
+		{ID: 41, Author: "Pat Two", Description: "Investigate customer database startup issue", Status: freeTextStatus},
+	}
+
+	result, err := BuildReportsFromLast(cfg, items, mustDate(t, "20260209"), nil, nil)
+	if err != nil {
+		t.Fatalf("BuildReportsFromLast failed: %v", err)
+	}
+
+	team := renderTeamMarkdown(result.Template)
+	if !strings.Contains(team, "Investigate customer database startup issue ("+freeTextStatus+")") {
+		t.Fatalf("free-text status should be preserved in team report:\n%s", team)
+	}
+}
+
 func TestBuildReportsFromLast_PreservesPrefixBlocks(t *testing.T) {
 	dir := t.TempDir()
 	prev := `### Product Alpha - 20260130
@@ -343,6 +391,18 @@ func TestFormatItemDedupesLeadingTicketPrefix(t *testing.T) {
 	wantPlain := "**Marik Hsiao** - [1259566] Added consul gossip encryption support (done)"
 	if gotPlain != wantPlain {
 		t.Fatalf("unexpected deduped plain-prefix item:\nwant: %s\ngot:  %s", wantPlain, gotPlain)
+	}
+
+	bracketedTicketIDs := TemplateItem{
+		Author:      "Howard Shen",
+		Description: "[1201950] make up siem MVs prepare test document and assist QA on testing",
+		TicketIDs:   "[1201950]",
+		Status:      "in progress",
+	}
+	gotBracketed := formatTeamItem(bracketedTicketIDs)
+	wantBracketed := "**Howard Shen** - [1201950] Make up siem MVs prepare test document and assist QA on testing (in progress)"
+	if gotBracketed != wantBracketed {
+		t.Fatalf("unexpected bracketed ticket normalization:\nwant: %s\ngot:  %s", wantBracketed, gotBracketed)
 	}
 }
 
@@ -530,6 +590,52 @@ func TestReorderItems_ComprehensiveSorting(t *testing.T) {
 		if sorted[i].Description != exp {
 			t.Errorf("Position %d: expected '%s', got '%s'", i, exp, sorted[i].Description)
 		}
+	}
+}
+
+func TestReorderTemplateItems_SupportCasesKeepsNewItemsAtBottom(t *testing.T) {
+	template := &ReportTemplate{
+		Categories: []TemplateCategory{
+			{
+				Name: "Release and Support",
+				Subsections: []TemplateSubsection{
+					{
+						Name: "Support Cases",
+						Items: []TemplateItem{
+							{
+								Description: "Existing case in progress",
+								Status:      "in progress",
+								IsNew:       false,
+							},
+							{
+								Description: "Newly reported resolved case",
+								Status:      "resolved in session; root cause analysis in progress",
+								IsNew:       true,
+								ReportedAt:  time.Date(2026, 2, 21, 9, 0, 0, 0, time.UTC),
+							},
+							{
+								Description: "Existing done case",
+								Status:      "done",
+								IsNew:       false,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	reorderTemplateItems(template)
+	items := template.Categories[0].Subsections[0].Items
+
+	if items[0].Description != "Existing done case" {
+		t.Fatalf("expected existing done case first, got %q", items[0].Description)
+	}
+	if items[1].Description != "Existing case in progress" {
+		t.Fatalf("expected existing in-progress case second, got %q", items[1].Description)
+	}
+	if items[2].Description != "Newly reported resolved case" {
+		t.Fatalf("expected new support case at bottom, got %q", items[2].Description)
 	}
 }
 

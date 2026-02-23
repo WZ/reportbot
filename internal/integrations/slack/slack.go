@@ -867,11 +867,30 @@ func handleListMissing(api *slack.Client, db *sql.DB, cfg Config, cmd slack.Slas
 	}
 
 	monday, nextMonday := ReportWeekRange(cfg, time.Now().In(cfg.Location))
+	weekItems, err := GetItemsByDateRange(db, monday, nextMonday)
+	if err != nil {
+		postEphemeral(api, cmd, fmt.Sprintf("Error loading items: %v", err))
+		log.Printf("list-missing load error: %v", err)
+		return
+	}
+	reportedAuthors := uniqueReportedAuthors(weekItems)
+
 	reportedAuthorIDs, err := GetSlackAuthorIDsByDateRange(db, monday, nextMonday)
 	if err != nil {
 		postEphemeral(api, cmd, fmt.Sprintf("Error loading items: %v", err))
 		log.Printf("list-missing load error: %v", err)
 		return
+	}
+
+	// Build an ID→User map from the cached users list to avoid N individual
+	// GetUserInfo calls (one per team member) inside the loop below.
+	cachedUsers, err := getCachedUsers(api)
+	if err != nil {
+		log.Printf("list-missing: getCachedUsers error: %v", err)
+	}
+	userByID := make(map[string]slack.User, len(cachedUsers))
+	for _, u := range cachedUsers {
+		userByID[u.ID] = u
 	}
 
 	type missingMember struct {
@@ -881,23 +900,31 @@ func handleListMissing(api *slack.Client, db *sql.DB, cfg Config, cmd slack.Slas
 	var missing []missingMember
 	var missingIDs []string
 	for _, uid := range memberIDs {
-		if reportedAuthorIDs[uid] {
+		u, found := userByID[uid]
+		nameCandidates := []string{uid}
+		if found {
+			if u.Profile.DisplayName != "" {
+				nameCandidates = append(nameCandidates, u.Profile.DisplayName)
+			}
+			if u.RealName != "" {
+				nameCandidates = append(nameCandidates, u.RealName)
+			}
+		}
+		if memberReportedThisWeek(uid, nameCandidates, reportedAuthorIDs, reportedAuthors) {
 			continue
 		}
-
-		user, err := api.GetUserInfo(uid)
-		if err != nil {
+		if !found {
 			missing = append(missing, missingMember{display: uid, userID: uid})
 			missingIDs = append(missingIDs, uid)
 			continue
 		}
 
-		display := user.Profile.DisplayName
+		display := u.Profile.DisplayName
 		if display == "" {
-			display = user.RealName
+			display = u.RealName
 		}
 		if display == "" {
-			display = user.Name
+			display = u.Name
 		}
 		if display == "" {
 			display = uid
@@ -961,6 +988,38 @@ func handleListMissing(api *slack.Client, db *sql.DB, cfg Config, cmd slack.Slas
 		return
 	}
 	log.Printf("list-missing count=%d", len(missing)+len(unresolved))
+}
+
+func uniqueReportedAuthors(items []WorkItem) []string {
+	seen := make(map[string]bool)
+	var out []string
+	for _, item := range items {
+		author := strings.TrimSpace(item.Author)
+		if author == "" || seen[author] {
+			continue
+		}
+		seen[author] = true
+		out = append(out, author)
+	}
+	return out
+}
+
+func memberReportedThisWeek(userID string, nameCandidates []string, reportedAuthorIDs map[string]bool, reportedAuthors []string) bool {
+	if reportedAuthorIDs[userID] {
+		return true
+	}
+	for _, candidate := range nameCandidates {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" {
+			continue
+		}
+		for _, author := range reportedAuthors {
+			if strings.EqualFold(candidate, author) || nameMatches(candidate, author) || nameMatches(author, candidate) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func postEphemeral(api *slack.Client, cmd slack.SlashCommand, text string) {
@@ -1291,7 +1350,7 @@ func openEditModal(api *slack.Client, db *sql.DB, cfg Config, triggerID, channel
 		}
 		noChangeOpt := slack.NewOptionBlockObject(
 			noCategoryChangeValue,
-			slack.NewTextBlockObject(slack.PlainTextType, "(no change)", false, false),
+			slack.NewTextBlockObject(slack.PlainTextType, "Auto", false, false),
 			nil,
 		)
 		catOptions := []*slack.OptionBlockObject{noChangeOpt}

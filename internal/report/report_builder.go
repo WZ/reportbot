@@ -403,6 +403,9 @@ func mergeIncomingItems(
 }
 
 func chooseNormalizedStatus(incomingStatus, llmStatus string, useLLM bool) string {
+	if isFreeTextStatus(incomingStatus) {
+		return strings.TrimSpace(incomingStatus)
+	}
 	if useLLM {
 		switch normalizeStatus(llmStatus) {
 		case "done", "in testing", "in progress":
@@ -513,7 +516,12 @@ func mergeExistingItem(existing, incoming TemplateItem) TemplateItem {
 func reorderTemplateItems(t *ReportTemplate) {
 	for ci := range t.Categories {
 		for si := range t.Categories[ci].Subsections {
-			t.Categories[ci].Subsections[si].Items = reorderItems(t.Categories[ci].Subsections[si].Items)
+			sub := &t.Categories[ci].Subsections[si]
+			if isSupportCasesSubsection(*sub) {
+				sub.Items = reorderSupportCasesItems(sub.Items)
+				continue
+			}
+			sub.Items = reorderItems(sub.Items)
 		}
 	}
 }
@@ -535,6 +543,37 @@ func reorderItems(items []TemplateItem) []TemplateItem {
 		return sorted[i].ReportedAt.Before(sorted[j].ReportedAt)
 	})
 	return sorted
+}
+
+func isSupportCasesSubsection(sub TemplateSubsection) bool {
+	if strings.EqualFold(strings.TrimSpace(sub.Name), "Support Cases") {
+		return true
+	}
+	header := strings.ToLower(strings.TrimSpace(sub.HeaderLine))
+	return strings.Contains(header, "support cases")
+}
+
+func reorderSupportCasesItems(items []TemplateItem) []TemplateItem {
+	existing := make([]TemplateItem, 0, len(items))
+	newlyAdded := make([]TemplateItem, 0, len(items))
+	for _, item := range items {
+		if item.IsNew {
+			newlyAdded = append(newlyAdded, item)
+			continue
+		}
+		existing = append(existing, item)
+	}
+
+	existing = reorderItems(existing)
+	sort.SliceStable(newlyAdded, func(i, j int) bool {
+		zi, zj := newlyAdded[i].ReportedAt.IsZero(), newlyAdded[j].ReportedAt.IsZero()
+		if zi != zj {
+			return zi
+		}
+		return newlyAdded[i].ReportedAt.Before(newlyAdded[j].ReportedAt)
+	})
+
+	return append(existing, newlyAdded...)
 }
 
 func itemIdentityKey(item TemplateItem) string {
@@ -627,10 +666,7 @@ func categoryAuthors(cat TemplateCategory) []string {
 }
 
 func formatTeamItem(item TemplateItem) string {
-	status := normalizeStatus(item.Status)
-	if status == "" {
-		status = "done"
-	}
+	status := statusForDisplay(item.Status)
 	author := synthesizeName(item.Author)
 	tickets := canonicalTicketIDs(item.TicketIDs)
 	description := stripLeadingTicketPrefixIfSame(item.Description, tickets)
@@ -646,10 +682,7 @@ func formatTeamItem(item TemplateItem) string {
 }
 
 func formatBossItem(item TemplateItem) string {
-	status := normalizeStatus(item.Status)
-	if status == "" {
-		status = "done"
-	}
+	status := statusForDisplay(item.Status)
 	tickets := canonicalTicketIDs(item.TicketIDs)
 	description := stripLeadingTicketPrefixIfSame(item.Description, tickets)
 	description = synthesizeDescription(description)
@@ -666,14 +699,31 @@ func canonicalTicketIDs(ticketIDs string) string {
 	}
 	parts := strings.Split(ticketIDs, ",")
 	cleaned := make([]string, 0, len(parts))
+	seen := make(map[string]bool, len(parts))
 	for _, p := range parts {
-		p = strings.TrimSpace(p)
+		p = normalizeTicketTokenForOutput(p)
 		if p == "" {
 			continue
 		}
+		key := strings.ToLower(p)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
 		cleaned = append(cleaned, p)
 	}
 	return strings.Join(cleaned, ",")
+}
+
+func normalizeTicketTokenForOutput(token string) string {
+	t := strings.TrimSpace(token)
+	if t == "" {
+		return ""
+	}
+	t = strings.Trim(t, "[]")
+	t = strings.TrimSpace(t)
+	t = strings.TrimLeft(t, "#")
+	return strings.TrimSpace(t)
 }
 
 func stripLeadingTicketPrefixIfSame(description, tickets string) string {
@@ -731,6 +781,26 @@ func normalizeStatus(status string) string {
 		return "in progress"
 	default:
 		return strings.TrimSpace(status)
+	}
+}
+
+func statusForDisplay(status string) string {
+	trimmed := strings.TrimSpace(status)
+	if trimmed == "" {
+		return "done"
+	}
+	if isFreeTextStatus(trimmed) {
+		return trimmed
+	}
+	return normalizeStatus(trimmed)
+}
+
+func isFreeTextStatus(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "done", "in testing", "in test", "in progress":
+		return false
+	default:
+		return strings.TrimSpace(status) != ""
 	}
 }
 
