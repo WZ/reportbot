@@ -898,9 +898,6 @@ func handleListMissing(api *slack.Client, db *sql.DB, cfg Config, cmd slack.Slas
 			if user.RealName != "" {
 				nameCandidates = append(nameCandidates, user.RealName)
 			}
-			if user.Name != "" {
-				nameCandidates = append(nameCandidates, user.Name)
-			}
 		}
 		if memberReportedThisWeek(uid, nameCandidates, reportedAuthorIDs, reportedAuthors) {
 			continue
