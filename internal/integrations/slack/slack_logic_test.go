@@ -2,11 +2,14 @@ package slackbot
 
 import (
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/slack-go/slack"
 )
 
 func TestParseReportItemsSingleAndSharedStatus(t *testing.T) {
@@ -103,6 +106,70 @@ func TestResolveDelegatedAuthorName(t *testing.T) {
 	ambiguousTeam := []string{"Alice Smith", "Alice Wong"}
 	if got, ok := resolveDelegatedAuthorName("Alice", ambiguousTeam); ok || got != "" {
 		t.Fatalf("expected ambiguous delegated name to be rejected, got ok=%v value=%q", ok, got)
+	}
+}
+
+func TestResolveNudgeTarget(t *testing.T) {
+	api := slack.New(
+		"xoxb-test",
+		slack.OptionAPIURL("https://slack.test/api/"),
+		slack.OptionHTTPClient(&http.Client{
+			Transport: mockSlackRoundTripper(func(req *http.Request) (*http.Response, error) {
+				form, err := mockSlackRequestForm(req)
+				if err != nil {
+					return nil, err
+				}
+				switch strings.TrimPrefix(req.URL.Path, "/api/") {
+				case "users.info":
+					userID := form.Get("user")
+					return mockSlackJSONResponse(req, map[string]any{
+						"ok": true,
+						"user": map[string]any{
+							"id":        userID,
+							"name":      "pat",
+							"real_name": "Pat Example",
+							"profile": map[string]any{
+								"display_name": "Pat Example",
+							},
+						},
+					})
+				case "users.list":
+					return mockSlackJSONResponse(req, map[string]any{
+						"ok": true,
+						"members": []map[string]any{
+							{
+								"id":        "U0PAT1234",
+								"name":      "pat",
+								"real_name": "Pat Example",
+								"profile": map[string]any{
+									"display_name": "Pat Example",
+								},
+							},
+						},
+					})
+				default:
+					return mockSlackJSONResponse(req, map[string]any{"ok": true})
+				}
+			}),
+		}),
+	)
+
+	cfg := Config{TeamMembers: []string{"Pat Example"}}
+
+	id, label, err := resolveNudgeTarget(api, cfg, "Pat")
+	if err != nil {
+		t.Fatalf("resolveNudgeTarget by name failed: %v", err)
+	}
+	if id != "U0PAT1234" || label != "Pat Example" {
+		t.Fatalf("unexpected name resolution: id=%q label=%q", id, label)
+	}
+
+	id, label, err = resolveNudgeTarget(api, cfg, "U0PAT1234")
+	if err != nil {
+		t.Fatalf("resolveNudgeTarget by ID failed: %v", err)
+	}
+	if id != "U0PAT1234" || label != "Pat Example" {
+		t.Fatalf("unexpected ID resolution: id=%q label=%q", id, label)
 	}
 }
 

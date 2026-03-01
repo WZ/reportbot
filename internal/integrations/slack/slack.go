@@ -102,6 +102,8 @@ func handleSlashCommand(client *socketmode.Client, api *slack.Client, db *sql.DB
 		handleListItems(api, db, cfg, cmd)
 	case "/check":
 		handleListMissing(api, db, cfg, cmd)
+	case "/nudge":
+		handleTestNudge(api, db, cfg, cmd)
 	case "/retrospect":
 		handleRetrospective(api, db, cfg, cmd)
 	case "/stats":
@@ -391,6 +393,43 @@ func handleFetchMRs(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashCo
 	msg := FormatFetchSummary(result)
 	postEphemeral(api, cmd, msg)
 	log.Printf("fetch inserted=%d alreadyTracked=%d skippedNonTeam=%d", result.Inserted, result.AlreadyTracked, result.SkippedNonTeam)
+}
+
+func handleTestNudge(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashCommand) {
+	targetID := cmd.UserID
+	targetLabel := "yourself"
+	rawTarget := strings.TrimSpace(cmd.Text)
+
+	if rawTarget != "" {
+		isManager, err := isManagerUser(api, cfg, cmd.UserID)
+		if err != nil {
+			postEphemeral(api, cmd, fmt.Sprintf("Error checking permissions: %v", err))
+			log.Printf("nudge auth error user=%s: %v", cmd.UserID, err)
+			return
+		}
+		if !isManager {
+			postEphemeral(api, cmd, "Usage: /nudge\nManagers can also use `/nudge <member>` to test another member's nudge DM.")
+			return
+		}
+
+		resolvedID, resolvedLabel, err := resolveNudgeTarget(api, cfg, rawTarget)
+		if err != nil {
+			postEphemeral(api, cmd, fmt.Sprintf("Unable to resolve nudge target %q: %v", rawTarget, err))
+			return
+		}
+		targetID = resolvedID
+		targetLabel = resolvedLabel
+	}
+
+	sendNudges(api, db, cfg, []string{targetID}, cfg.ReportChannelID)
+	if targetID == cmd.UserID {
+		postEphemeral(api, cmd, "Sent a test nudge to your DM.")
+		log.Printf("test nudge sent user=%s target=self", cmd.UserID)
+		return
+	}
+
+	postEphemeral(api, cmd, fmt.Sprintf("Sent a test nudge to %s.", targetLabel))
+	log.Printf("test nudge sent user=%s target=%s", cmd.UserID, targetID)
 }
 
 // deriveBossReportFromTeamReport attempts to derive a boss report from an existing team report file.
@@ -1946,6 +1985,7 @@ func handleHelp(api *slack.Client, cfg Config, cmd slack.SlashCommand) {
 		">(in progress)```",
 		"",
 		"`/list` — List this week's items.",
+		"`/nudge` — Send yourself a test nudge DM.",
 		"`/help` — Show this help.",
 	}
 
@@ -1958,6 +1998,7 @@ func handleHelp(api *slack.Client, cfg Config, cmd slack.SlashCommand) {
 			"`/generate-report [team|boss] [private]` — Generate weekly report (channel by default).",
 			"`/gen` — Alias of `/generate-report`.",
 			"`/check` — List missing members with inline nudge buttons.",
+			"`/nudge <member>` — Send a test nudge DM to one member.",
 			"`/retrospect` — Analyze recent corrections and suggest improvements.",
 			"`/stats` — Show classification accuracy dashboard.",
 		)
@@ -1968,6 +2009,49 @@ func handleHelp(api *slack.Client, cfg Config, cmd slack.SlashCommand) {
 
 func isManagerUser(_ *slack.Client, cfg Config, userID string) (bool, error) {
 	return cfg.IsManagerID(userID), nil
+}
+
+func resolveNudgeTarget(api *slack.Client, cfg Config, input string) (string, string, error) {
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return "", "", fmt.Errorf("empty target")
+	}
+
+	if isLikelySlackID(input) {
+		if user, err := api.GetUserInfo(input); err == nil {
+			label := strings.TrimSpace(user.Profile.DisplayName)
+			if label == "" {
+				label = strings.TrimSpace(user.RealName)
+			}
+			if label == "" {
+				label = fmt.Sprintf("<@%s>", input)
+			}
+			return input, label, nil
+		}
+		return input, fmt.Sprintf("<@%s>", input), nil
+	}
+
+	if member, ok := resolveDelegatedAuthorName(input, cfg.TeamMembers); ok {
+		ids, unresolved, err := resolveUserIDs(api, []string{member})
+		if err == nil && len(ids) == 1 && len(unresolved) == 0 {
+			return ids[0], member, nil
+		}
+	}
+
+	ids, unresolved, err := resolveUserIDs(api, []string{input})
+	if err != nil && len(ids) == 0 {
+		return "", "", err
+	}
+	if len(ids) == 1 {
+		return ids[0], input, nil
+	}
+	if len(ids) > 1 {
+		return "", "", fmt.Errorf("resolved to multiple Slack users")
+	}
+	if len(unresolved) > 0 {
+		return "", "", fmt.Errorf("no matching Slack user found")
+	}
+	return "", "", fmt.Errorf("no matching Slack user found")
 }
 
 func resolveDelegatedAuthorName(input string, teamMembers []string) (string, bool) {

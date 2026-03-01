@@ -20,6 +20,11 @@ type nudgeUpdateRecorder struct {
 	ephemeralCalls int
 }
 
+func nudgeTestReportedAt() time.Time {
+	monday, _ := ReportWeekRange(Config{Location: time.UTC, MondayCutoffTime: "12:00"}, time.Now().UTC())
+	return monday.Add(48 * time.Hour).Truncate(time.Second)
+}
+
 type mockSlackRoundTripper func(*http.Request) (*http.Response, error)
 
 func (fn mockSlackRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -114,7 +119,7 @@ func mockSlackJSONResponse(req *http.Request, payload any) (*http.Response, erro
 
 func TestHandleBlockActions_NudgeDoneUpdatesStatusAndRefreshesMessage(t *testing.T) {
 	db := newTestDB(t)
-	now := time.Now().UTC().Truncate(time.Second)
+	now := nudgeTestReportedAt()
 	if err := InsertWorkItem(db, WorkItem{
 		Description: "Close stale deployment work",
 		Author:      "Pat",
@@ -162,7 +167,7 @@ func TestHandleBlockActions_NudgeDoneUpdatesStatusAndRefreshesMessage(t *testing
 
 func TestHandleBlockActions_NudgeMoreUpdatesStatus(t *testing.T) {
 	db := newTestDB(t)
-	now := time.Now().UTC().Truncate(time.Second)
+	now := nudgeTestReportedAt()
 	if err := InsertWorkItem(db, WorkItem{
 		Description: "Validate build pipeline",
 		Author:      "Pat",
@@ -215,7 +220,7 @@ func TestHandleBlockActions_NudgeMoreUpdatesStatus(t *testing.T) {
 
 func TestHandleBlockActions_NudgePageNextRefreshesWithoutMutation(t *testing.T) {
 	db := newTestDB(t)
-	now := time.Now().UTC().Truncate(time.Second)
+	now := nudgeTestReportedAt()
 	for i := 0; i < 11; i++ {
 		if err := InsertWorkItem(db, WorkItem{
 			Description: fmt.Sprintf("Paginated active item %02d", i+1),
@@ -268,7 +273,7 @@ func TestHandleBlockActions_NudgePageNextRefreshesWithoutMutation(t *testing.T) 
 
 func TestHandleBlockActions_NudgeDoneClampsPageAfterLastItemRemoved(t *testing.T) {
 	db := newTestDB(t)
-	now := time.Now().UTC().Truncate(time.Second)
+	now := nudgeTestReportedAt()
 	for i := 0; i < 11; i++ {
 		if err := InsertWorkItem(db, WorkItem{
 			Description: fmt.Sprintf("Paginated active item %02d", i+1),
@@ -319,7 +324,7 @@ func TestHandleBlockActions_NudgeDoneClampsPageAfterLastItemRemoved(t *testing.T
 
 func TestHandleBlockActions_NudgeUnauthorizedUserCannotUpdate(t *testing.T) {
 	db := newTestDB(t)
-	now := time.Now().UTC().Truncate(time.Second)
+	now := nudgeTestReportedAt()
 	if err := InsertWorkItem(db, WorkItem{
 		Description: "Protected item",
 		Author:      "Pat",
