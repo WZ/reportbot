@@ -1,8 +1,10 @@
 package nudge
 
 import (
+	"database/sql"
 	"reportbot/internal/config"
 	"reportbot/internal/domain"
+	"reportbot/internal/storage/sqlite"
 	"strings"
 	"time"
 
@@ -10,9 +12,14 @@ import (
 )
 
 type Config = config.Config
+type WorkItem = domain.WorkItem
 
 func ReportWeekRange(cfg Config, now time.Time) (time.Time, time.Time) {
 	return domain.ReportWeekRange(cfg, now)
+}
+
+func GetItemsByDateRange(db *sql.DB, from, to time.Time) ([]WorkItem, error) {
+	return sqlite.GetItemsByDateRange(db, from, to)
 }
 
 func resolveUserIDs(api *slack.Client, identifiers []string) ([]string, []string, error) {

@@ -9,6 +9,8 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -64,6 +66,8 @@ const defaultAnthropicModel = "claude-sonnet-4-5-20250929"
 const defaultOpenAIModel = "gpt-4o-mini"
 const maxTemplateGuidanceChars = 8000
 const defaultLLMMaxConcurrentBatches = 4
+
+var confidenceFieldRe = regexp.MustCompile(`("confidence"\s*:\s*)([^,}\]]+)`)
 
 func llmBatchConcurrencyLimit(totalBatches int) int {
 	if totalBatches <= 0 {
@@ -295,7 +299,7 @@ Also:
 - choose normalized_status from: done, in testing, in progress, other
 - extract ticket IDs if present (e.g. [1247202] or bare ticket numbers)
 - if this item is the same underlying work as an existing item, set duplicate_of to that existing key (Kxx); otherwise empty string
-- set confidence between 0 and 1.
+- set confidence between 0 and 1, using digits only (example: 0.91). Never spell out numbers.
 %s%s
 
 Respond with JSON only (no markdown):
@@ -362,7 +366,14 @@ func parseSectionClassifiedResponse(responseText string) (map[int64]LLMSectionDe
 
 	var classified []sectionClassifiedItem
 	if err := json.Unmarshal([]byte(responseText), &classified); err != nil {
-		return nil, fmt.Errorf("parsing LLM section response: %w (response: %s)", err, responseText)
+		repaired := repairSectionClassifiedResponse(responseText)
+		if repaired == responseText {
+			return nil, fmt.Errorf("parsing LLM section response: %w (response: %s)", err, responseText)
+		}
+		if repairErr := json.Unmarshal([]byte(repaired), &classified); repairErr != nil {
+			return nil, fmt.Errorf("parsing LLM section response: %w (response: %s)", err, responseText)
+		}
+		log.Printf("llm section response repaired before parse")
 	}
 
 	decisions := make(map[int64]LLMSectionDecision)
@@ -422,6 +433,92 @@ func parseTicketIDsField(raw json.RawMessage) string {
 	}
 
 	return ""
+}
+
+func repairSectionClassifiedResponse(responseText string) string {
+	return confidenceFieldRe.ReplaceAllStringFunc(responseText, func(match string) string {
+		parts := confidenceFieldRe.FindStringSubmatch(match)
+		if len(parts) != 3 {
+			return match
+		}
+		return parts[1] + normalizeConfidenceLiteral(parts[2])
+	})
+}
+
+func normalizeConfidenceLiteral(raw string) string {
+	text := strings.TrimSpace(strings.Trim(raw, `"`))
+	if text == "" {
+		return "0"
+	}
+	if parsed, ok := parseLooseConfidence(text); ok {
+		return strconv.FormatFloat(parsed, 'f', -1, 64)
+	}
+	return "0"
+}
+
+func parseLooseConfidence(raw string) (float64, bool) {
+	text := strings.TrimSpace(raw)
+	if text == "" {
+		return 0, false
+	}
+	if parsed, err := strconv.ParseFloat(text, 64); err == nil {
+		return clampConfidence(parsed), true
+	}
+
+	compact := strings.ReplaceAll(strings.ToLower(text), " ", "")
+	if parsed, err := strconv.ParseFloat(compact, 64); err == nil {
+		return clampConfidence(parsed), true
+	}
+
+	if strings.HasPrefix(compact, "0.") {
+		if digit, ok := digitWord(compact[2:]); ok {
+			return float64(digit) / 10, true
+		}
+	}
+	if compact == "zero" {
+		return 0, true
+	}
+	if compact == "one" {
+		return 1, true
+	}
+	return 0, false
+}
+
+func digitWord(s string) (int, bool) {
+	switch s {
+	case "zero":
+		return 0, true
+	case "one":
+		return 1, true
+	case "two":
+		return 2, true
+	case "three":
+		return 3, true
+	case "four":
+		return 4, true
+	case "five":
+		return 5, true
+	case "six":
+		return 6, true
+	case "seven":
+		return 7, true
+	case "eight":
+		return 8, true
+	case "nine":
+		return 9, true
+	default:
+		return 0, false
+	}
+}
+
+func clampConfidence(v float64) float64 {
+	if v < 0 {
+		return 0
+	}
+	if v > 1 {
+		return 1
+	}
+	return v
 }
 
 func loadGlossaryIfConfigured(cfg Config) (*LLMGlossary, error) {

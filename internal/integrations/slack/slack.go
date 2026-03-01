@@ -1083,6 +1083,15 @@ func handleBlockActions(api *slack.Client, db *sql.DB, cfg Config, cb slack.Inte
 	case actionNudgeAll:
 		openNudgeConfirmModal(api, cfg, cb.TriggerID, channelID, act.Value)
 		return
+	case actionNudgeDone:
+		handleNudgeDoneAction(api, db, cfg, cb, act)
+		return
+	case actionNudgeMore:
+		handleNudgeMoreAction(api, db, cfg, cb, act)
+		return
+	case actionNudgePagePrev, actionNudgePageNext:
+		handleNudgePageAction(api, db, cfg, cb, act)
+		return
 	case actionRetroApply:
 		handleRetroApply(api, db, cfg, cb, act)
 		return
@@ -1136,7 +1145,7 @@ func handleBlockActions(api *slack.Client, db *sql.DB, cfg Config, cb slack.Inte
 
 func handleViewSubmission(api *slack.Client, db *sql.DB, cfg Config, cb slack.InteractionCallback) {
 	if cb.View.CallbackID == modalNudgeConfirmCallback {
-		handleNudgeConfirm(api, cfg, cb)
+		handleNudgeConfirm(api, db, cfg, cb)
 		return
 	}
 
@@ -1583,7 +1592,7 @@ func openNudgeConfirmModal(api *slack.Client, cfg Config, triggerID, channelID, 
 	}
 }
 
-func handleNudgeConfirm(api *slack.Client, cfg Config, cb slack.InteractionCallback) {
+func handleNudgeConfirm(api *slack.Client, db *sql.DB, cfg Config, cb slack.InteractionCallback) {
 	userID := cb.User.ID
 	if !cfg.IsManagerID(userID) {
 		log.Printf("nudge confirm denied user=%s (not manager)", userID)
@@ -1615,9 +1624,192 @@ func handleNudgeConfirm(api *slack.Client, cfg Config, cb slack.InteractionCallb
 		return
 	}
 
-	sendNudges(api, cfg, targetIDs, cfg.ReportChannelID)
+	sendNudges(api, db, cfg, targetIDs, cfg.ReportChannelID)
 	postEphemeralTo(api, channelID, userID, fmt.Sprintf("Sent nudge to %d member(s).", len(targetIDs)))
 	log.Printf("nudge sent from /check user=%s count=%d", userID, len(targetIDs))
+}
+
+func handleNudgeDoneAction(api *slack.Client, db *sql.DB, cfg Config, cb slack.InteractionCallback, act *slack.BlockAction) {
+	targetUserID, itemID, page, ok := parseNudgeDonePayload(act.Value)
+	if !ok {
+		log.Printf("nudge done invalid payload=%q", act.Value)
+		return
+	}
+	if !authorizeNudgeAction(api, cb, targetUserID) {
+		return
+	}
+	if !canActOnNudgeItem(api, db, cfg, itemID, targetUserID) {
+		log.Printf("nudge done denied item=%d target=%s", itemID, targetUserID)
+		return
+	}
+	if err := UpdateWorkItemStatus(db, itemID, "done"); err != nil {
+		log.Printf("nudge done update error item=%d: %v", itemID, err)
+		return
+	}
+	refreshNudgeMessage(api, db, cfg, cb, targetUserID, page, true)
+}
+
+func handleNudgeMoreAction(api *slack.Client, db *sql.DB, cfg Config, cb slack.InteractionCallback, act *slack.BlockAction) {
+	val := strings.TrimSpace(act.Value)
+	if strings.TrimSpace(act.SelectedOption.Value) != "" {
+		val = strings.TrimSpace(act.SelectedOption.Value)
+	}
+	targetUserID, itemID, status, page, ok := parseNudgeStatusPayload(val)
+	if !ok {
+		log.Printf("nudge more invalid payload=%q", val)
+		return
+	}
+	if !authorizeNudgeAction(api, cb, targetUserID) {
+		return
+	}
+	if !canActOnNudgeItem(api, db, cfg, itemID, targetUserID) {
+		log.Printf("nudge status denied item=%d target=%s", itemID, targetUserID)
+		return
+	}
+	if err := UpdateWorkItemStatus(db, itemID, status); err != nil {
+		log.Printf("nudge status update error item=%d status=%q: %v", itemID, status, err)
+		return
+	}
+	refreshNudgeMessage(api, db, cfg, cb, targetUserID, page, true)
+}
+
+func handleNudgePageAction(api *slack.Client, db *sql.DB, cfg Config, cb slack.InteractionCallback, act *slack.BlockAction) {
+	targetUserID, page, ok := parseNudgePagePayload(act.Value)
+	if !ok {
+		log.Printf("nudge page invalid payload=%q", act.Value)
+		return
+	}
+	if !authorizeNudgeAction(api, cb, targetUserID) {
+		return
+	}
+	refreshNudgeMessage(api, db, cfg, cb, targetUserID, page, false)
+}
+
+func authorizeNudgeAction(api *slack.Client, cb slack.InteractionCallback, targetUserID string) bool {
+	if strings.TrimSpace(cb.User.ID) != strings.TrimSpace(targetUserID) {
+		channelID := nudgeActionChannelID(cb)
+		if channelID != "" {
+			postEphemeralTo(api, channelID, cb.User.ID, "This nudge action is only available to the message recipient.")
+		}
+		log.Printf("nudge action denied user=%s target=%s", cb.User.ID, targetUserID)
+		return false
+	}
+	return true
+}
+
+func canActOnNudgeItem(api *slack.Client, db *sql.DB, cfg Config, itemID int64, targetUserID string) bool {
+	item, err := GetWorkItemByID(db, itemID)
+	if err != nil {
+		return false
+	}
+	monday, nextMonday := ReportWeekRange(cfg, time.Now().In(cfg.Location))
+	if !itemInRange(item, monday, nextMonday) {
+		return false
+	}
+	if strings.TrimSpace(item.AuthorID) != "" {
+		return strings.EqualFold(strings.TrimSpace(item.AuthorID), strings.TrimSpace(targetUserID))
+	}
+
+	user, err := api.GetUserInfo(targetUserID)
+	if err != nil {
+		return false
+	}
+	candidates := []string{user.Profile.DisplayName, user.RealName, user.Name}
+	for _, candidate := range candidates {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(item.Author), candidate) || nameMatches(item.Author, candidate) || nameMatches(candidate, item.Author) {
+			return true
+		}
+	}
+	return false
+}
+
+func refreshNudgeMessage(api *slack.Client, db *sql.DB, cfg Config, cb slack.InteractionCallback, targetUserID string, page int, updated bool) {
+	channelID := nudgeActionChannelID(cb)
+	messageTS := strings.TrimSpace(cb.Container.MessageTs)
+	if messageTS == "" {
+		messageTS = strings.TrimSpace(cb.MessageTs)
+	}
+	if channelID == "" || messageTS == "" {
+		log.Printf("nudge refresh missing channel/message ts channel=%q ts=%q", channelID, messageTS)
+		return
+	}
+
+	rendered, err := RenderNudgeForUser(api, db, cfg, targetUserID, cfg.ReportChannelID, time.Now().In(cfg.Location), page, updated)
+	if err != nil {
+		log.Printf("nudge refresh render error user=%s: %v", targetUserID, err)
+		return
+	}
+	_, _, _, err = api.UpdateMessage(
+		channelID,
+		messageTS,
+		slack.MsgOptionText(rendered.Text, false),
+		slack.MsgOptionBlocks(rendered.Blocks...),
+	)
+	if err != nil {
+		log.Printf("nudge refresh update error channel=%s ts=%s: %v", channelID, messageTS, err)
+	}
+}
+
+func nudgeActionChannelID(cb slack.InteractionCallback) string {
+	channelID := strings.TrimSpace(cb.Channel.ID)
+	if channelID == "" {
+		channelID = strings.TrimSpace(cb.Container.ChannelID)
+	}
+	return channelID
+}
+
+func parseNudgeDonePayload(raw string) (targetUserID string, itemID int64, page int, ok bool) {
+	parts := strings.Split(strings.TrimSpace(raw), "|")
+	if len(parts) != 4 || parts[0] != "done" {
+		return "", 0, 0, false
+	}
+	itemID, err := strconv.ParseInt(parts[2], 10, 64)
+	if err != nil {
+		return "", 0, 0, false
+	}
+	page, err = strconv.Atoi(parts[3])
+	if err != nil {
+		return "", 0, 0, false
+	}
+	return strings.TrimSpace(parts[1]), itemID, page, true
+}
+
+func parseNudgeStatusPayload(raw string) (targetUserID string, itemID int64, status string, page int, ok bool) {
+	parts := strings.Split(strings.TrimSpace(raw), "|")
+	if len(parts) != 5 || parts[0] != "status" {
+		return "", 0, "", 0, false
+	}
+	itemID, err := strconv.ParseInt(parts[2], 10, 64)
+	if err != nil {
+		return "", 0, "", 0, false
+	}
+	page, err = strconv.Atoi(parts[4])
+	if err != nil {
+		return "", 0, "", 0, false
+	}
+	status = strings.TrimSpace(parts[3])
+	switch status {
+	case "in testing", "in progress":
+	default:
+		return "", 0, "", 0, false
+	}
+	return strings.TrimSpace(parts[1]), itemID, status, page, true
+}
+
+func parseNudgePagePayload(raw string) (targetUserID string, page int, ok bool) {
+	parts := strings.Split(strings.TrimSpace(raw), "|")
+	if len(parts) != 3 || parts[0] != "page" {
+		return "", 0, false
+	}
+	page, err := strconv.Atoi(parts[2])
+	if err != nil {
+		return "", 0, false
+	}
+	return strings.TrimSpace(parts[1]), page, true
 }
 
 func handleReportStats(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashCommand) {

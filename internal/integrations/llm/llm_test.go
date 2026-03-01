@@ -129,6 +129,47 @@ func TestParseSectionClassifiedResponse_AcceptsArrayTicketIDs(t *testing.T) {
 	}
 }
 
+func TestParseSectionClassifiedResponse_RepairsMalformedConfidence(t *testing.T) {
+	response := `[
+		{"id": 1, "section_id": "S0_0", "normalized_status": "done", "ticket_ids": "", "duplicate_of": "", "confidence": 0. Nine},
+		{"id": 2, "section_id": "S0_1", "normalized_status": "in progress", "ticket_ids": "", "duplicate_of": "", "confidence": 0. seven},
+		{"id": 3, "section_id": "S0_2", "normalized_status": "done", "ticket_ids": "", "duplicate_of": "", "confidence": nope}
+	]`
+
+	got, err := parseSectionClassifiedResponse(response)
+	if err != nil {
+		t.Fatalf("parseSectionClassifiedResponse should repair malformed confidence: %v", err)
+	}
+	if got[1].Confidence != 0.9 {
+		t.Fatalf("expected repaired confidence 0.9, got %v", got[1].Confidence)
+	}
+	if got[2].Confidence != 0.7 {
+		t.Fatalf("expected repaired confidence 0.7, got %v", got[2].Confidence)
+	}
+	if got[3].Confidence != 0 {
+		t.Fatalf("expected fallback confidence 0, got %v", got[3].Confidence)
+	}
+}
+
+func TestNormalizeConfidenceLiteral(t *testing.T) {
+	tests := []struct {
+		raw  string
+		want string
+	}{
+		{raw: "0.91", want: "0.91"},
+		{raw: `"0.82"`, want: "0.82"},
+		{raw: "0. Nine", want: "0.9"},
+		{raw: "0. seven", want: "0.7"},
+		{raw: "garbage", want: "0"},
+	}
+
+	for _, tt := range tests {
+		if got := normalizeConfidenceLiteral(tt.raw); got != tt.want {
+			t.Fatalf("normalizeConfidenceLiteral(%q) = %q, want %q", tt.raw, got, tt.want)
+		}
+	}
+}
+
 func TestParseTicketIDsField_MixedArray(t *testing.T) {
 	raw := json.RawMessage(`[ "123", 456, "", " 789 " ]`)
 	got := parseTicketIDsField(raw)
