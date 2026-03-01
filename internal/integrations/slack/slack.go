@@ -1708,6 +1708,7 @@ func authorizeNudgeAction(api *slack.Client, cb slack.InteractionCallback, targe
 func canActOnNudgeItem(api *slack.Client, db *sql.DB, cfg Config, itemID int64, targetUserID string) bool {
 	item, err := GetWorkItemByID(db, itemID)
 	if err != nil {
+		log.Printf("canActOnNudgeItem: failed to get work item id=%d: %v", itemID, err)
 		return false
 	}
 	monday, nextMonday := ReportWeekRange(cfg, time.Now().In(cfg.Location))

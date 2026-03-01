@@ -28,7 +28,6 @@ type RenderedNudge struct {
 }
 
 type renderedNudgeState struct {
-	active     []WorkItem
 	page       int
 	pageStart  int
 	pageEnd    int
@@ -274,7 +273,6 @@ func buildNudgeState(items []WorkItem, userID string, user *slack.User, requeste
 	page := clampPage(requestedPage, totalPages)
 	start, end := pageBounds(len(active), page)
 	return active, renderedNudgeState{
-		active:     active,
 		page:       page,
 		pageStart:  start,
 		pageEnd:    end,

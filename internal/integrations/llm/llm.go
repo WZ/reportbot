@@ -371,7 +371,7 @@ func parseSectionClassifiedResponse(responseText string) (map[int64]LLMSectionDe
 			return nil, fmt.Errorf("parsing LLM section response: %w (response: %s)", err, responseText)
 		}
 		if repairErr := json.Unmarshal([]byte(repaired), &classified); repairErr != nil {
-			return nil, fmt.Errorf("parsing LLM section response: %w (response: %s)", err, responseText)
+			return nil, fmt.Errorf("parsing LLM section response after repair: %w (original error: %v, response: %s)", repairErr, err, repaired)
 		}
 		log.Printf("llm section response repaired before parse")
 	}

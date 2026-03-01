@@ -173,7 +173,13 @@ func TestHandleBlockActions_NudgeMoreUpdatesStatus(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("insert work item: %v", err)
 	}
-	items, _ := GetItemsByDateRange(db, now.Add(-time.Hour), now.Add(time.Hour))
+	items, err := GetItemsByDateRange(db, now.Add(-time.Hour), now.Add(time.Hour))
+	if err != nil {
+		t.Fatalf("GetItemsByDateRange failed: %v", err)
+	}
+	if len(items) == 0 {
+		t.Fatal("expected at least one work item in date range")
+	}
 
 	rec := &nudgeUpdateRecorder{}
 	api := newMockSlackAPIForNudgeInteractions(t, rec)
@@ -222,7 +228,13 @@ func TestHandleBlockActions_NudgePageNextRefreshesWithoutMutation(t *testing.T) 
 			t.Fatalf("insert work item %d: %v", i, err)
 		}
 	}
-	items, _ := GetItemsByDateRange(db, now.Add(-time.Hour), now.Add(2*time.Hour))
+	items, err := GetItemsByDateRange(db, now.Add(-time.Hour), now.Add(2*time.Hour))
+	if err != nil {
+		t.Fatalf("GetItemsByDateRange failed: %v", err)
+	}
+	if len(items) == 0 {
+		t.Fatal("expected at least one work item in date range")
+	}
 
 	rec := &nudgeUpdateRecorder{}
 	api := newMockSlackAPIForNudgeInteractions(t, rec)
@@ -318,7 +330,13 @@ func TestHandleBlockActions_NudgeUnauthorizedUserCannotUpdate(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("insert work item: %v", err)
 	}
-	items, _ := GetItemsByDateRange(db, now.Add(-time.Hour), now.Add(time.Hour))
+	items, err := GetItemsByDateRange(db, now.Add(-time.Hour), now.Add(time.Hour))
+	if err != nil {
+		t.Fatalf("GetItemsByDateRange failed: %v", err)
+	}
+	if len(items) == 0 {
+		t.Fatal("expected at least one work item in date range")
+	}
 
 	rec := &nudgeUpdateRecorder{}
 	api := newMockSlackAPIForNudgeInteractions(t, rec)
