@@ -201,13 +201,10 @@ func renderInteractiveNudge(reminder, userID string, active []WorkItem, state re
 		lineNumber := state.pageStart + idx + 1
 		itemText := formatNudgeItem(lineNumber, item)
 		blocks = append(blocks,
-			slack.NewSectionBlock(
-				slack.NewTextBlockObject(slack.MarkdownType, itemText, false, false),
-				nil,
-				slack.NewAccessory(buildDoneButton(userID, item.ID, state.page)),
-			),
+			slack.NewSectionBlock(slack.NewTextBlockObject(slack.MarkdownType, itemText, false, false), nil, nil),
 			slack.NewActionBlock(
 				fmt.Sprintf("nudge_actions_%d", item.ID),
+				buildDoneButton(userID, item.ID, state.page),
 				buildMoreMenu(userID, item.ID, state.page),
 			),
 		)
@@ -412,9 +409,9 @@ func renderIntroText(count int, updated bool) string {
 		return "Updated. These items are still marked `in progress`:"
 	}
 	if count == 1 {
-		return "This item is still marked `in progress`. Use *Mark as Done* or the *More* menu to update it if its status has changed:"
+		return "This item is still marked `in progress`. Please update the status if it has changed."
 	}
-	return "These items are still marked `in progress`. Use *Mark as Done* or the *More* menu to update any that changed:"
+	return "These items are still marked `in progress`. Please update the status if any have changed."
 }
 
 func buildGenericNudgeText(reportChannelID string, monday, nextMonday time.Time) string {
