@@ -139,6 +139,7 @@ func withMockGitHubAPI(t *testing.T) {
 
 func newMockSlackAPI(t *testing.T) (*slack.Client, *int) {
 	t.Helper()
+	resetUserCacheForTest(t)
 
 	postEphemeralCalls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -171,6 +172,7 @@ func newMockSlackAPI(t *testing.T) (*slack.Client, *int) {
 
 func newMockSlackAPIWithUsers(t *testing.T) *slack.Client {
 	t.Helper()
+	resetUserCacheForTest(t)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/api/")
@@ -214,6 +216,7 @@ func newMockSlackAPIWithUsers(t *testing.T) *slack.Client {
 
 func newMockSlackAPIWithManagerNotify(t *testing.T) (*slack.Client, *int, *string) {
 	t.Helper()
+	resetUserCacheForTest(t)
 
 	managerMsgCalls := 0
 	lastManagerMsg := ""

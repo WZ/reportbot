@@ -110,6 +110,7 @@ func TestResolveDelegatedAuthorName(t *testing.T) {
 }
 
 func TestResolveNudgeTarget(t *testing.T) {
+	resetUserCacheForTest(t)
 	api := slack.New(
 		"xoxb-test",
 		slack.OptionAPIURL("https://slack.test/api/"),

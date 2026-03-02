@@ -33,6 +33,7 @@ func (fn mockSlackRoundTripper) RoundTrip(req *http.Request) (*http.Response, er
 
 func newMockSlackAPIForNudgeInteractions(t *testing.T, rec *nudgeUpdateRecorder) *slack.Client {
 	t.Helper()
+	resetUserCacheForTest(t)
 	httpClient := &http.Client{
 		Transport: mockSlackRoundTripper(func(req *http.Request) (*http.Response, error) {
 			form, err := mockSlackRequestForm(req)
