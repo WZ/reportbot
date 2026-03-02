@@ -250,6 +250,21 @@ func TestFormatItemDescriptionForList(t *testing.T) {
 	}
 }
 
+func TestFormatListItemText_AddsLineNumber(t *testing.T) {
+	item := WorkItem{
+		Author:      "Alex Rivera",
+		Description: "Tune query timeout for widget pipeline",
+		Status:      "in progress",
+		TicketIDs:   "7003001",
+	}
+
+	got := formatListItemText(7, item, " [GitLab]", " _Support Cases_")
+	want := "7. *Alex Rivera*: [7003001] Tune query timeout for widget pipeline (in progress) [GitLab] _Support Cases_"
+	if got != want {
+		t.Fatalf("formatListItemText() = %q, want %q", got, want)
+	}
+}
+
 func TestMemberReportedThisWeek(t *testing.T) {
 	reportedIDs := map[string]bool{"U123": true}
 	reportedAuthors := []string{"Alex Rivera", "Jordan Patel"}

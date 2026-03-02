@@ -13,11 +13,12 @@ import (
 )
 
 const (
-	ActionDone     = "nudge_done"
-	ActionMore     = "nudge_more"
-	ActionPagePrev = "nudge_page_prev"
-	ActionPageNext = "nudge_page_next"
-	nudgePageSize  = 10
+	ActionDone        = "nudge_done"
+	ActionMore        = "nudge_more"
+	ActionPagePrev    = "nudge_page_prev"
+	ActionPageNext    = "nudge_page_next"
+	nudgePageSize     = 10
+	nudgeItemMaxRunes = 110
 )
 
 var parenPattern = regexp.MustCompile(`\([^)]*\)|（[^）]*）`)
@@ -196,17 +197,21 @@ func renderInteractiveNudge(reminder, userID string, active []WorkItem, state re
 
 	pageItems := active[state.pageStart:state.pageEnd]
 	textLines := []string{stripMarkdownFormatting(reminder), stripMarkdownFormatting(intro)}
-	for _, item := range pageItems {
-		itemText := formatNudgeItem(item)
+	for idx, item := range pageItems {
+		lineNumber := state.pageStart + idx + 1
+		itemText := formatNudgeItem(lineNumber, item)
 		blocks = append(blocks,
-			slack.NewSectionBlock(slack.NewTextBlockObject(slack.MarkdownType, itemText, false, false), nil, nil),
+			slack.NewSectionBlock(
+				slack.NewTextBlockObject(slack.MarkdownType, itemText, false, false),
+				nil,
+				slack.NewAccessory(buildDoneButton(userID, item.ID, state.page)),
+			),
 			slack.NewActionBlock(
 				fmt.Sprintf("nudge_actions_%d", item.ID),
-				buildDoneButton(userID, item.ID, state.page),
 				buildMoreMenu(userID, item.ID, state.page),
 			),
 		)
-		textLines = append(textLines, "- "+stripMarkdownFormatting(itemText))
+		textLines = append(textLines, stripMarkdownFormatting(itemText))
 	}
 
 	summary := fmt.Sprintf("Showing %d-%d of %d active items", state.pageStart+1, state.pageEnd, len(active))
@@ -425,14 +430,18 @@ func buildGenericNudgeText(reportChannelID string, monday, nextMonday time.Time)
 	)
 }
 
-func formatNudgeItem(item WorkItem) string {
+func formatNudgeItem(lineNumber int, item WorkItem) string {
 	description := strings.TrimSpace(item.Description)
 	tickets := canonicalTicketIDs(item.TicketIDs)
 	if tickets != "" {
 		description = stripLeadingTicketPrefixIfSame(description, tickets)
 		description = fmt.Sprintf("[%s] %s", tickets, description)
 	}
-	return fmt.Sprintf("%s _(current: %s)_", description, strings.TrimSpace(item.Status))
+	statusText := strings.TrimSpace(item.Status)
+	suffix := fmt.Sprintf(" _(current: %s)_", statusText)
+	prefix := fmt.Sprintf("%d. ", lineNumber)
+	description = truncateRunes(description, nudgeItemMaxRunes-runeLen(prefix)-runeLen(suffix))
+	return fmt.Sprintf("%s%s%s", prefix, description, suffix)
 }
 
 func canonicalTicketIDs(ticketIDs string) string {
@@ -478,6 +487,24 @@ func stripLeadingTicketPrefixIfSame(description, tickets string) string {
 func stripMarkdownFormatting(s string) string {
 	replacer := strings.NewReplacer("`", "", "*", "", "_", "")
 	return replacer.Replace(s)
+}
+
+func truncateRunes(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	if max == 1 {
+		return "…"
+	}
+	return string(runes[:max-1]) + "…"
+}
+
+func runeLen(s string) int {
+	return len([]rune(s))
 }
 
 func normalizeNameTokens(s string) []string {

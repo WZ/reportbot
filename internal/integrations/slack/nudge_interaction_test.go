@@ -137,7 +137,7 @@ func TestHandleBlockActions_NudgeDoneUpdatesStatusAndRefreshesMessage(t *testing
 
 	rec := &nudgeUpdateRecorder{}
 	api := newMockSlackAPIForNudgeInteractions(t, rec)
-	cfg := Config{Location: time.UTC}
+	cfg := Config{Location: time.UTC, MondayCutoffTime: "12:00"}
 	cb := slack.InteractionCallback{
 		User:      slack.User{ID: "U_MEMBER"},
 		Container: slack.Container{ChannelID: "D123", MessageTs: "123.45"},
@@ -188,7 +188,7 @@ func TestHandleBlockActions_NudgeMoreUpdatesStatus(t *testing.T) {
 
 	rec := &nudgeUpdateRecorder{}
 	api := newMockSlackAPIForNudgeInteractions(t, rec)
-	cfg := Config{Location: time.UTC}
+	cfg := Config{Location: time.UTC, MondayCutoffTime: "12:00"}
 	cb := slack.InteractionCallback{
 		User:      slack.User{ID: "U_MEMBER"},
 		Container: slack.Container{ChannelID: "D123", MessageTs: "123.45"},
@@ -243,7 +243,7 @@ func TestHandleBlockActions_NudgePageNextRefreshesWithoutMutation(t *testing.T) 
 
 	rec := &nudgeUpdateRecorder{}
 	api := newMockSlackAPIForNudgeInteractions(t, rec)
-	cfg := Config{Location: time.UTC}
+	cfg := Config{Location: time.UTC, MondayCutoffTime: "12:00"}
 	cb := slack.InteractionCallback{
 		User:      slack.User{ID: "U_MEMBER"},
 		Container: slack.Container{ChannelID: "D123", MessageTs: "123.45"},
@@ -293,7 +293,7 @@ func TestHandleBlockActions_NudgeDoneClampsPageAfterLastItemRemoved(t *testing.T
 
 	rec := &nudgeUpdateRecorder{}
 	api := newMockSlackAPIForNudgeInteractions(t, rec)
-	cfg := Config{Location: time.UTC}
+	cfg := Config{Location: time.UTC, MondayCutoffTime: "12:00"}
 	lastItem := items[len(items)-1]
 	cb := slack.InteractionCallback{
 		User:      slack.User{ID: "U_MEMBER"},
@@ -345,7 +345,7 @@ func TestHandleBlockActions_NudgeUnauthorizedUserCannotUpdate(t *testing.T) {
 
 	rec := &nudgeUpdateRecorder{}
 	api := newMockSlackAPIForNudgeInteractions(t, rec)
-	cfg := Config{Location: time.UTC}
+	cfg := Config{Location: time.UTC, MondayCutoffTime: "12:00"}
 	cb := slack.InteractionCallback{
 		User:      slack.User{ID: "U_OTHER"},
 		Container: slack.Container{ChannelID: "D123", MessageTs: "123.45"},

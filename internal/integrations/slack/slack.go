@@ -809,7 +809,8 @@ func renderListItems(api *slack.Client, db *sql.DB, cfg Config, channelID, userI
 
 	isManager, _ := isManagerUser(api, cfg, userID)
 	user, _ := api.GetUserInfo(userID)
-	for _, item := range items[start:end] {
+	for idx, item := range items[start:end] {
+		lineNumber := start + idx + 1
 		source := ""
 		switch item.Source {
 		case "gitlab":
@@ -821,9 +822,7 @@ func renderListItems(api *slack.Client, db *sql.DB, cfg Config, channelID, userI
 		if item.Category != "" {
 			category = fmt.Sprintf(" _%s_", item.Category)
 		}
-		description := formatItemDescriptionForList(item)
-		text := fmt.Sprintf("*%s*: %s (%s)%s%s",
-			item.Author, description, item.Status, source, category)
+		text := formatListItemText(lineNumber, item, source, category)
 		if canManageItem(item, isManager, user) {
 			editOpt := slack.NewOptionBlockObject(
 				fmt.Sprintf("edit:%d", item.ID),
@@ -1529,6 +1528,11 @@ func formatItemDescriptionForList(item WorkItem) string {
 		return description
 	}
 	return fmt.Sprintf("[%s] %s", tickets, description)
+}
+
+func formatListItemText(lineNumber int, item WorkItem, source, category string) string {
+	return fmt.Sprintf("%d. *%s*: %s (%s)%s%s",
+		lineNumber, item.Author, formatItemDescriptionForList(item), item.Status, source, category)
 }
 
 func leadingTicketPrefix(description string) (string, bool) {
