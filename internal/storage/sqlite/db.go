@@ -209,6 +209,16 @@ func UpdateWorkItemTextAndStatus(db *sql.DB, id int64, description, status strin
 	return err
 }
 
+func UpdateWorkItemStatus(db *sql.DB, id int64, status string) error {
+	_, err := db.Exec(
+		`UPDATE work_items
+		 SET status = ?
+		 WHERE id = ?`,
+		status, id,
+	)
+	return err
+}
+
 func DeleteWorkItemByID(db *sql.DB, id int64) error {
 	_, err := db.Exec(`DELETE FROM work_items WHERE id = ?`, id)
 	return err

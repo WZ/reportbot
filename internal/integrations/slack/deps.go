@@ -24,12 +24,20 @@ type ClassificationStats = domain.ClassificationStats
 type sectionOption = llm.SectionOption
 type BuildResult = report.BuildResult
 type LLMSectionDecision = llm.LLMSectionDecision
+type RenderedNudge = nudge.RenderedNudge
 
 type loadStatus int
 
 const (
 	templateFromFile loadStatus = iota
 	templateFirstEver
+)
+
+const (
+	actionNudgeDone     = nudge.ActionDone
+	actionNudgeMore     = nudge.ActionMore
+	actionNudgePagePrev = nudge.ActionPagePrev
+	actionNudgePageNext = nudge.ActionPageNext
 )
 
 func ReportWeekRange(cfg Config, now time.Time) (time.Time, time.Time) {
@@ -136,6 +144,10 @@ func UpdateWorkItemTextAndStatus(db *sql.DB, id int64, description, status strin
 	return sqlite.UpdateWorkItemTextAndStatus(db, id, description, status)
 }
 
+func UpdateWorkItemStatus(db *sql.DB, id int64, status string) error {
+	return sqlite.UpdateWorkItemStatus(db, id, status)
+}
+
 func UpdateWorkItemCategory(db *sql.DB, id int64, category string) error {
 	return sqlite.UpdateWorkItemCategory(db, id, category)
 }
@@ -180,8 +192,12 @@ func extractGlossaryPhrase(description string) string {
 	return llm.ExtractGlossaryPhrase(description)
 }
 
-func sendNudges(api *slack.Client, cfg Config, memberIDs []string, reportChannelID string) {
-	nudge.SendNudges(api, cfg, memberIDs, reportChannelID)
+func sendNudges(api *slack.Client, db *sql.DB, cfg Config, memberIDs []string, reportChannelID string) {
+	nudge.SendNudges(api, db, cfg, memberIDs, reportChannelID)
+}
+
+func RenderNudgeForUser(api *slack.Client, db *sql.DB, cfg Config, userID, reportChannelID string, now time.Time, page int, updated bool) (RenderedNudge, error) {
+	return nudge.RenderNudgeForUser(api, db, cfg, userID, reportChannelID, now, page, updated)
 }
 
 func normalizeTextToken(s string) string {

@@ -151,6 +151,9 @@ func TestWorkItemCRUDAndQueries(t *testing.T) {
 	if err := UpdateWorkItemTextAndStatus(db, updateID, "Implement feature A v2", "in testing"); err != nil {
 		t.Fatalf("UpdateWorkItemTextAndStatus failed: %v", err)
 	}
+	if err := UpdateWorkItemStatus(db, updateID, "done"); err != nil {
+		t.Fatalf("UpdateWorkItemStatus failed: %v", err)
+	}
 	if err := UpdateCategories(db, map[int64]string{updateID: "S0_0"}); err != nil {
 		t.Fatalf("UpdateCategories failed: %v", err)
 	}
@@ -168,7 +171,7 @@ func TestWorkItemCRUDAndQueries(t *testing.T) {
 	if updated.Description != "Implement feature A v2" {
 		t.Fatalf("unexpected updated description: %q", updated.Description)
 	}
-	if updated.Status != "in testing" {
+	if updated.Status != "done" {
 		t.Fatalf("unexpected updated status: %q", updated.Status)
 	}
 	if updated.TicketIDs != "123456" {

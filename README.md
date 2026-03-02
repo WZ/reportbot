@@ -109,6 +109,7 @@ See [docs/agentic-features-overview.md](docs/agentic-features-overview.md) for a
    | `/gen` | Alias of `/generate-report` |
    | `/list` | List this week's work items |
    | `/check` | List missing members with nudge buttons |
+   | `/nudge` | Send a test nudge DM (self by default; managers can target one member) |
    | `/retrospect` | Analyze corrections and suggest improvements |
    | `/stats` | View classification accuracy dashboard |
    | `/help` | Show help and usage |
@@ -375,6 +376,14 @@ Anyone can view this week's items:
 **Scheduled**: Every week on `nudge_day` (default Friday) at `nudge_time` (default 10:00 AM local), the bot DMs each user in `team_members` reminding them to report. To disable, leave `team_members` empty.
 
 **On-demand**: `/check` lists team members who haven't reported this week, with a "Nudge" button next to each member and a "Nudge All" button at the bottom. Clicking opens a confirmation before sending the DM.
+
+**Testing**:
+
+```text
+/nudge                 # Send a test nudge to your own DM
+/nudge Member Name     # Manager only: send a test nudge to one member
+/nudge U123ABC456      # Manager only: target a Slack user ID directly
+```
 
 On Monday before `monday_cutoff_time` (default `12:00`) in configured `timezone`, report commands use the previous calendar week.
 

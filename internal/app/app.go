@@ -45,7 +45,7 @@ func Main() {
 		slack.OptionAppLevelToken(cfg.SlackAppToken),
 	)
 
-	nudge.StartNudgeScheduler(cfg, api)
+	nudge.StartNudgeScheduler(cfg, db, api)
 	fetch.StartAutoFetchScheduler(cfg, db, api)
 
 	log.Println("Starting Engineering Report Bot...")

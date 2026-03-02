@@ -2,11 +2,14 @@ package slackbot
 
 import (
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/slack-go/slack"
 )
 
 func TestParseReportItemsSingleAndSharedStatus(t *testing.T) {
@@ -106,6 +109,71 @@ func TestResolveDelegatedAuthorName(t *testing.T) {
 	}
 }
 
+func TestResolveNudgeTarget(t *testing.T) {
+	resetUserCacheForTest(t)
+	api := slack.New(
+		"xoxb-test",
+		slack.OptionAPIURL("https://slack.test/api/"),
+		slack.OptionHTTPClient(&http.Client{
+			Transport: mockSlackRoundTripper(func(req *http.Request) (*http.Response, error) {
+				form, err := mockSlackRequestForm(req)
+				if err != nil {
+					return nil, err
+				}
+				switch strings.TrimPrefix(req.URL.Path, "/api/") {
+				case "users.info":
+					userID := form.Get("user")
+					return mockSlackJSONResponse(req, map[string]any{
+						"ok": true,
+						"user": map[string]any{
+							"id":        userID,
+							"name":      "pat",
+							"real_name": "Pat Example",
+							"profile": map[string]any{
+								"display_name": "Pat Example",
+							},
+						},
+					})
+				case "users.list":
+					return mockSlackJSONResponse(req, map[string]any{
+						"ok": true,
+						"members": []map[string]any{
+							{
+								"id":        "U0PAT1234",
+								"name":      "pat",
+								"real_name": "Pat Example",
+								"profile": map[string]any{
+									"display_name": "Pat Example",
+								},
+							},
+						},
+					})
+				default:
+					return mockSlackJSONResponse(req, map[string]any{"ok": true})
+				}
+			}),
+		}),
+	)
+
+	cfg := Config{TeamMembers: []string{"Pat Example"}}
+
+	id, label, err := resolveNudgeTarget(api, cfg, "Pat")
+	if err != nil {
+		t.Fatalf("resolveNudgeTarget by name failed: %v", err)
+	}
+	if id != "U0PAT1234" || label != "Pat Example" {
+		t.Fatalf("unexpected name resolution: id=%q label=%q", id, label)
+	}
+
+	id, label, err = resolveNudgeTarget(api, cfg, "U0PAT1234")
+	if err != nil {
+		t.Fatalf("resolveNudgeTarget by ID failed: %v", err)
+	}
+	if id != "U0PAT1234" || label != "Pat Example" {
+		t.Fatalf("unexpected ID resolution: id=%q label=%q", id, label)
+	}
+}
+
 func TestMapMRStatusAndReportedAt(t *testing.T) {
 	base := time.Date(2026, 2, 20, 10, 0, 0, 0, time.UTC)
 
@@ -180,6 +248,21 @@ func TestFormatItemDescriptionForList(t *testing.T) {
 				t.Fatalf("formatItemDescriptionForList() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestFormatListItemText_AddsLineNumber(t *testing.T) {
+	item := WorkItem{
+		Author:      "Alex Rivera",
+		Description: "Tune query timeout for widget pipeline",
+		Status:      "in progress",
+		TicketIDs:   "7003001",
+	}
+
+	got := formatListItemText(7, item, " [GitLab]", " _Support Cases_")
+	want := "7. *Alex Rivera*: [7003001] Tune query timeout for widget pipeline (in progress) [GitLab] _Support Cases_"
+	if got != want {
+		t.Fatalf("formatListItemText() = %q, want %q", got, want)
 	}
 }
 
