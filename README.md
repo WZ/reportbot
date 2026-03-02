@@ -13,7 +13,7 @@ Developers report completed work via slash commands. The bot also pulls merged/o
 - `/report` (or `/rpt`) — Developers report work items via Slack
 - `/fetch` — Pull merged and open GitLab MRs and/or GitHub PRs for the current calendar week
 - `/generate-report` (or `/gen`) — Generate a team markdown file (or boss `.eml` draft) and upload it to Slack
-- `/list` — View this week's items with inline edit/delete actions
+- `/list` — View your items for this week with inline edit/delete actions (`/list all` for the team view)
 - `/check` — Managers: list missing members with inline nudge buttons
 - `/retrospect` — Managers: analyze recent corrections and suggest glossary/guide improvements
 - `/stats` — Managers: view classification accuracy dashboard and trends
@@ -107,7 +107,7 @@ See [docs/agentic-features-overview.md](docs/agentic-features-overview.md) for a
    | `/fetch` | Fetch merged and open GitLab MRs and/or GitHub PRs for this week |
    | `/generate-report` | Generate the weekly report (`team`/`boss`, optional `private`) |
    | `/gen` | Alias of `/generate-report` |
-   | `/list` | List this week's work items |
+   | `/list` | List your work items for this week (`/list all` for the team view) |
    | `/check` | List missing members with nudge buttons |
    | `/nudge` | Send a test nudge DM (self by default; managers can target one member) |
    | `/retrospect` | Analyze corrections and suggest improvements |
@@ -359,10 +359,16 @@ Filename date suffix uses Friday of the reporting week, e.g. `TEAMX_20260220.md`
 
 ### Listing Items
 
-Anyone can view this week's items:
+By default, `/list` shows only the caller's items for the current reporting week:
 
 ```
 /list
+```
+
+Managers and members can use `/list all` to see the full team list:
+
+```
+/list all
 ```
 
 `/list` now includes inline actions:

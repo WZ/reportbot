@@ -22,6 +22,8 @@ var delegatedAuthorRegex = regexp.MustCompile(`^\{([^{}]+)\}\s*`)
 
 const (
 	listItemsPageSize     = 15
+	listScopeMine         = "mine"
+	listScopeAll          = "all"
 	actionDeleteItem      = "list_items_delete"
 	actionEditItemOpen    = "list_items_edit_open"
 	actionPagePrev        = "list_items_page_prev"
@@ -134,7 +136,7 @@ func handleMemberJoined(api *slack.Client, cfg Config, ev *slackevents.MemberJoi
 	intro := fmt.Sprintf("Welcome to %s! I'm ReportAgent — I help track work items and generate weekly reports.\n\n"+
 		"Here's how to get started:\n"+
 		"• `/report <description> (status)` — Report a work item (e.g. `/report Fix login bug (done)`)\n"+
-		"• `/list` — View this week's items\n"+
+		"• `/list` — View your items for this week (`/list all` for the team)\n"+
 		"• `/help` — See all available commands\n\n"+
 		"You can report multiple items at once with newlines, and set a shared status on the last line.",
 		teamName,
@@ -749,10 +751,16 @@ func formatTokenCount(tokens int64) string {
 }
 
 func handleListItems(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashCommand) {
-	renderListItems(api, db, cfg, cmd.ChannelID, cmd.UserID, 0)
+	scope, err := parseListScope(cmd.Text)
+	if err != nil {
+		postEphemeral(api, cmd, err.Error())
+		return
+	}
+	renderListItems(api, db, cfg, cmd.ChannelID, cmd.UserID, 0, scope)
 }
 
-func renderListItems(api *slack.Client, db *sql.DB, cfg Config, channelID, userID string, page int) {
+func renderListItems(api *slack.Client, db *sql.DB, cfg Config, channelID, userID string, page int, scope string) {
+	scope = normalizeListScope(scope)
 	monday, nextMonday := ReportWeekRange(cfg, time.Now().In(cfg.Location))
 	items, err := GetItemsByDateRange(db, monday, nextMonday)
 	if err != nil {
@@ -760,9 +768,26 @@ func renderListItems(api *slack.Client, db *sql.DB, cfg Config, channelID, userI
 		return
 	}
 
+	isManager, _ := isManagerUser(api, cfg, userID)
+	user, _ := api.GetUserInfo(userID)
+	if scope == listScopeMine {
+		filtered := make([]WorkItem, 0, len(items))
+		for _, item := range items {
+			if itemBelongsToViewer(item, user) {
+				filtered = append(filtered, item)
+			}
+		}
+		items = filtered
+	}
+
 	if len(items) == 0 {
-		postEphemeralTo(api, channelID, userID, fmt.Sprintf("No items for this week (%s - %s)",
-			monday.Format("Jan 2"), nextMonday.AddDate(0, 0, -1).Format("Jan 2")))
+		msg := fmt.Sprintf("No items for this week (%s - %s)",
+			monday.Format("Jan 2"), nextMonday.AddDate(0, 0, -1).Format("Jan 2"))
+		if scope == listScopeMine {
+			msg = fmt.Sprintf("You have no items for this week (%s - %s)",
+				monday.Format("Jan 2"), nextMonday.AddDate(0, 0, -1).Format("Jan 2"))
+		}
+		postEphemeralTo(api, channelID, userID, msg)
 		log.Printf("list-items empty")
 		return
 	}
@@ -795,10 +820,18 @@ func renderListItems(api *slack.Client, db *sql.DB, cfg Config, channelID, userI
 		end = len(items)
 	}
 
+	titlePrefix := "Items"
+	if scope == listScopeMine {
+		titlePrefix = "Your items"
+	} else if scope == listScopeAll {
+		titlePrefix = "Team items"
+	}
+
 	blocks := []slack.Block{
 		slack.NewHeaderBlock(
 			slack.NewTextBlockObject(slack.PlainTextType,
-				fmt.Sprintf("Items for %s - %s (%d total)",
+				fmt.Sprintf("%s for %s - %s (%d total)",
+					titlePrefix,
 					monday.Format("Jan 2"),
 					nextMonday.AddDate(0, 0, -1).Format("Jan 2"),
 					len(items)),
@@ -807,8 +840,6 @@ func renderListItems(api *slack.Client, db *sql.DB, cfg Config, channelID, userI
 		),
 	}
 
-	isManager, _ := isManagerUser(api, cfg, userID)
-	user, _ := api.GetUserInfo(userID)
 	for idx, item := range items[start:end] {
 		lineNumber := start + idx + 1
 		source := ""
@@ -825,12 +856,12 @@ func renderListItems(api *slack.Client, db *sql.DB, cfg Config, channelID, userI
 		text := formatListItemText(lineNumber, item, source, category)
 		if canManageItem(item, isManager, user) {
 			editOpt := slack.NewOptionBlockObject(
-				fmt.Sprintf("edit:%d", item.ID),
+				fmt.Sprintf("edit:%s:%d", scope, item.ID),
 				slack.NewTextBlockObject(slack.PlainTextType, "Edit", false, false),
 				nil,
 			)
 			deleteOpt := slack.NewOptionBlockObject(
-				fmt.Sprintf("delete:%d", item.ID),
+				fmt.Sprintf("delete:%s:%d", scope, item.ID),
 				slack.NewTextBlockObject(slack.PlainTextType, "Delete", false, false),
 				nil,
 			)
@@ -854,14 +885,14 @@ func renderListItems(api *slack.Client, db *sql.DB, cfg Config, channelID, userI
 		if page > 0 {
 			nav = append(nav, slack.NewButtonBlockElement(
 				actionPagePrev,
-				strconv.Itoa(page-1),
+				fmt.Sprintf("%s|%d", scope, page-1),
 				slack.NewTextBlockObject(slack.PlainTextType, "Prev", false, false),
 			))
 		}
 		if end < len(items) {
 			nav = append(nav, slack.NewButtonBlockElement(
 				actionPageNext,
-				strconv.Itoa(page+1),
+				fmt.Sprintf("%s|%d", scope, page+1),
 				slack.NewTextBlockObject(slack.PlainTextType, "Next", false, false),
 			))
 		}
@@ -1093,25 +1124,22 @@ func handleBlockActions(api *slack.Client, db *sql.DB, cfg Config, cb slack.Inte
 
 	switch act.ActionID {
 	case actionPagePrev, actionPageNext:
-		page, err := strconv.Atoi(strings.TrimSpace(act.Value))
-		if err != nil {
-			page = 0
-		}
-		renderListItems(api, db, cfg, channelID, userID, page)
+		scope, page := parseListPageValue(act.Value)
+		renderListItems(api, db, cfg, channelID, userID, page, scope)
 	case actionDeleteItem:
 		itemID, err := strconv.ParseInt(strings.TrimSpace(act.Value), 10, 64)
 		if err != nil {
 			postEphemeralTo(api, channelID, userID, "Invalid item id.")
 			return
 		}
-		deleteItemAction(api, db, cfg, channelID, userID, itemID)
+		deleteItemAction(api, db, cfg, channelID, userID, itemID, listScopeMine)
 	case actionEditItemOpen:
 		itemID, err := strconv.ParseInt(strings.TrimSpace(act.Value), 10, 64)
 		if err != nil {
 			postEphemeralTo(api, channelID, userID, "Invalid item id.")
 			return
 		}
-		openEditModal(api, db, cfg, cb.TriggerID, channelID, userID, itemID)
+		openEditModal(api, db, cfg, cb.TriggerID, channelID, userID, itemID, listScopeMine)
 	case actionUncertaintySelect:
 		handleUncertaintySelect(api, db, cfg, cb, act)
 		return
@@ -1121,7 +1149,7 @@ func handleBlockActions(api *slack.Client, db *sql.DB, cfg Config, cb slack.Inte
 			postEphemeralTo(api, channelID, userID, "Invalid item id.")
 			return
 		}
-		openEditModal(api, db, cfg, cb.TriggerID, channelID, userID, itemID)
+		openEditModal(api, db, cfg, cb.TriggerID, channelID, userID, itemID, listScopeMine)
 		return
 	case actionNudgeMember:
 		openNudgeConfirmModal(api, cfg, cb.TriggerID, channelID, act.Value)
@@ -1154,21 +1182,21 @@ func handleBlockActions(api *slack.Client, db *sql.DB, cfg Config, cb slack.Inte
 			val = strings.TrimSpace(act.Value)
 		}
 		if strings.HasPrefix(val, "edit:") {
-			itemID, err := strconv.ParseInt(strings.TrimPrefix(val, "edit:"), 10, 64)
-			if err != nil {
+			scope, itemID, ok := parseListRowAction(val, "edit")
+			if !ok {
 				postEphemeralTo(api, channelID, userID, "Invalid item id.")
 				return
 			}
-			openEditModal(api, db, cfg, cb.TriggerID, channelID, userID, itemID)
+			openEditModal(api, db, cfg, cb.TriggerID, channelID, userID, itemID, scope)
 			return
 		}
 		if strings.HasPrefix(val, "delete:") {
-			itemID, err := strconv.ParseInt(strings.TrimPrefix(val, "delete:"), 10, 64)
-			if err != nil {
+			scope, itemID, ok := parseListRowAction(val, "delete")
+			if !ok {
 				postEphemeralTo(api, channelID, userID, "Invalid item id.")
 				return
 			}
-			openDeleteModal(api, db, cfg, cb.TriggerID, channelID, userID, itemID)
+			openDeleteModal(api, db, cfg, cb.TriggerID, channelID, userID, itemID, scope)
 			return
 		}
 	}
@@ -1184,7 +1212,7 @@ func handleBlockActions(api *slack.Client, db *sql.DB, cfg Config, cb slack.Inte
 			postEphemeralTo(api, channelID, userID, "Invalid item id.")
 			return
 		}
-		openEditModal(api, db, cfg, cb.TriggerID, channelID, userID, itemID)
+		openEditModal(api, db, cfg, cb.TriggerID, channelID, userID, itemID, listScopeMine)
 		return
 	}
 }
@@ -1209,11 +1237,11 @@ func handleViewSubmission(api *slack.Client, db *sql.DB, cfg Config, cb slack.In
 		if channelID == "" {
 			channelID = cb.Channel.ID
 		}
-		itemID, err := strconv.ParseInt(strings.TrimPrefix(parts[0], modalMetaPrefix), 10, 64)
-		if err != nil {
+		scope, itemID, ok := parseListModalMeta(parts[0])
+		if !ok {
 			return
 		}
-		deleteItemAction(api, db, cfg, channelID, userID, itemID)
+		deleteItemAction(api, db, cfg, channelID, userID, itemID, scope)
 		return
 	}
 
@@ -1227,8 +1255,8 @@ func handleViewSubmission(api *slack.Client, db *sql.DB, cfg Config, cb slack.In
 		return
 	}
 	channelID := strings.TrimSpace(parts[1])
-	itemID, err := strconv.ParseInt(strings.TrimPrefix(parts[0], modalMetaPrefix), 10, 64)
-	if err != nil {
+	scope, itemID, ok := parseListModalMeta(parts[0])
+	if !ok {
 		return
 	}
 	if cb.View.State == nil {
@@ -1293,10 +1321,10 @@ func handleViewSubmission(api *slack.Client, db *sql.DB, cfg Config, cb slack.In
 	if channelID == "" {
 		channelID = cb.Channel.ID
 	}
-	renderListItems(api, db, cfg, channelID, userID, 0)
+	renderListItems(api, db, cfg, channelID, userID, 0, scope)
 }
 
-func deleteItemAction(api *slack.Client, db *sql.DB, cfg Config, channelID, userID string, itemID int64) {
+func deleteItemAction(api *slack.Client, db *sql.DB, cfg Config, channelID, userID string, itemID int64, scope string) {
 	item, err := GetWorkItemByID(db, itemID)
 	if err != nil {
 		postEphemeralTo(api, channelID, userID, "Item not found.")
@@ -1319,10 +1347,10 @@ func deleteItemAction(api *slack.Client, db *sql.DB, cfg Config, channelID, user
 		postEphemeralTo(api, channelID, userID, fmt.Sprintf("Delete failed: %v", err))
 		return
 	}
-	renderListItems(api, db, cfg, channelID, userID, 0)
+	renderListItems(api, db, cfg, channelID, userID, 0, scope)
 }
 
-func openEditModal(api *slack.Client, db *sql.DB, cfg Config, triggerID, channelID, userID string, itemID int64) {
+func openEditModal(api *slack.Client, db *sql.DB, cfg Config, triggerID, channelID, userID string, itemID int64, scope string) {
 	item, err := GetWorkItemByID(db, itemID)
 	if err != nil {
 		postEphemeralTo(api, channelID, userID, "Item not found.")
@@ -1460,7 +1488,7 @@ func openEditModal(api *slack.Client, db *sql.DB, cfg Config, triggerID, channel
 		Close:           slack.NewTextBlockObject(slack.PlainTextType, "Cancel", false, false),
 		Submit:          slack.NewTextBlockObject(slack.PlainTextType, "Save", false, false),
 		CallbackID:      modalEditCallbackID,
-		PrivateMetadata: fmt.Sprintf("%s%d|%s", modalMetaPrefix, itemID, channelID),
+		PrivateMetadata: fmt.Sprintf("%s%s:%d|%s", modalMetaPrefix, normalizeListScope(scope), itemID, channelID),
 		Blocks:          slack.Blocks{BlockSet: blocks},
 	}
 	if _, err := api.OpenView(triggerID, view); err != nil {
@@ -1471,7 +1499,7 @@ func openEditModal(api *slack.Client, db *sql.DB, cfg Config, triggerID, channel
 	}
 }
 
-func openDeleteModal(api *slack.Client, db *sql.DB, cfg Config, triggerID, channelID, userID string, itemID int64) {
+func openDeleteModal(api *slack.Client, db *sql.DB, cfg Config, triggerID, channelID, userID string, itemID int64, scope string) {
 	item, err := GetWorkItemByID(db, itemID)
 	if err != nil {
 		postEphemeralTo(api, channelID, userID, "Item not found.")
@@ -1495,7 +1523,7 @@ func openDeleteModal(api *slack.Client, db *sql.DB, cfg Config, triggerID, chann
 		Close:           slack.NewTextBlockObject(slack.PlainTextType, "Cancel", false, false),
 		Submit:          slack.NewTextBlockObject(slack.PlainTextType, "Delete", false, false),
 		CallbackID:      modalDeleteCallbackID,
-		PrivateMetadata: fmt.Sprintf("%s%d|%s", modalMetaPrefix, itemID, channelID),
+		PrivateMetadata: fmt.Sprintf("%s%s:%d|%s", modalMetaPrefix, normalizeListScope(scope), itemID, channelID),
 		Blocks: slack.Blocks{BlockSet: []slack.Block{
 			slack.NewSectionBlock(
 				slack.NewTextBlockObject(
@@ -1535,6 +1563,75 @@ func formatListItemText(lineNumber int, item WorkItem, source, category string) 
 		lineNumber, item.Author, formatItemDescriptionForList(item), item.Status, source, category)
 }
 
+func parseListScope(raw string) (string, error) {
+	text := strings.TrimSpace(strings.ToLower(raw))
+	switch text {
+	case "", listScopeMine:
+		return listScopeMine, nil
+	case listScopeAll:
+		return listScopeAll, nil
+	default:
+		return "", fmt.Errorf("Usage: `/list` or `/list all`")
+	}
+}
+
+func normalizeListScope(scope string) string {
+	if strings.EqualFold(strings.TrimSpace(scope), listScopeAll) {
+		return listScopeAll
+	}
+	return listScopeMine
+}
+
+func parseListPageValue(raw string) (string, int) {
+	parts := strings.Split(strings.TrimSpace(raw), "|")
+	if len(parts) == 2 {
+		page, err := strconv.Atoi(parts[1])
+		if err == nil {
+			return normalizeListScope(parts[0]), page
+		}
+	}
+	page, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil {
+		return listScopeMine, 0
+	}
+	return listScopeMine, page
+}
+
+func parseListRowAction(raw, expectedAction string) (string, int64, bool) {
+	parts := strings.Split(strings.TrimSpace(raw), ":")
+	if len(parts) == 3 && parts[0] == expectedAction {
+		itemID, err := strconv.ParseInt(parts[2], 10, 64)
+		if err == nil {
+			return normalizeListScope(parts[1]), itemID, true
+		}
+	}
+	if len(parts) == 2 && parts[0] == expectedAction {
+		itemID, err := strconv.ParseInt(parts[1], 10, 64)
+		if err == nil {
+			return listScopeMine, itemID, true
+		}
+	}
+	return "", 0, false
+}
+
+func parseListModalMeta(raw string) (string, int64, bool) {
+	meta := strings.TrimPrefix(strings.TrimSpace(raw), modalMetaPrefix)
+	if meta == "" {
+		return "", 0, false
+	}
+	if parts := strings.Split(meta, ":"); len(parts) == 2 {
+		itemID, err := strconv.ParseInt(parts[1], 10, 64)
+		if err == nil {
+			return normalizeListScope(parts[0]), itemID, true
+		}
+	}
+	itemID, err := strconv.ParseInt(meta, 10, 64)
+	if err != nil {
+		return "", 0, false
+	}
+	return listScopeMine, itemID, true
+}
+
 func leadingTicketPrefix(description string) (string, bool) {
 	description = strings.TrimSpace(description)
 	if !strings.HasPrefix(description, "[") {
@@ -1567,6 +1664,10 @@ func canManageItem(item WorkItem, isManager bool, user *slack.User) bool {
 	if isManager {
 		return true
 	}
+	return itemBelongsToViewer(item, user)
+}
+
+func itemBelongsToViewer(item WorkItem, user *slack.User) bool {
 	if user == nil {
 		return false
 	}
@@ -1989,7 +2090,7 @@ func handleHelp(api *slack.Client, cfg Config, cmd slack.SlashCommand) {
 		">Item B",
 		">(in progress)```",
 		"",
-		"`/list` — List this week's items.",
+		"`/list` — List your items for this week (`/list all` for the team).",
 		"`/nudge` — Send yourself a test nudge DM.",
 		"`/help` — Show this help.",
 	}
