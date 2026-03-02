@@ -40,6 +40,7 @@ type Config struct {
 	ReportTemplatePath string `yaml:"report_template_path"`
 	AnthropicAPIKey    string `yaml:"anthropic_api_key"`
 	OpenAIAPIKey       string `yaml:"openai_api_key"`
+	OpenAIBaseURL      string `yaml:"openai_base_url"`
 
 	DBPath                     string `yaml:"db_path"`
 	ReportOutputDir            string `yaml:"report_output_dir"`
@@ -101,6 +102,7 @@ func LoadConfig() Config {
 	envOverride(&cfg.ReportTemplatePath, "REPORT_TEMPLATE_PATH")
 	envOverride(&cfg.AnthropicAPIKey, "ANTHROPIC_API_KEY")
 	envOverride(&cfg.OpenAIAPIKey, "OPENAI_API_KEY")
+	envOverride(&cfg.OpenAIBaseURL, "OPENAI_BASE_URL")
 	envOverride(&cfg.DBPath, "DB_PATH")
 	envOverride(&cfg.ReportOutputDir, "REPORT_OUTPUT_DIR")
 	envOverride(&cfg.ReportChannelID, "REPORT_CHANNEL_ID")
@@ -145,6 +147,9 @@ func LoadConfig() Config {
 	}
 	if cfg.DBPath == "" {
 		cfg.DBPath = "./reportbot.db"
+	}
+	if cfg.OpenAIBaseURL == "" {
+		cfg.OpenAIBaseURL = "https://api.openai.com/v1"
 	}
 	if cfg.ReportOutputDir == "" {
 		cfg.ReportOutputDir = "./reports"
@@ -245,6 +250,9 @@ func LoadConfig() Config {
 	}
 	if cfg.ExternalHTTPTimeoutSeconds < 5 {
 		log.Fatalf("invalid external_http_timeout_seconds '%d': must be >= 5", cfg.ExternalHTTPTimeoutSeconds)
+	}
+	if cfg.OpenAIBaseURL != "" {
+		cfg.OpenAIBaseURL = strings.TrimRight(cfg.OpenAIBaseURL, "/")
 	}
 	if cfg.LLMGlossaryPath != "" {
 		if err := validateGlossaryPath(cfg.LLMGlossaryPath); err != nil {

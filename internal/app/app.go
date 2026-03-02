@@ -17,7 +17,7 @@ func Main() {
 	cfg := config.LoadConfig()
 	appliedHTTPTimeout := httpx.ConfigureExternalHTTPClient(cfg.ExternalHTTPTimeoutSeconds)
 	log.Printf(
-		"Config loaded. Team=%s Managers=%d TeamMembers=%d Timezone=%s LLMBatchSize=%d LLMConfidenceThreshold=%.2f LLMExampleCount=%d LLMExampleMaxChars=%d LLMGlossaryPath=%s ExternalHTTPTimeout=%s",
+		"Config loaded. Team=%s Managers=%d TeamMembers=%d Timezone=%s LLMBatchSize=%d LLMConfidenceThreshold=%.2f LLMExampleCount=%d LLMExampleMaxChars=%d LLMGlossaryPath=%s OpenAIBaseURL=%s ExternalHTTPTimeout=%s",
 		cfg.TeamName,
 		len(cfg.ManagerSlackIDs),
 		len(cfg.TeamMembers),
@@ -27,6 +27,7 @@ func Main() {
 		cfg.LLMExampleCount,
 		cfg.LLMExampleMaxLen,
 		cfg.LLMGlossaryPath,
+		cfg.OpenAIBaseURL,
 		appliedHTTPTimeout,
 	)
 

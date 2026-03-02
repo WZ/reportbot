@@ -37,6 +37,9 @@ llm_critic_enabled: false
 # LLM API keys (set the one that matches llm_provider)
 anthropic_api_key: "sk-ant-your-key"
 openai_api_key: ""
+# Optional base URL for OpenAI-compatible endpoints.
+# Leave default for api.openai.com, or point to a lab-hosted endpoint such as gpt-oss.
+openai_base_url: "https://api.openai.com/v1"
 
 # Data and output paths
 db_path: "./reportbot.db"

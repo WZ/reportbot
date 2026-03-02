@@ -46,7 +46,8 @@ func TestApplyGlossaryOverrides(t *testing.T) {
 		1: {SectionID: "S0_0", Confidence: 0.20},
 	}
 
-	applyGlossaryOverrides(items, decisions, glossary, sectionMap)
+	overrides := applyGlossaryOverrides(items, decisions, glossary, sectionMap)
+	assignLocalConfidence(decisions, options, overrides)
 	got := decisions[1]
 
 	if got.SectionID != "S1_0" {
@@ -55,8 +56,8 @@ func TestApplyGlossaryOverrides(t *testing.T) {
 	if got.NormalizedStatus != "in testing" {
 		t.Fatalf("expected glossary status override to in testing, got %s", got.NormalizedStatus)
 	}
-	if got.Confidence < 0.99 {
-		t.Fatalf("expected glossary override to raise confidence, got %f", got.Confidence)
+	if got.Confidence != 0.99 {
+		t.Fatalf("expected glossary override confidence 0.99, got %f", got.Confidence)
 	}
 }
 
@@ -109,9 +110,9 @@ func TestBuildSectionPrompts_IncludesTemplateGuidance(t *testing.T) {
 
 func TestParseSectionClassifiedResponse_AcceptsArrayTicketIDs(t *testing.T) {
 	response := `[
-		{"id": 1, "section_id": "S0_0", "normalized_status": "in progress", "ticket_ids": [], "duplicate_of": "", "confidence": 0.9},
-		{"id": 2, "section_id": "S0_0", "normalized_status": "in progress", "ticket_ids": ["1136790"], "duplicate_of": "", "confidence": 0.9},
-		{"id": 3, "section_id": "S0_0", "normalized_status": "in progress", "ticket_ids": "1247202", "duplicate_of": "", "confidence": 0.9}
+		{"id": 1, "section_id": "S0_0", "normalized_status": "in progress", "ticket_ids": [], "duplicate_of": ""},
+		{"id": 2, "section_id": "S0_0", "normalized_status": "in progress", "ticket_ids": ["1136790"], "duplicate_of": ""},
+		{"id": 3, "section_id": "S0_0", "normalized_status": "in progress", "ticket_ids": "1247202", "duplicate_of": ""}
 	]`
 
 	got, err := parseSectionClassifiedResponse(response)
@@ -129,52 +130,76 @@ func TestParseSectionClassifiedResponse_AcceptsArrayTicketIDs(t *testing.T) {
 	}
 }
 
-func TestParseSectionClassifiedResponse_RepairsMalformedConfidence(t *testing.T) {
-	response := `[
-		{"id": 1, "section_id": "S0_0", "normalized_status": "done", "ticket_ids": "", "duplicate_of": "", "confidence": 0. Nine},
-		{"id": 2, "section_id": "S0_1", "normalized_status": "in progress", "ticket_ids": "", "duplicate_of": "", "confidence": 0. seven},
-		{"id": 3, "section_id": "S0_2", "normalized_status": "done", "ticket_ids": "", "duplicate_of": "", "confidence": nope}
-	]`
-
-	got, err := parseSectionClassifiedResponse(response)
-	if err != nil {
-		t.Fatalf("parseSectionClassifiedResponse should repair malformed confidence: %v", err)
-	}
-	if got[1].Confidence != 0.9 {
-		t.Fatalf("expected repaired confidence 0.9, got %v", got[1].Confidence)
-	}
-	if got[2].Confidence != 0.7 {
-		t.Fatalf("expected repaired confidence 0.7, got %v", got[2].Confidence)
-	}
-	if got[3].Confidence != 0 {
-		t.Fatalf("expected fallback confidence 0, got %v", got[3].Confidence)
-	}
-}
-
-func TestNormalizeConfidenceLiteral(t *testing.T) {
-	tests := []struct {
-		raw  string
-		want string
-	}{
-		{raw: "0.91", want: "0.91"},
-		{raw: `"0.82"`, want: "0.82"},
-		{raw: "0. Nine", want: "0.9"},
-		{raw: "0. seven", want: "0.7"},
-		{raw: "garbage", want: "0"},
-	}
-
-	for _, tt := range tests {
-		if got := normalizeConfidenceLiteral(tt.raw); got != tt.want {
-			t.Fatalf("normalizeConfidenceLiteral(%q) = %q, want %q", tt.raw, got, tt.want)
-		}
-	}
-}
-
 func TestParseTicketIDsField_MixedArray(t *testing.T) {
 	raw := json.RawMessage(`[ "123", 456, "", " 789 " ]`)
 	got := parseTicketIDsField(raw)
 	if got != "123,456,789" {
 		t.Fatalf("unexpected ticket IDs normalization: %q", got)
+	}
+}
+
+func TestAssignLocalConfidence(t *testing.T) {
+	decisions := map[int64]LLMSectionDecision{
+		1: {SectionID: "S0_0"},
+		2: {SectionID: "UND"},
+		3: {SectionID: "S0_0", DuplicateOf: "K2"},
+		4: {SectionID: "UNKNOWN"},
+	}
+	options := []sectionOption{{ID: "S0_0", Label: "Query Service"}}
+	assignLocalConfidence(decisions, options, map[int64]bool{1: true})
+
+	if decisions[1].Confidence != 0.99 {
+		t.Fatalf("expected glossary override confidence, got %v", decisions[1].Confidence)
+	}
+	if decisions[2].Confidence != 0.40 {
+		t.Fatalf("expected UND confidence, got %v", decisions[2].Confidence)
+	}
+	if decisions[3].Confidence != 0.95 {
+		t.Fatalf("expected duplicate confidence, got %v", decisions[3].Confidence)
+	}
+	if decisions[4].Confidence != 0.20 {
+		t.Fatalf("expected invalid section confidence, got %v", decisions[4].Confidence)
+	}
+}
+
+func TestExtractResponsesOutputText(t *testing.T) {
+	resp := openAIResponsesResponse{
+		Output: []struct {
+			Type    string `json:"type"`
+			Role    string `json:"role,omitempty"`
+			Content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content,omitempty"`
+		}{
+			{
+				Type: "reasoning",
+				Content: []struct {
+					Type string `json:"type"`
+					Text string `json:"text"`
+				}{
+					{Type: "reasoning_text", Text: "thinking"},
+				},
+			},
+			{
+				Type: "message",
+				Role: "assistant",
+				Content: []struct {
+					Type string `json:"type"`
+					Text string `json:"text"`
+				}{
+					{Type: "output_text", Text: `[{"id":1,"section_id":"S0_0","normalized_status":"done","ticket_ids":[],"duplicate_of":""}]`},
+				},
+			},
+		},
+	}
+
+	got, err := extractResponsesOutputText(resp)
+	if err != nil {
+		t.Fatalf("extractResponsesOutputText error: %v", err)
+	}
+	if !strings.Contains(got, `"section_id":"S0_0"`) {
+		t.Fatalf("unexpected extracted output: %q", got)
 	}
 }
 

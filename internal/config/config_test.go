@@ -37,6 +37,9 @@ func TestLoadConfigFromEnvWithDefaults(t *testing.T) {
 	if cfg.DBPath != "./reportbot.db" {
 		t.Fatalf("unexpected db path default: %q", cfg.DBPath)
 	}
+	if cfg.OpenAIBaseURL != "https://api.openai.com/v1" {
+		t.Fatalf("unexpected OpenAI base URL default: %q", cfg.OpenAIBaseURL)
+	}
 	if cfg.ReportOutputDir != "./reports" {
 		t.Fatalf("unexpected report output dir default: %q", cfg.ReportOutputDir)
 	}
@@ -77,6 +80,7 @@ external_http_timeout_seconds: 75
 	t.Setenv("CONFIG_PATH", cfgPath)
 	t.Setenv("LLM_PROVIDER", "openai")
 	t.Setenv("OPENAI_API_KEY", "sk-env")
+	t.Setenv("OPENAI_BASE_URL", "https://api.fazai.fortinet.com/v1/")
 	t.Setenv("TEAM_NAME", "Env Team")
 	t.Setenv("DB_PATH", "/tmp/env.db")
 	t.Setenv("EXTERNAL_HTTP_TIMEOUT_SECONDS", "120")
@@ -92,6 +96,9 @@ external_http_timeout_seconds: 75
 	}
 	if cfg.OpenAIAPIKey != "sk-env" {
 		t.Fatalf("expected openai key from env override")
+	}
+	if cfg.OpenAIBaseURL != "https://api.fazai.fortinet.com/v1" {
+		t.Fatalf("expected openai base URL from env override, got %q", cfg.OpenAIBaseURL)
 	}
 	if cfg.DBPath != "/tmp/env.db" {
 		t.Fatalf("expected db path from env override, got %q", cfg.DBPath)

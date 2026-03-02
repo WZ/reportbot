@@ -9,8 +9,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"regexp"
-	"strconv"
 	"strings"
 	"sync"
 
@@ -24,7 +22,6 @@ type sectionClassifiedItem struct {
 	NormalizedStatus string          `json:"normalized_status"`
 	TicketIDs        json.RawMessage `json:"ticket_ids"`
 	DuplicateOf      string          `json:"duplicate_of"`
-	Confidence       float64         `json:"confidence"`
 }
 
 type ExistingItemContext struct {
@@ -66,8 +63,6 @@ const defaultAnthropicModel = "claude-sonnet-4-5-20250929"
 const defaultOpenAIModel = "gpt-4o-mini"
 const maxTemplateGuidanceChars = 8000
 const defaultLLMMaxConcurrentBatches = 4
-
-var confidenceFieldRe = regexp.MustCompile(`("confidence"\s*:\s*)([^,}\]]+)`)
 
 func llmBatchConcurrencyLimit(totalBatches int) int {
 	if totalBatches <= 0 {
@@ -159,7 +154,7 @@ func CategorizeItemsToSections(
 					model = defaultOpenAIModel
 				}
 				log.Printf("llm section-classify provider=openai model=%s items=%d sections=%d batch=%d", model, len(batch), len(options), idx)
-				responseText, usage, callErr = callOpenAI(cfg.OpenAIAPIKey, model, systemPrompt, userPrompt)
+				responseText, usage, callErr = callOpenAISectionStructured(cfg.OpenAIAPIKey, cfg.OpenAIBaseURL, model, systemPrompt, userPrompt, options)
 			default:
 				model := cfg.LLMModel
 				if model == "" {
@@ -179,7 +174,8 @@ func CategorizeItemsToSections(
 				results[idx] = batchResult{usage: usage, err: parseErr}
 				return
 			}
-			applyGlossaryOverrides(batch, parsed, glossary, glossarySectionMap)
+			glossaryOverrides := applyGlossaryOverrides(batch, parsed, glossary, glossarySectionMap)
+			assignLocalConfidence(parsed, options, glossaryOverrides)
 			results[idx] = batchResult{decisions: parsed, usage: usage}
 		}(i, batch)
 	}
@@ -297,13 +293,12 @@ Choose exactly one section_id for each item from:
 If none fit, use section_id "UND".
 Also:
 - choose normalized_status from: done, in testing, in progress, other
-- extract ticket IDs if present (e.g. [1247202] or bare ticket numbers)
+- extract ticket IDs if present (e.g. [1247202] or bare ticket numbers); return them as an array of strings
 - if this item is the same underlying work as an existing item, set duplicate_of to that existing key (Kxx); otherwise empty string
-- set confidence between 0 and 1, using digits only (example: 0.91). Never spell out numbers.
 %s%s
 
 Respond with JSON only (no markdown):
-[{"id": 1, "section_id": "S0_2", "normalized_status": "in progress", "ticket_ids": "1247202", "duplicate_of": "K3", "confidence": 0.91}, ...]`, sectionLines.String(), templateBlock, correctionsNote)
+[{"id": 1, "section_id": "S0_2", "normalized_status": "in progress", "ticket_ids": ["1247202"], "duplicate_of": "K3"}, ...]`, sectionLines.String(), templateBlock, correctionsNote)
 
 	correctionsBlock := ""
 	if len(corrections) > 0 {
@@ -366,14 +361,7 @@ func parseSectionClassifiedResponse(responseText string) (map[int64]LLMSectionDe
 
 	var classified []sectionClassifiedItem
 	if err := json.Unmarshal([]byte(responseText), &classified); err != nil {
-		repaired := repairSectionClassifiedResponse(responseText)
-		if repaired == responseText {
-			return nil, fmt.Errorf("parsing LLM section response: %w (response: %s)", err, responseText)
-		}
-		if repairErr := json.Unmarshal([]byte(repaired), &classified); repairErr != nil {
-			return nil, fmt.Errorf("parsing LLM section response after repair: %w (original error: %v, response: %s)", repairErr, err, repaired)
-		}
-		log.Printf("llm section response repaired before parse")
+		return nil, fmt.Errorf("parsing LLM section response: %w (response: %s)", err, responseText)
 	}
 
 	decisions := make(map[int64]LLMSectionDecision)
@@ -384,7 +372,6 @@ func parseSectionClassifiedResponse(responseText string) (map[int64]LLMSectionDe
 			NormalizedStatus: normalizeStatus(strings.TrimSpace(c.NormalizedStatus)),
 			TicketIDs:        ticketIDs,
 			DuplicateOf:      strings.TrimSpace(c.DuplicateOf),
-			Confidence:       c.Confidence,
 		}
 	}
 	return decisions, nil
@@ -435,92 +422,6 @@ func parseTicketIDsField(raw json.RawMessage) string {
 	return ""
 }
 
-func repairSectionClassifiedResponse(responseText string) string {
-	return confidenceFieldRe.ReplaceAllStringFunc(responseText, func(match string) string {
-		parts := confidenceFieldRe.FindStringSubmatch(match)
-		if len(parts) != 3 {
-			return match
-		}
-		return parts[1] + normalizeConfidenceLiteral(parts[2])
-	})
-}
-
-func normalizeConfidenceLiteral(raw string) string {
-	text := strings.TrimSpace(strings.Trim(raw, `"`))
-	if text == "" {
-		return "0"
-	}
-	if parsed, ok := parseLooseConfidence(text); ok {
-		return strconv.FormatFloat(parsed, 'f', -1, 64)
-	}
-	return "0"
-}
-
-func parseLooseConfidence(raw string) (float64, bool) {
-	text := strings.TrimSpace(raw)
-	if text == "" {
-		return 0, false
-	}
-	if parsed, err := strconv.ParseFloat(text, 64); err == nil {
-		return clampConfidence(parsed), true
-	}
-
-	compact := strings.ReplaceAll(strings.ToLower(text), " ", "")
-	if parsed, err := strconv.ParseFloat(compact, 64); err == nil {
-		return clampConfidence(parsed), true
-	}
-
-	if strings.HasPrefix(compact, "0.") {
-		if digit, ok := digitWord(compact[2:]); ok {
-			return float64(digit) / 10, true
-		}
-	}
-	if compact == "zero" {
-		return 0, true
-	}
-	if compact == "one" {
-		return 1, true
-	}
-	return 0, false
-}
-
-func digitWord(s string) (int, bool) {
-	switch s {
-	case "zero":
-		return 0, true
-	case "one":
-		return 1, true
-	case "two":
-		return 2, true
-	case "three":
-		return 3, true
-	case "four":
-		return 4, true
-	case "five":
-		return 5, true
-	case "six":
-		return 6, true
-	case "seven":
-		return 7, true
-	case "eight":
-		return 8, true
-	case "nine":
-		return 9, true
-	default:
-		return 0, false
-	}
-}
-
-func clampConfidence(v float64) float64 {
-	if v < 0 {
-		return 0
-	}
-	if v > 1 {
-		return 1
-	}
-	return v
-}
-
 func loadGlossaryIfConfigured(cfg Config) (*LLMGlossary, error) {
 	if strings.TrimSpace(cfg.LLMGlossaryPath) == "" {
 		return nil, nil
@@ -563,9 +464,10 @@ func applyGlossaryOverrides(
 	decisions map[int64]LLMSectionDecision,
 	glossary *LLMGlossary,
 	glossarySectionMap map[string]string,
-) {
+) map[int64]bool {
+	overrides := map[int64]bool{}
 	if glossary == nil {
-		return
+		return overrides
 	}
 
 	for _, item := range items {
@@ -574,10 +476,10 @@ func applyGlossaryOverrides(
 
 		for phrase, sectionID := range glossarySectionMap {
 			if phrase != "" && strings.Contains(desc, phrase) {
-				decision.SectionID = sectionID
-				if decision.Confidence < 0.99 {
-					decision.Confidence = 0.99
+				if decision.SectionID != sectionID {
+					overrides[item.ID] = true
 				}
+				decision.SectionID = sectionID
 				break
 			}
 		}
@@ -592,6 +494,35 @@ func applyGlossaryOverrides(
 
 		decisions[item.ID] = decision
 	}
+	return overrides
+}
+
+func assignLocalConfidence(decisions map[int64]LLMSectionDecision, options []sectionOption, glossaryOverrides map[int64]bool) {
+	validSections := make(map[string]bool, len(options)+1)
+	validSections["UND"] = true
+	for _, option := range options {
+		validSections[strings.TrimSpace(option.ID)] = true
+	}
+	for id, decision := range decisions {
+		decisions[id] = withDerivedConfidence(decision, validSections, glossaryOverrides[id])
+	}
+}
+
+func withDerivedConfidence(decision LLMSectionDecision, validSections map[string]bool, glossaryOverride bool) LLMSectionDecision {
+	sectionID := strings.TrimSpace(decision.SectionID)
+	switch {
+	case glossaryOverride:
+		decision.Confidence = 0.99
+	case sectionID == "" || !validSections[sectionID]:
+		decision.Confidence = 0.20
+	case strings.EqualFold(sectionID, "UND"):
+		decision.Confidence = 0.40
+	case strings.TrimSpace(decision.DuplicateOf) != "":
+		decision.Confidence = 0.95
+	default:
+		decision.Confidence = 0.90
+	}
+	return decision
 }
 
 // --- Anthropic ---
@@ -629,88 +560,191 @@ func callAnthropic(apiKey, model, systemPrompt, userPrompt string) (string, LLMU
 	return "", usage, fmt.Errorf("no text content in Anthropic response")
 }
 
-// --- OpenAI ---
+// --- OpenAI / OpenAI-compatible Responses API ---
 
-type openAIRequest struct {
-	Model    string          `json:"model"`
-	Messages []openAIMessage `json:"messages"`
+type openAIResponsesRequest struct {
+	Model       string                   `json:"model"`
+	Input       string                   `json:"input"`
+	Temperature float64                  `json:"temperature,omitempty"`
+	Text        openAIResponsesTextParam `json:"text"`
 }
 
-type openAIMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+type openAIResponsesTextParam struct {
+	Format openAIResponsesFormatParam `json:"format"`
 }
 
-type openAIResponse struct {
-	Choices []struct {
-		Message struct {
-			Content string `json:"content"`
-		} `json:"message"`
-	} `json:"choices"`
+type openAIResponsesFormatParam struct {
+	Type   string `json:"type"`
+	Name   string `json:"name"`
+	Strict bool   `json:"strict"`
+	Schema any    `json:"schema"`
+}
+
+type openAIResponsesResponse struct {
+	Output []struct {
+		Type    string `json:"type"`
+		Role    string `json:"role,omitempty"`
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content,omitempty"`
+	} `json:"output"`
 	Usage *struct {
-		PromptTokens     int64 `json:"prompt_tokens"`
-		CompletionTokens int64 `json:"completion_tokens"`
-		TotalTokens      int64 `json:"total_tokens"`
+		InputTokens  int64 `json:"input_tokens"`
+		OutputTokens int64 `json:"output_tokens"`
+		TotalTokens  int64 `json:"total_tokens"`
 	} `json:"usage"`
 	Error *struct {
 		Message string `json:"message"`
 	} `json:"error"`
 }
 
-func callOpenAI(apiKey, model, systemPrompt, userPrompt string) (string, LLMUsage, error) {
-	reqBody := openAIRequest{
-		Model: model,
-		Messages: []openAIMessage{
-			{Role: "system", Content: systemPrompt},
-			{Role: "user", Content: userPrompt},
+func buildSectionJSONSchema(options []sectionOption) map[string]any {
+	sections := make([]string, 0, len(options)+1)
+	sections = append(sections, "UND")
+	for _, option := range options {
+		id := strings.TrimSpace(option.ID)
+		if id != "" {
+			sections = append(sections, id)
+		}
+	}
+	return map[string]any{
+		"type": "array",
+		"items": map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"id": map[string]any{
+					"type": "integer",
+				},
+				"section_id": map[string]any{
+					"type": "string",
+					"enum": sections,
+				},
+				"normalized_status": map[string]any{
+					"type": "string",
+					"enum": []string{"done", "in testing", "in progress", "other"},
+				},
+				"ticket_ids": map[string]any{
+					"type": "array",
+					"items": map[string]any{
+						"type": "string",
+					},
+				},
+				"duplicate_of": map[string]any{
+					"type": "string",
+				},
+			},
+			"required": []string{"id", "section_id", "normalized_status", "ticket_ids", "duplicate_of"},
 		},
 	}
+}
 
+func callOpenAISectionStructured(apiKey, baseURL, model, systemPrompt, userPrompt string, options []sectionOption) (string, LLMUsage, error) {
+	reqBody := openAIResponsesRequest{
+		Model: model,
+		Input: buildResponsesInput(systemPrompt, userPrompt),
+		Text: openAIResponsesTextParam{
+			Format: openAIResponsesFormatParam{
+				Type:   "json_schema",
+				Name:   "section_classification_batch",
+				Strict: true,
+				Schema: buildSectionJSONSchema(options),
+			},
+		},
+	}
+	responseText, usage, err := doOpenAIResponsesRequest(apiKey, baseURL, reqBody)
+	if err != nil {
+		return "", usage, err
+	}
+	log.Printf("llm openai responses size=%d tokens_in=%d tokens_out=%d", len(responseText), usage.InputTokens, usage.OutputTokens)
+	return responseText, usage, nil
+}
+
+func buildResponsesInput(systemPrompt, userPrompt string) string {
+	systemPrompt = strings.TrimSpace(systemPrompt)
+	userPrompt = strings.TrimSpace(userPrompt)
+	switch {
+	case systemPrompt == "":
+		return userPrompt
+	case userPrompt == "":
+		return systemPrompt
+	default:
+		return systemPrompt + "\n\n" + userPrompt
+	}
+}
+
+func doOpenAIResponsesRequest(apiKey, baseURL string, reqBody openAIResponsesRequest) (string, LLMUsage, error) {
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
-		return "", LLMUsage{}, fmt.Errorf("marshaling request: %w", err)
+		return "", LLMUsage{}, fmt.Errorf("marshaling responses request: %w", err)
 	}
 
-	req, err := http.NewRequest("POST", "https://api.openai.com/v1/chat/completions", bytes.NewReader(bodyBytes))
+	req, err := http.NewRequest("POST", strings.TrimRight(baseURL, "/")+"/responses", bytes.NewReader(bodyBytes))
 	if err != nil {
-		return "", LLMUsage{}, fmt.Errorf("creating request: %w", err)
+		return "", LLMUsage{}, fmt.Errorf("creating responses request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 
 	resp, err := externalHTTPClient.Do(req)
 	if err != nil {
-		log.Printf("llm openai error: %v", err)
-		return "", LLMUsage{}, fmt.Errorf("OpenAI API error: %w", err)
+		log.Printf("llm openai responses error: %v", err)
+		return "", LLMUsage{}, fmt.Errorf("OpenAI Responses API error: %w", err)
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", LLMUsage{}, fmt.Errorf("reading response: %w", err)
+		return "", LLMUsage{}, fmt.Errorf("reading responses body: %w", err)
 	}
 
-	var openAIResp openAIResponse
-	if err := json.Unmarshal(respBody, &openAIResp); err != nil {
-		return "", LLMUsage{}, fmt.Errorf("parsing OpenAI response: %w", err)
+	var responsesResp openAIResponsesResponse
+	if err := json.Unmarshal(respBody, &responsesResp); err != nil {
+		return "", LLMUsage{}, fmt.Errorf("parsing OpenAI Responses payload: %w", err)
+	}
+	if responsesResp.Error != nil {
+		log.Printf("llm openai responses api error: %s", responsesResp.Error.Message)
+		return "", LLMUsage{}, fmt.Errorf("OpenAI Responses API error: %s", responsesResp.Error.Message)
 	}
 
-	if openAIResp.Error != nil {
-		log.Printf("llm openai api error: %s", openAIResp.Error.Message)
-		return "", LLMUsage{}, fmt.Errorf("OpenAI API error: %s", openAIResp.Error.Message)
-	}
-
-	if len(openAIResp.Choices) == 0 {
-		return "", LLMUsage{}, fmt.Errorf("no choices in OpenAI response")
+	responseText, err := extractResponsesOutputText(responsesResp)
+	if err != nil {
+		return "", LLMUsage{}, err
 	}
 	usage := LLMUsage{}
-	if openAIResp.Usage != nil {
-		usage.InputTokens = openAIResp.Usage.PromptTokens
-		usage.OutputTokens = openAIResp.Usage.CompletionTokens
+	if responsesResp.Usage != nil {
+		usage.InputTokens = responsesResp.Usage.InputTokens
+		usage.OutputTokens = responsesResp.Usage.OutputTokens
 	}
+	return responseText, usage, nil
+}
 
-	log.Printf("llm openai response size=%d tokens_in=%d tokens_out=%d", len(openAIResp.Choices[0].Message.Content), usage.InputTokens, usage.OutputTokens)
-	return openAIResp.Choices[0].Message.Content, usage, nil
+func extractResponsesOutputText(resp openAIResponsesResponse) (string, error) {
+	for _, output := range resp.Output {
+		for _, content := range output.Content {
+			if strings.TrimSpace(content.Text) == "" {
+				continue
+			}
+			switch content.Type {
+			case "output_text", "text":
+				return content.Text, nil
+			}
+		}
+	}
+	return "", fmt.Errorf("no structured text content in OpenAI Responses payload")
+}
+
+func callOpenAI(apiKey, baseURL, model, systemPrompt, userPrompt string) (string, LLMUsage, error) {
+	responseText, usage, err := doOpenAIResponsesRequest(apiKey, baseURL, openAIResponsesRequest{
+		Model: model,
+		Input: buildResponsesInput(systemPrompt, userPrompt),
+	})
+	if err != nil {
+		return "", usage, err
+	}
+	log.Printf("llm openai responses size=%d tokens_in=%d tokens_out=%d", len(responseText), usage.InputTokens, usage.OutputTokens)
+	return responseText, usage, nil
 }
 
 // --- Generator-Critic Loop ---
@@ -758,7 +792,7 @@ Respond with JSON only (no markdown):
 			model = defaultOpenAIModel
 		}
 		log.Printf("llm critic provider=openai model=%s items=%d", model, len(items))
-		responseText, usage, err = callOpenAI(cfg.OpenAIAPIKey, model, systemPrompt, userPrompt)
+		responseText, usage, err = callOpenAI(cfg.OpenAIAPIKey, cfg.OpenAIBaseURL, model, systemPrompt, userPrompt)
 	default:
 		model := cfg.LLMModel
 		if model == "" {
@@ -861,7 +895,7 @@ Respond with JSON only (no markdown):
 			model = defaultOpenAIModel
 		}
 		log.Printf("llm retrospective provider=openai model=%s corrections=%d", model, len(corrections))
-		responseText, usage, err = callOpenAI(cfg.OpenAIAPIKey, model, systemPrompt, userPrompt)
+		responseText, usage, err = callOpenAI(cfg.OpenAIAPIKey, cfg.OpenAIBaseURL, model, systemPrompt, userPrompt)
 	default:
 		model := cfg.LLMModel
 		if model == "" {
