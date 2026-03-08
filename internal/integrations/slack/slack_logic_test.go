@@ -60,8 +60,11 @@ func TestParseGenerateReportArgs(t *testing.T) {
 		{name: "default", input: "", wantMode: "team", wantPrivate: false},
 		{name: "team private", input: "team private", wantMode: "team", wantPrivate: true},
 		{name: "boss private", input: "boss private", wantMode: "boss", wantPrivate: true},
+		{name: "post channel", input: "post", wantMode: "post", wantPrivate: false},
+		{name: "post private", input: "post private", wantMode: "post", wantPrivate: true},
 		{name: "private only", input: "private", wantMode: "team", wantPrivate: true},
 		{name: "boss channel", input: "boss channel", wantMode: "boss", wantPrivate: false},
+		{name: "conflicting modes", input: "post boss", wantErr: true},
 		{name: "unknown token", input: "boss now", wantErr: true},
 	}
 
@@ -266,6 +269,36 @@ func TestFormatListItemText_AddsLineNumber(t *testing.T) {
 	}
 }
 
+func TestParseListScope(t *testing.T) {
+	tests := []struct {
+		input   string
+		want    string
+		wantErr bool
+	}{
+		{input: "", want: listScopeMine},
+		{input: "mine", want: listScopeMine},
+		{input: "all", want: listScopeAll},
+		{input: " ALL ", want: listScopeAll},
+		{input: "team", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		got, err := parseListScope(tt.input)
+		if tt.wantErr {
+			if err == nil {
+				t.Fatalf("parseListScope(%q) expected error", tt.input)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("parseListScope(%q) error: %v", tt.input, err)
+		}
+		if got != tt.want {
+			t.Fatalf("parseListScope(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
 func TestMemberReportedThisWeek(t *testing.T) {
 	reportedIDs := map[string]bool{"U123": true}
 	reportedAuthors := []string{"Alex Rivera", "Jordan Patel"}
@@ -415,5 +448,46 @@ func TestDeriveBossReportFromTeamReport_MalformedContent(t *testing.T) {
 	}
 	if bossReport == "" {
 		t.Error("expected non-empty bossReport even with malformed content")
+	}
+}
+
+func TestFindLatestTeamReportFile(t *testing.T) {
+	dir := t.TempDir()
+	teamName := "Demo Team"
+
+	files := map[string]string{
+		"Demo Team_20260214.md":  "old",
+		"Demo Team_20260221.md":  "new",
+		"Demo Team_20260221.eml": "ignore-eml",
+		"Other_20260228.md":      "ignore-other-team",
+		"Demo Team_latest.md":    "ignore-invalid-date",
+	}
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0644); err != nil {
+			t.Fatalf("write test file %s: %v", name, err)
+		}
+	}
+
+	path, date, err := findLatestTeamReportFile(dir, teamName)
+	if err != nil {
+		t.Fatalf("findLatestTeamReportFile error: %v", err)
+	}
+	if filepath.Base(path) != "Demo Team_20260221.md" {
+		t.Fatalf("unexpected latest file: %s", path)
+	}
+	if got := date.Format("20060102"); got != "20260221" {
+		t.Fatalf("unexpected latest date: %s", got)
+	}
+}
+
+func TestFindLatestTeamReportFile_NoMatch(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "OtherTeam_20260221.md"), []byte("x"), 0644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	_, _, err := findLatestTeamReportFile(dir, "Demo Team")
+	if err == nil {
+		t.Fatal("expected error when no matching team report exists")
 	}
 }

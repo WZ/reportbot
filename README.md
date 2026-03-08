@@ -13,7 +13,7 @@ Developers report completed work via slash commands. The bot also pulls merged/o
 - `/report` (or `/rpt`) — Developers report work items via Slack
 - `/fetch` — Pull merged and open GitLab MRs and/or GitHub PRs for the current calendar week
 - `/generate-report` (or `/gen`) — Generate a team markdown file (or boss `.eml` draft) and upload it to Slack
-- `/list` — View this week's items with inline edit/delete actions
+- `/list` — View your items for this week with inline edit/delete actions (`/list all` for the team view)
 - `/check` — Managers: list missing members with inline nudge buttons
 - `/retrospect` — Managers: analyze recent corrections and suggest glossary/guide improvements
 - `/stats` — Managers: view classification accuracy dashboard and trends
@@ -105,9 +105,9 @@ See [docs/agentic-features-overview.md](docs/agentic-features-overview.md) for a
    | `/report` | Report a work item |
    | `/rpt` | Alias of `/report` |
    | `/fetch` | Fetch merged and open GitLab MRs and/or GitHub PRs for this week |
-   | `/generate-report` | Generate the weekly report (`team`/`boss`, optional `private`) |
+   | `/generate-report` | Generate the weekly report (`team`/`boss`) or post latest team report (`post`), optional `private` |
    | `/gen` | Alias of `/generate-report` |
-   | `/list` | List this week's work items |
+   | `/list` | List your work items for this week (`/list all` for the team view) |
    | `/check` | List missing members with nudge buttons |
    | `/nudge` | Send a test nudge DM (self by default; managers can target one member) |
    | `/retrospect` | Analyze corrections and suggest improvements |
@@ -147,6 +147,8 @@ llm_example_max_chars: 140      # optional: max chars per example snippet
 llm_glossary_path: "./llm_glossary.yaml"    # optional glossary memory file
 llm_critic_enabled: false   # optional: enable generator-critic second pass
 anthropic_api_key: "sk-ant-..."
+openai_api_key: ""
+openai_base_url: "https://api.openai.com/v1"  # optional: OpenAI-compatible base URL (for example a lab-hosted gpt-oss endpoint)
 
 # Permissions (Slack user IDs)
 manager_slack_ids:
@@ -190,6 +192,8 @@ export GITLAB_GROUP_ID=my-team
 export GITLAB_REF_TICKET_LABEL=Jira            # Optional: field label used for GitLab MR ticket parsing
 export LLM_PROVIDER=anthropic
 export ANTHROPIC_API_KEY=sk-ant-...
+export OPENAI_API_KEY=
+export OPENAI_BASE_URL=https://api.openai.com/v1
 export LLM_BATCH_SIZE=50
 export LLM_CONFIDENCE_THRESHOLD=0.70
 export LLM_EXAMPLE_COUNT=20
@@ -214,9 +218,11 @@ Note: Category/subcategory headings are sourced from the previous report in `rep
 | `openai` | `gpt-5-mini` |
 
 Set `llm_model` in YAML or `LLM_MODEL` env var to override.
+When `llm_provider=openai`, section classification uses the OpenAI-compatible `responses` API with schema-constrained JSON output.
 Set `llm_batch_size` / `LLM_BATCH_SIZE`, `llm_confidence_threshold` / `LLM_CONFIDENCE_THRESHOLD`, and `llm_example_count` / `llm_example_max_chars` to tune throughput, confidence gating, and prompt context size.
 Set `llm_glossary_path` / `LLM_GLOSSARY_PATH` to apply glossary memory rules (see `llm_glossary.yaml`).
 Set `llm_critic_enabled` / `LLM_CRITIC_ENABLED` to enable a second LLM pass that reviews classifications for errors.
+Set `openai_base_url` / `OPENAI_BASE_URL` when `llm_provider=openai` and you want to use an OpenAI-compatible endpoint instead of `api.openai.com` (for example a lab-hosted `gpt-oss-120b` server).
 Set `external_http_timeout_seconds` / `EXTERNAL_HTTP_TIMEOUT_SECONDS` to tune timeout limits for GitLab/GitHub/LLM API requests.
 
 Glossary example (`llm_glossary.yaml`):
@@ -332,6 +338,8 @@ Manager only. Two modes:
 /generate-report team            # Generate team markdown (.md) and upload to channel (default)
 /generate-report boss            # Generate boss email draft (.eml) and upload to channel (default)
 /generate-report boss private    # Send generated boss report to your DM
+/generate-report post            # Post latest generated team markdown report to the current channel
+/generate-report post private    # Post latest generated team markdown report to your DM
 /gen private                     # Generate team report and send to your DM
 /gen team                # Alias of /generate-report team
 ```
@@ -359,10 +367,16 @@ Filename date suffix uses Friday of the reporting week, e.g. `TEAMX_20260220.md`
 
 ### Listing Items
 
-Anyone can view this week's items:
+By default, `/list` shows only the caller's items for the current reporting week:
 
 ```
 /list
+```
+
+Managers and members can use `/list all` to see the full team list:
+
+```
+/list all
 ```
 
 `/list` now includes inline actions:
