@@ -773,7 +773,7 @@ func renderListItems(api *slack.Client, db *sql.DB, cfg Config, channelID, userI
 	if scope == listScopeMine {
 		filtered := make([]WorkItem, 0, len(items))
 		for _, item := range items {
-			if itemBelongsToViewer(item, user) {
+			if itemBelongsToViewer(item, userID, user) {
 				filtered = append(filtered, item)
 			}
 		}
@@ -854,7 +854,7 @@ func renderListItems(api *slack.Client, db *sql.DB, cfg Config, channelID, userI
 			category = fmt.Sprintf(" _%s_", item.Category)
 		}
 		text := formatListItemText(lineNumber, item, source, category)
-		if canManageItem(item, isManager, user) {
+		if canManageItem(item, isManager, userID, user) {
 			editOpt := slack.NewOptionBlockObject(
 				fmt.Sprintf("edit:%s:%d", scope, item.ID),
 				slack.NewTextBlockObject(slack.PlainTextType, "Edit", false, false),
@@ -1290,7 +1290,7 @@ func handleViewSubmission(api *slack.Client, db *sql.DB, cfg Config, cb slack.In
 	}
 	isManager, _ := isManagerUser(api, cfg, userID)
 	user, _ := api.GetUserInfo(userID)
-	if !canManageItem(item, isManager, user) {
+	if !canManageItem(item, isManager, userID, user) {
 		return
 	}
 	if description == "" {
@@ -1338,7 +1338,7 @@ func deleteItemAction(api *slack.Client, db *sql.DB, cfg Config, channelID, user
 
 	isManager, _ := isManagerUser(api, cfg, userID)
 	user, _ := api.GetUserInfo(userID)
-	if !canManageItem(item, isManager, user) {
+	if !canManageItem(item, isManager, userID, user) {
 		postEphemeralTo(api, channelID, userID, "You are not allowed to delete this item.")
 		return
 	}
@@ -1364,7 +1364,7 @@ func openEditModal(api *slack.Client, db *sql.DB, cfg Config, triggerID, channel
 
 	isManager, _ := isManagerUser(api, cfg, userID)
 	user, _ := api.GetUserInfo(userID)
-	if !canManageItem(item, isManager, user) {
+	if !canManageItem(item, isManager, userID, user) {
 		postEphemeralTo(api, channelID, userID, "You are not allowed to edit this item.")
 		return
 	}
@@ -1512,7 +1512,7 @@ func openDeleteModal(api *slack.Client, db *sql.DB, cfg Config, triggerID, chann
 	}
 	isManager, _ := isManagerUser(api, cfg, userID)
 	user, _ := api.GetUserInfo(userID)
-	if !canManageItem(item, isManager, user) {
+	if !canManageItem(item, isManager, userID, user) {
 		postEphemeralTo(api, channelID, userID, "You are not allowed to delete this item.")
 		return
 	}
@@ -1660,14 +1660,17 @@ func canonicalTicketList(ticketIDs string) string {
 	return strings.Join(cleaned, ",")
 }
 
-func canManageItem(item WorkItem, isManager bool, user *slack.User) bool {
+func canManageItem(item WorkItem, isManager bool, userID string, user *slack.User) bool {
 	if isManager {
 		return true
 	}
-	return itemBelongsToViewer(item, user)
+	return itemBelongsToViewer(item, userID, user)
 }
 
-func itemBelongsToViewer(item WorkItem, user *slack.User) bool {
+func itemBelongsToViewer(item WorkItem, userID string, user *slack.User) bool {
+	if strings.TrimSpace(item.AuthorID) != "" && strings.TrimSpace(item.AuthorID) == strings.TrimSpace(userID) {
+		return true
+	}
 	if user == nil {
 		return false
 	}

@@ -563,10 +563,10 @@ func callAnthropic(apiKey, model, systemPrompt, userPrompt string) (string, LLMU
 // --- OpenAI / OpenAI-compatible Responses API ---
 
 type openAIResponsesRequest struct {
-	Model       string                   `json:"model"`
-	Input       string                   `json:"input"`
-	Temperature float64                  `json:"temperature,omitempty"`
-	Text        openAIResponsesTextParam `json:"text"`
+	Model       string                    `json:"model"`
+	Input       string                    `json:"input"`
+	Temperature float64                   `json:"temperature,omitempty"`
+	Text        *openAIResponsesTextParam `json:"text,omitempty"`
 }
 
 type openAIResponsesTextParam struct {
@@ -644,7 +644,7 @@ func callOpenAISectionStructured(apiKey, baseURL, model, systemPrompt, userPromp
 	reqBody := openAIResponsesRequest{
 		Model: model,
 		Input: buildResponsesInput(systemPrompt, userPrompt),
-		Text: openAIResponsesTextParam{
+		Text: &openAIResponsesTextParam{
 			Format: openAIResponsesFormatParam{
 				Type:   "json_schema",
 				Name:   "section_classification_batch",
