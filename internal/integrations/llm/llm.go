@@ -510,6 +510,10 @@ func assignLocalConfidence(decisions map[int64]LLMSectionDecision, options []sec
 
 func withDerivedConfidence(decision LLMSectionDecision, validSections map[string]bool, glossaryOverride bool) LLMSectionDecision {
 	sectionID := strings.TrimSpace(decision.SectionID)
+	if strings.EqualFold(sectionID, "UND") {
+		sectionID = "UND"
+		decision.SectionID = sectionID
+	}
 	switch {
 	case glossaryOverride:
 		decision.Confidence = 0.99

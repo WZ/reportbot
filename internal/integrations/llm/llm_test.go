@@ -144,6 +144,7 @@ func TestAssignLocalConfidence(t *testing.T) {
 		2: {SectionID: "UND"},
 		3: {SectionID: "S0_0", DuplicateOf: "K2"},
 		4: {SectionID: "UNKNOWN"},
+		5: {SectionID: "und"},
 	}
 	options := []sectionOption{{ID: "S0_0", Label: "Query Service"}}
 	assignLocalConfidence(decisions, options, map[int64]bool{1: true})
@@ -159,6 +160,12 @@ func TestAssignLocalConfidence(t *testing.T) {
 	}
 	if decisions[4].Confidence != 0.20 {
 		t.Fatalf("expected invalid section confidence, got %v", decisions[4].Confidence)
+	}
+	if decisions[5].Confidence != 0.40 {
+		t.Fatalf("expected lowercase und confidence, got %v", decisions[5].Confidence)
+	}
+	if decisions[5].SectionID != "UND" {
+		t.Fatalf("expected lowercase und to normalize to UND, got %q", decisions[5].SectionID)
 	}
 }
 
