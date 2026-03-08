@@ -100,8 +100,6 @@ func handleSlashCommand(client *socketmode.Client, api *slack.Client, db *sql.DB
 		handleGenerateReport(api, db, cfg, cmd)
 	case "/gen":
 		handleGenerateReport(api, db, cfg, cmd)
-	case "/post":
-		handlePostLatestTeamReport(api, cfg, cmd)
 	case "/list":
 		handleListItems(api, db, cfg, cmd)
 	case "/check":
@@ -490,18 +488,23 @@ func deriveBossReportFromTeamReport(reportOutputDir, teamName string, friday tim
 func parseGenerateReportArgs(text string) (mode string, sendPrivate bool, err error) {
 	mode = "team"
 	sendPrivate = false
+	modeSet := false
 
 	fields := strings.Fields(strings.ToLower(strings.TrimSpace(text)))
 	for _, f := range fields {
 		switch f {
-		case "team", "boss":
+		case "team", "boss", "post":
+			if modeSet && mode != f {
+				return "", false, fmt.Errorf("Usage: /generate-report [team|boss|post] [private]\nExamples: /generate-report team, /generate-report boss private, /generate-report post, /gen post private")
+			}
 			mode = f
+			modeSet = true
 		case "private":
 			sendPrivate = true
 		case "channel":
 			sendPrivate = false
 		default:
-			return "", false, fmt.Errorf("Usage: /generate-report [team|boss] [private]\nExamples: /generate-report team, /generate-report boss private, /gen private")
+			return "", false, fmt.Errorf("Usage: /generate-report [team|boss|post] [private]\nExamples: /generate-report team, /generate-report boss private, /generate-report post, /gen post private")
 		}
 	}
 	return mode, sendPrivate, nil
@@ -535,6 +538,11 @@ func handleGenerateReport(api *slack.Client, db *sql.DB, cfg Config, cmd slack.S
 
 	monday, nextMonday := ReportWeekRange(cfg, time.Now().In(cfg.Location))
 	friday := FridayOfWeek(monday)
+
+	if mode == "post" {
+		postLatestTeamReport(api, cfg, cmd, sendPrivate)
+		return
+	}
 
 	// Boss mode shortcut: derive from existing team report if available.
 	if mode == "boss" {
@@ -739,23 +747,7 @@ func handleGenerateReport(api *slack.Client, db *sql.DB, cfg Config, cmd slack.S
 	sendUncertaintyMessages(api, cfg, cmd, result, items)
 }
 
-func handlePostLatestTeamReport(api *slack.Client, cfg Config, cmd slack.SlashCommand) {
-	isManager, err := isManagerUser(api, cfg, cmd.UserID)
-	if err != nil {
-		postEphemeral(api, cmd, fmt.Sprintf("Error checking permissions: %v", err))
-		log.Printf("post-report auth error user=%s: %v", cmd.UserID, err)
-		return
-	}
-	if !isManager {
-		postEphemeral(api, cmd, "Sorry, only managers can use this command.")
-		log.Printf("post-report denied user=%s", cmd.UserID)
-		return
-	}
-	if strings.TrimSpace(cmd.Text) != "" {
-		postEphemeral(api, cmd, "Usage: /post")
-		return
-	}
-
+func postLatestTeamReport(api *slack.Client, cfg Config, cmd slack.SlashCommand, sendPrivate bool) {
 	postEphemeral(api, cmd, "Posting latest team report...")
 	filePath, reportDate, err := findLatestTeamReportFile(cfg.ReportOutputDir, cfg.TeamName)
 	if err != nil {
@@ -778,11 +770,22 @@ func handlePostLatestTeamReport(api *slack.Client, cfg Config, cmd slack.SlashCo
 
 	title := fmt.Sprintf("%s team report", cfg.TeamName)
 	initialComment := fmt.Sprintf("Latest team report for week containing %s", reportDate.Format("2006-01-02"))
+	uploadChannel := cmd.ChannelID
+	if sendPrivate {
+		ch, _, _, err := api.OpenConversation(&slack.OpenConversationParameters{Users: []string{cmd.UserID}})
+		if err != nil {
+			postEphemeral(api, cmd, "Error opening DM to send private report. Check bot permissions.")
+			log.Printf("post-report dm open error user=%s: %v", cmd.UserID, err)
+			return
+		}
+		uploadChannel = ch.ID
+	}
+
 	_, err = api.UploadFileV2(slack.UploadFileV2Parameters{
 		File:           filePath,
 		FileSize:       int(fi.Size()),
 		Filename:       filepath.Base(filePath),
-		Channel:        cmd.ChannelID,
+		Channel:        uploadChannel,
 		Title:          title,
 		InitialComment: initialComment,
 	})
@@ -792,8 +795,12 @@ func handlePostLatestTeamReport(api *slack.Client, cfg Config, cmd slack.SlashCo
 		return
 	}
 
-	postEphemeral(api, cmd, fmt.Sprintf("Posted latest team report: %s", filepath.Base(filePath)))
-	log.Printf("post-report done path=%s", filePath)
+	delivery := "channel"
+	if sendPrivate {
+		delivery = "private"
+	}
+	postEphemeral(api, cmd, fmt.Sprintf("Posted latest team report (%s): %s", delivery, filepath.Base(filePath)))
+	log.Printf("post-report done path=%s private=%t", filePath, sendPrivate)
 }
 
 func findLatestTeamReportFile(outputDir, teamName string) (string, time.Time, error) {
@@ -2215,9 +2222,8 @@ func handleHelp(api *slack.Client, cfg Config, cmd slack.SlashCommand) {
 			"*Manager Commands*",
 			"",
 			"`/fetch` — Fetch *merged + open* GitLab MRs and/or GitHub PRs for this week.",
-			"`/generate-report [team|boss] [private]` — Generate weekly report (channel by default).",
+			"`/generate-report [team|boss|post] [private]` — Generate weekly report, or post latest team report.",
 			"`/gen` — Alias of `/generate-report`.",
-			"`/post` — Post the latest generated team report file to this channel.",
 			"`/check` — List missing members with inline nudge buttons.",
 			"`/nudge <member>` — Send a test nudge DM to one member.",
 			"`/retrospect` — Analyze recent corrections and suggest improvements.",

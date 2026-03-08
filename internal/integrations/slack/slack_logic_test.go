@@ -60,8 +60,11 @@ func TestParseGenerateReportArgs(t *testing.T) {
 		{name: "default", input: "", wantMode: "team", wantPrivate: false},
 		{name: "team private", input: "team private", wantMode: "team", wantPrivate: true},
 		{name: "boss private", input: "boss private", wantMode: "boss", wantPrivate: true},
+		{name: "post channel", input: "post", wantMode: "post", wantPrivate: false},
+		{name: "post private", input: "post private", wantMode: "post", wantPrivate: true},
 		{name: "private only", input: "private", wantMode: "team", wantPrivate: true},
 		{name: "boss channel", input: "boss channel", wantMode: "boss", wantPrivate: false},
+		{name: "conflicting modes", input: "post boss", wantErr: true},
 		{name: "unknown token", input: "boss now", wantErr: true},
 	}
 
