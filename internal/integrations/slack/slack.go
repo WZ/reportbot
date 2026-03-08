@@ -100,6 +100,8 @@ func handleSlashCommand(client *socketmode.Client, api *slack.Client, db *sql.DB
 		handleGenerateReport(api, db, cfg, cmd)
 	case "/gen":
 		handleGenerateReport(api, db, cfg, cmd)
+	case "/post":
+		handlePostLatestTeamReport(api, cfg, cmd)
 	case "/list":
 		handleListItems(api, db, cfg, cmd)
 	case "/check":
@@ -735,6 +737,115 @@ func handleGenerateReport(api *slack.Client, db *sql.DB, cfg Config, cmd slack.S
 
 	// Uncertainty sampling: send messages for low-confidence items.
 	sendUncertaintyMessages(api, cfg, cmd, result, items)
+}
+
+func handlePostLatestTeamReport(api *slack.Client, cfg Config, cmd slack.SlashCommand) {
+	isManager, err := isManagerUser(api, cfg, cmd.UserID)
+	if err != nil {
+		postEphemeral(api, cmd, fmt.Sprintf("Error checking permissions: %v", err))
+		log.Printf("post-report auth error user=%s: %v", cmd.UserID, err)
+		return
+	}
+	if !isManager {
+		postEphemeral(api, cmd, "Sorry, only managers can use this command.")
+		log.Printf("post-report denied user=%s", cmd.UserID)
+		return
+	}
+	if strings.TrimSpace(cmd.Text) != "" {
+		postEphemeral(api, cmd, "Usage: /post")
+		return
+	}
+
+	postEphemeral(api, cmd, "Posting latest team report...")
+	filePath, reportDate, err := findLatestTeamReportFile(cfg.ReportOutputDir, cfg.TeamName)
+	if err != nil {
+		postEphemeral(api, cmd, fmt.Sprintf("Error finding latest team report: %v", err))
+		log.Printf("post-report find error: %v", err)
+		return
+	}
+
+	fi, err := os.Stat(filePath)
+	if err != nil {
+		postEphemeral(api, cmd, fmt.Sprintf("Error reading report file: %v", err))
+		log.Printf("post-report stat error path=%s err=%v", filePath, err)
+		return
+	}
+	if fi.Size() <= 0 {
+		postEphemeral(api, cmd, "Latest team report file is empty.")
+		log.Printf("post-report empty file path=%s", filePath)
+		return
+	}
+
+	title := fmt.Sprintf("%s team report", cfg.TeamName)
+	initialComment := fmt.Sprintf("Latest team report for week containing %s", reportDate.Format("2006-01-02"))
+	_, err = api.UploadFileV2(slack.UploadFileV2Parameters{
+		File:           filePath,
+		FileSize:       int(fi.Size()),
+		Filename:       filepath.Base(filePath),
+		Channel:        cmd.ChannelID,
+		Title:          title,
+		InitialComment: initialComment,
+	})
+	if err != nil {
+		postEphemeral(api, cmd, "Error posting latest team report to channel.")
+		log.Printf("post-report upload error path=%s err=%v", filePath, err)
+		return
+	}
+
+	postEphemeral(api, cmd, fmt.Sprintf("Posted latest team report: %s", filepath.Base(filePath)))
+	log.Printf("post-report done path=%s", filePath)
+}
+
+func findLatestTeamReportFile(outputDir, teamName string) (string, time.Time, error) {
+	entries, err := os.ReadDir(outputDir)
+	if err != nil {
+		return "", time.Time{}, fmt.Errorf("reading report output dir: %w", err)
+	}
+
+	prefix := sanitizeReportFilenamePart(teamName) + "_"
+	var latestPath string
+	var latestDate time.Time
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if !strings.HasPrefix(name, prefix) || !strings.HasSuffix(name, ".md") {
+			continue
+		}
+		rawDate := strings.TrimSuffix(strings.TrimPrefix(name, prefix), ".md")
+		reportDate, err := time.Parse("20060102", rawDate)
+		if err != nil {
+			continue
+		}
+		if latestPath == "" || reportDate.After(latestDate) {
+			latestPath = filepath.Join(outputDir, name)
+			latestDate = reportDate
+		}
+	}
+
+	if latestPath == "" {
+		return "", time.Time{}, fmt.Errorf("no team report markdown file found in %s for team %s", outputDir, teamName)
+	}
+	return latestPath, latestDate, nil
+}
+
+func sanitizeReportFilenamePart(s string) string {
+	var cleaned strings.Builder
+	for _, r := range s {
+		if r == 0 || (r >= 0x01 && r <= 0x1F) || r == 0x7F {
+			continue
+		}
+		cleaned.WriteRune(r)
+	}
+	sanitized := cleaned.String()
+	replacer := strings.NewReplacer("/", "_", "\\", "_", ":", "_", "*", "_", "?", "_", "\"", "_", "<", "_", ">", "_", "|", "_")
+	sanitized = replacer.Replace(sanitized)
+	sanitized = strings.Trim(sanitized, " .")
+	if sanitized == "" || strings.Trim(sanitized, "_") == "" {
+		return "report"
+	}
+	return sanitized
 }
 
 func formatTokenCount(tokens int64) string {
@@ -2106,6 +2217,7 @@ func handleHelp(api *slack.Client, cfg Config, cmd slack.SlashCommand) {
 			"`/fetch` — Fetch *merged + open* GitLab MRs and/or GitHub PRs for this week.",
 			"`/generate-report [team|boss] [private]` — Generate weekly report (channel by default).",
 			"`/gen` — Alias of `/generate-report`.",
+			"`/post` — Post the latest generated team report file to this channel.",
 			"`/check` — List missing members with inline nudge buttons.",
 			"`/nudge <member>` — Send a test nudge DM to one member.",
 			"`/retrospect` — Analyze recent corrections and suggest improvements.",

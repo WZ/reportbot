@@ -13,6 +13,7 @@ Developers report completed work via slash commands. The bot also pulls merged/o
 - `/report` (or `/rpt`) — Developers report work items via Slack
 - `/fetch` — Pull merged and open GitLab MRs and/or GitHub PRs for the current calendar week
 - `/generate-report` (or `/gen`) — Generate a team markdown file (or boss `.eml` draft) and upload it to Slack
+- `/post` — Managers: post the latest generated team report markdown file to Slack
 - `/list` — View your items for this week with inline edit/delete actions (`/list all` for the team view)
 - `/check` — Managers: list missing members with inline nudge buttons
 - `/retrospect` — Managers: analyze recent corrections and suggest glossary/guide improvements
@@ -107,6 +108,7 @@ See [docs/agentic-features-overview.md](docs/agentic-features-overview.md) for a
    | `/fetch` | Fetch merged and open GitLab MRs and/or GitHub PRs for this week |
    | `/generate-report` | Generate the weekly report (`team`/`boss`, optional `private`) |
    | `/gen` | Alias of `/generate-report` |
+   | `/post` | Post the latest generated team report markdown file to channel |
    | `/list` | List your work items for this week (`/list all` for the team view) |
    | `/check` | List missing members with nudge buttons |
    | `/nudge` | Send a test nudge DM (self by default; managers can target one member) |
@@ -340,6 +342,7 @@ Manager only. Two modes:
 /generate-report boss private    # Send generated boss report to your DM
 /gen private                     # Generate team report and send to your DM
 /gen team                # Alias of /generate-report team
+/post                            # Post latest generated team markdown report to the current channel
 ```
 
 **Team mode** output:
@@ -405,7 +408,7 @@ Requires the `im:write` bot token scope in your Slack app.
 
 ## Permissions
 
-Manager commands (`/fetch`, `/generate-report`, `/check`, `/retrospect`, `/stats`) are restricted to Slack user IDs listed in `manager_slack_ids`.
+Manager commands (`/fetch`, `/generate-report`, `/post`, `/check`, `/retrospect`, `/stats`) are restricted to Slack user IDs listed in `manager_slack_ids`.
 
 ## Report Structure
 

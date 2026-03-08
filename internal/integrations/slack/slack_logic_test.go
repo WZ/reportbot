@@ -447,3 +447,44 @@ func TestDeriveBossReportFromTeamReport_MalformedContent(t *testing.T) {
 		t.Error("expected non-empty bossReport even with malformed content")
 	}
 }
+
+func TestFindLatestTeamReportFile(t *testing.T) {
+	dir := t.TempDir()
+	teamName := "Demo Team"
+
+	files := map[string]string{
+		"Demo Team_20260214.md":  "old",
+		"Demo Team_20260221.md":  "new",
+		"Demo Team_20260221.eml": "ignore-eml",
+		"Other_20260228.md":      "ignore-other-team",
+		"Demo Team_latest.md":    "ignore-invalid-date",
+	}
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0644); err != nil {
+			t.Fatalf("write test file %s: %v", name, err)
+		}
+	}
+
+	path, date, err := findLatestTeamReportFile(dir, teamName)
+	if err != nil {
+		t.Fatalf("findLatestTeamReportFile error: %v", err)
+	}
+	if filepath.Base(path) != "Demo Team_20260221.md" {
+		t.Fatalf("unexpected latest file: %s", path)
+	}
+	if got := date.Format("20060102"); got != "20260221" {
+		t.Fatalf("unexpected latest date: %s", got)
+	}
+}
+
+func TestFindLatestTeamReportFile_NoMatch(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "OtherTeam_20260221.md"), []byte("x"), 0644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	_, _, err := findLatestTeamReportFile(dir, "Demo Team")
+	if err == nil {
+		t.Fatal("expected error when no matching team report exists")
+	}
+}
