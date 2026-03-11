@@ -45,6 +45,8 @@ openai_base_url: "https://api.openai.com/v1"
 db_path: "./reportbot.db"
 report_output_dir: "./reportbot-reports"
 external_http_timeout_seconds: 90
+# Skip TLS certificate verification (for internal/corporate CAs)
+tls_skip_verify: false
 
 # Channel ID used for report reminders and links
 report_channel_id: "C01234567"

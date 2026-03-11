@@ -23,7 +23,7 @@ func TestConfigureExternalHTTPClient(t *testing.T) {
 		externalHTTPClient.Timeout = original
 	})
 
-	got := ConfigureExternalHTTPClient(0)
+	got := ConfigureExternalHTTPClient(0, false)
 	if got != defaultExternalHTTPTimeout {
 		t.Fatalf("ConfigureExternalHTTPClient(0) = %s, want %s", got, defaultExternalHTTPTimeout)
 	}
@@ -31,7 +31,7 @@ func TestConfigureExternalHTTPClient(t *testing.T) {
 		t.Fatalf("configured timeout = %s, want %s", externalHTTPClient.Timeout, defaultExternalHTTPTimeout)
 	}
 
-	got = ConfigureExternalHTTPClient(120)
+	got = ConfigureExternalHTTPClient(120, false)
 	if got != 120*time.Second {
 		t.Fatalf("ConfigureExternalHTTPClient(120) = %s, want %s", got, 120*time.Second)
 	}
