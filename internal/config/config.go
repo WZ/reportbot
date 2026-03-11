@@ -45,7 +45,8 @@ type Config struct {
 	DBPath                     string `yaml:"db_path"`
 	ReportOutputDir            string `yaml:"report_output_dir"`
 	ReportChannelID            string `yaml:"report_channel_id"`
-	ExternalHTTPTimeoutSeconds int    `yaml:"external_http_timeout_seconds"`
+	ExternalHTTPTimeoutSeconds int  `yaml:"external_http_timeout_seconds"`
+	TLSSkipVerify              bool `yaml:"tls_skip_verify"`
 
 	ManagerSlackIDs   []string `yaml:"manager_slack_ids"`
 	TeamMembers       []string `yaml:"team_members"`
@@ -107,6 +108,7 @@ func LoadConfig() Config {
 	envOverride(&cfg.ReportOutputDir, "REPORT_OUTPUT_DIR")
 	envOverride(&cfg.ReportChannelID, "REPORT_CHANNEL_ID")
 	envOverrideInt(&cfg.ExternalHTTPTimeoutSeconds, "EXTERNAL_HTTP_TIMEOUT_SECONDS")
+	envOverrideBool(&cfg.TLSSkipVerify, "TLS_SKIP_VERIFY")
 	envOverride(&cfg.TeamName, "TEAM_NAME")
 	envOverride(&cfg.NudgeDay, "NUDGE_DAY")
 	envOverride(&cfg.NudgeTime, "NUDGE_TIME")

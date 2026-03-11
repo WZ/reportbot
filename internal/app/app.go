@@ -15,7 +15,7 @@ import (
 
 func Main() {
 	cfg := config.LoadConfig()
-	appliedHTTPTimeout := httpx.ConfigureExternalHTTPClient(cfg.ExternalHTTPTimeoutSeconds)
+	appliedHTTPTimeout := httpx.ConfigureExternalHTTPClient(cfg.ExternalHTTPTimeoutSeconds, cfg.TLSSkipVerify)
 	log.Printf(
 		"Config loaded. Team=%s Managers=%d TeamMembers=%d Timezone=%s LLMBatchSize=%d LLMConfidenceThreshold=%.2f LLMExampleCount=%d LLMExampleMaxChars=%d LLMGlossaryPath=%s OpenAIBaseURL=%s ExternalHTTPTimeout=%s",
 		cfg.TeamName,

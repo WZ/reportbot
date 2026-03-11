@@ -703,9 +703,23 @@ func doOpenAIResponsesRequest(apiKey, baseURL string, reqBody openAIResponsesReq
 		return "", LLMUsage{}, fmt.Errorf("reading responses body: %w", err)
 	}
 
+	if resp.StatusCode != http.StatusOK {
+		truncated := string(respBody)
+		if len(truncated) > 512 {
+			truncated = truncated[:512] + "..."
+		}
+		log.Printf("llm openai responses HTTP %d: %s", resp.StatusCode, truncated)
+		return "", LLMUsage{}, fmt.Errorf("OpenAI Responses API HTTP %d: %s", resp.StatusCode, truncated)
+	}
+
 	var responsesResp openAIResponsesResponse
 	if err := json.Unmarshal(respBody, &responsesResp); err != nil {
-		return "", LLMUsage{}, fmt.Errorf("parsing OpenAI Responses payload: %w", err)
+		truncated := string(respBody)
+		if len(truncated) > 512 {
+			truncated = truncated[:512] + "..."
+		}
+		log.Printf("llm openai responses invalid JSON: %s", truncated)
+		return "", LLMUsage{}, fmt.Errorf("parsing OpenAI Responses payload: %w (body: %s)", err, truncated)
 	}
 	if responsesResp.Error != nil {
 		log.Printf("llm openai responses api error: %s", responsesResp.Error.Message)
