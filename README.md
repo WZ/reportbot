@@ -176,6 +176,7 @@ team_name: "Example Team"
 # Report channel (Slack channel ID for reminders)
 report_channel_id: "C01234567"
 external_http_timeout_seconds: 90  # optional: timeout for GitLab/GitHub/LLM HTTP calls
+tls_skip_verify: false             # optional: skip TLS cert verification for internal/corporate CAs
 
 ```
 
@@ -203,6 +204,7 @@ export LLM_CRITIC_ENABLED=true                  # Optional: enable generator-cri
 export MANAGER_SLACK_IDS="U01ABC123,U02DEF456"  # Comma-separated Slack user IDs
 export REPORT_CHANNEL_ID=C01234567
 export EXTERNAL_HTTP_TIMEOUT_SECONDS=90          # Optional: timeout for external API HTTP calls
+export TLS_SKIP_VERIFY=true                      # Optional: skip TLS cert verification
 export AUTO_FETCH_SCHEDULE="0 9 * * 1-5"        # Optional: cron schedule for auto-fetch
 export MONDAY_CUTOFF_TIME=12:00
 export TIMEZONE=America/Los_Angeles
@@ -224,6 +226,7 @@ Set `llm_glossary_path` / `LLM_GLOSSARY_PATH` to apply glossary memory rules (se
 Set `llm_critic_enabled` / `LLM_CRITIC_ENABLED` to enable a second LLM pass that reviews classifications for errors.
 Set `openai_base_url` / `OPENAI_BASE_URL` when `llm_provider=openai` and you want to use an OpenAI-compatible endpoint instead of `api.openai.com` (for example a lab-hosted `gpt-oss-120b` server).
 Set `external_http_timeout_seconds` / `EXTERNAL_HTTP_TIMEOUT_SECONDS` to tune timeout limits for GitLab/GitHub/LLM API requests.
+Set `tls_skip_verify` / `TLS_SKIP_VERIFY` to skip TLS certificate verification when connecting to internal or corporate API servers with self-signed or internal CA certificates.
 
 Glossary example (`llm_glossary.yaml`):
 
