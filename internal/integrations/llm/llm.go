@@ -352,6 +352,20 @@ func loadTemplateGuidance(path string) string {
 	return text
 }
 
+// extractJSONArray finds the outermost JSON array in text that may contain
+// surrounding chain-of-thought reasoning from models that ignore json_schema.
+func extractJSONArray(text string) (string, bool) {
+	start := strings.Index(text, "[")
+	if start == -1 {
+		return "", false
+	}
+	end := strings.LastIndex(text, "]")
+	if end == -1 || end <= start {
+		return "", false
+	}
+	return text[start : end+1], true
+}
+
 func parseSectionClassifiedResponse(responseText string) (map[int64]LLMSectionDecision, error) {
 	responseText = strings.TrimSpace(responseText)
 	responseText = strings.TrimPrefix(responseText, "```json")
@@ -361,8 +375,17 @@ func parseSectionClassifiedResponse(responseText string) (map[int64]LLMSectionDe
 
 	var classified []sectionClassifiedItem
 	if err := json.Unmarshal([]byte(responseText), &classified); err != nil {
+		// Some OpenAI-compatible endpoints ignore json_schema and return
+		// chain-of-thought reasoning around the JSON array. Try to extract it.
+		if extracted, ok := extractJSONArray(responseText); ok {
+			if err2 := json.Unmarshal([]byte(extracted), &classified); err2 == nil {
+				log.Printf("llm warning: response contained non-JSON preamble, extracted JSON array (len=%d)", len(extracted))
+				goto parsed
+			}
+		}
 		return nil, fmt.Errorf("parsing LLM section response: %w (response: %s)", err, responseText)
 	}
+parsed:
 
 	decisions := make(map[int64]LLMSectionDecision)
 	for _, c := range classified {
@@ -739,16 +762,28 @@ func doOpenAIResponsesRequest(apiKey, baseURL string, reqBody openAIResponsesReq
 }
 
 func extractResponsesOutputText(resp openAIResponsesResponse) (string, error) {
+	// Reasoning models return a "reasoning" output followed by a "message"
+	// output. Prefer the "message" output; fall back to any output_text.
+	var fallback string
 	for _, output := range resp.Output {
+		isReasoning := output.Type == "reasoning"
 		for _, content := range output.Content {
 			if strings.TrimSpace(content.Text) == "" {
 				continue
 			}
 			switch content.Type {
 			case "output_text", "text":
-				return content.Text, nil
+				if !isReasoning {
+					return content.Text, nil
+				}
+				if fallback == "" {
+					fallback = content.Text
+				}
 			}
 		}
+	}
+	if fallback != "" {
+		return fallback, nil
 	}
 	return "", fmt.Errorf("no structured text content in OpenAI Responses payload")
 }
@@ -836,6 +871,12 @@ func parseCriticResponse(responseText string) ([]criticFlagged, error) {
 
 	var flagged []criticFlagged
 	if err := json.Unmarshal([]byte(responseText), &flagged); err != nil {
+		if extracted, ok := extractJSONArray(responseText); ok {
+			if err2 := json.Unmarshal([]byte(extracted), &flagged); err2 == nil {
+				log.Printf("llm warning: critic response contained non-JSON preamble, extracted JSON array (len=%d)", len(extracted))
+				return flagged, nil
+			}
+		}
 		truncated := responseText
 		if len(truncated) > 512 {
 			truncated = truncated[:512] + fmt.Sprintf("... [truncated, total_length=%d]", len(responseText))

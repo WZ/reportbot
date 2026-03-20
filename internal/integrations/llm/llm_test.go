@@ -210,6 +210,50 @@ func TestExtractResponsesOutputText(t *testing.T) {
 	}
 }
 
+func TestExtractResponsesOutputText_ReasoningWithOutputText(t *testing.T) {
+	// Real-world case: reasoning output also uses "output_text" content type.
+	// The extractor must skip reasoning and return the message output.
+	resp := openAIResponsesResponse{
+		Output: []struct {
+			Type    string `json:"type"`
+			Role    string `json:"role,omitempty"`
+			Content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content,omitempty"`
+		}{
+			{
+				Type: "reasoning",
+				Role: "assistant",
+				Content: []struct {
+					Type string `json:"type"`
+					Text string `json:"text"`
+				}{
+					{Type: "output_text", Text: "Let me think about classifying these items..."},
+				},
+			},
+			{
+				Type: "message",
+				Role: "assistant",
+				Content: []struct {
+					Type string `json:"type"`
+					Text string `json:"text"`
+				}{
+					{Type: "output_text", Text: `[{"id":1,"section_id":"S7_0","normalized_status":"done","ticket_ids":[],"duplicate_of":""}]`},
+				},
+			},
+		},
+	}
+
+	got, err := extractResponsesOutputText(resp)
+	if err != nil {
+		t.Fatalf("extractResponsesOutputText error: %v", err)
+	}
+	if !strings.HasPrefix(got, "[") {
+		t.Fatalf("expected JSON array, got reasoning text: %q", got[:50])
+	}
+}
+
 func TestParseCriticResponse(t *testing.T) {
 	response := `[
 		{"id": 42, "reason": "This is a database task not infra", "suggested_section_id": "S1_0"},
@@ -238,5 +282,52 @@ func TestParseCriticResponse_Empty(t *testing.T) {
 	}
 	if len(flagged) != 0 {
 		t.Fatalf("expected 0 flagged items, got %d", len(flagged))
+	}
+}
+
+func TestExtractJSONArray(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+		ok    bool
+	}{
+		{"pure array", `[{"id":1}]`, `[{"id":1}]`, true},
+		{"reasoning prefix", `Let me think about this.\n[{"id":1}]`, `[{"id":1}]`, true},
+		{"reasoning both sides", `Some reasoning\n[{"id":1}]\nDone.`, `[{"id":1}]`, true},
+		{"no array", `No JSON here`, "", false},
+		{"only open bracket", `text [ but no close`, "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := extractJSONArray(tt.input)
+			if ok != tt.ok {
+				t.Fatalf("extractJSONArray ok=%v, want %v", ok, tt.ok)
+			}
+			if got != tt.want {
+				t.Fatalf("extractJSONArray=%q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseSectionClassifiedResponse_WithReasoning(t *testing.T) {
+	// Simulate a model that dumps chain-of-thought before JSON
+	reasoning := `We need to classify these items. Let me think...
+ID 228 goes to S7_0. ID 237 is UND.
+[{"id":228,"section_id":"S7_0","normalized_status":"in progress","ticket_ids":[],"duplicate_of":""},{"id":237,"section_id":"UND","normalized_status":"done","ticket_ids":[],"duplicate_of":""}]
+That should be correct.`
+	decisions, err := parseSectionClassifiedResponse(reasoning)
+	if err != nil {
+		t.Fatalf("parseSectionClassifiedResponse with reasoning: %v", err)
+	}
+	if len(decisions) != 2 {
+		t.Fatalf("expected 2 decisions, got %d", len(decisions))
+	}
+	if decisions[228].SectionID != "S7_0" {
+		t.Errorf("expected S7_0, got %q", decisions[228].SectionID)
+	}
+	if decisions[237].SectionID != "UND" {
+		t.Errorf("expected UND, got %q", decisions[237].SectionID)
 	}
 }
