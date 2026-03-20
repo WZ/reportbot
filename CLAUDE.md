@@ -34,6 +34,7 @@ Configuration is layered: `config.yaml` is loaded first, then environment variab
 - **Nudge**: `team_members` (list of Slack full names or user IDs; used by `/check` and scheduled nudge), `nudge_day` (Monday-Sunday), `nudge_time` (HH:MM 24h format)
 - **Auto-fetch**: `auto_fetch_schedule` (5-field cron expression, e.g. `"0 9 * * 1-5"` for weekdays at 9am; empty to disable)
 - **Report**: `report_private` (bool, when true `/generate-report` DMs the report to the caller instead of posting to the channel; default false)
+- **Network**: `tls_skip_verify` (bool, skip TLS cert verification for internal/corporate CAs; default false)
 - **Team**: `team_name` (used in report header and filename)
 
 See `config.yaml` and `README.md` for full reference.
