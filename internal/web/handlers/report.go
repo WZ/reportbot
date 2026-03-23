@@ -138,7 +138,7 @@ func PreviewMarkdown(cfg web.Config, db *sql.DB) http.HandlerFunc {
 		items, err := web.GetItemsByDateRange(db, from, to)
 		if err != nil {
 			log.Printf("Error loading items for preview: %v", err)
-			renderPreview(r, w, "Error loading items. Check server logs for details.")
+			renderPreviewError(r, w, "Error loading items. Check server logs for details.")
 			return
 		}
 
@@ -159,7 +159,7 @@ func PreviewMarkdown(cfg web.Config, db *sql.DB) http.HandlerFunc {
 		result, err := web.BuildReportsFromLast(cfg, items, monday, corrections, historicalItems)
 		if err != nil {
 			log.Printf("Error building report for preview: %v", err)
-			renderPreview(r, w, "Error building report. Check server logs for details.")
+			renderPreviewError(r, w, "Error building report. Check server logs for details.")
 			return
 		}
 
@@ -169,13 +169,16 @@ func PreviewMarkdown(cfg web.Config, db *sql.DB) http.HandlerFunc {
 		}
 
 		md := web.RenderMarkdownByMode(result.Template, mode)
-		renderPreview(r, w, md)
+		htmlContent := simpleMarkdownToHTML(md)
+		if err := templates.MarkdownPreviewHTML(htmlContent).Render(r.Context(), w); err != nil {
+			log.Printf("Error rendering markdown preview: %v", err)
+		}
 	}
 }
 
-func renderPreview(r *http.Request, w http.ResponseWriter, content string) {
-	if err := templates.MarkdownPreview(content).Render(r.Context(), w); err != nil {
-		log.Printf("Error rendering markdown preview: %v", err)
+func renderPreviewError(r *http.Request, w http.ResponseWriter, msg string) {
+	if err := templates.MarkdownPreviewRaw(msg).Render(r.Context(), w); err != nil {
+		log.Printf("Error rendering preview error: %v", err)
 	}
 }
 
@@ -597,4 +600,71 @@ func filterByAuthorID(items []web.WorkItem, userID string) []web.WorkItem {
 		}
 	}
 	return filtered
+}
+
+// simpleMarkdownToHTML converts report markdown to readable HTML.
+// Handles the heading/bullet/bold patterns used by ReportBot reports.
+func simpleMarkdownToHTML(md string) string {
+	var buf strings.Builder
+	lines := strings.Split(md, "\n")
+	inList := false
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+
+		// Close list if needed
+		if inList && !strings.HasPrefix(trimmed, "- ") && !strings.HasPrefix(trimmed, "  - ") {
+			buf.WriteString("</ul>\n")
+			inList = false
+		}
+
+		switch {
+		case trimmed == "":
+			if !inList {
+				buf.WriteString("<br>\n")
+			}
+		case strings.HasPrefix(trimmed, "#### "):
+			buf.WriteString("<h4>" + html.EscapeString(strings.TrimPrefix(trimmed, "#### ")) + "</h4>\n")
+		case strings.HasPrefix(trimmed, "### "):
+			buf.WriteString("<h3>" + html.EscapeString(strings.TrimPrefix(trimmed, "### ")) + "</h3>\n")
+		case strings.HasPrefix(trimmed, "## "):
+			buf.WriteString("<h2>" + html.EscapeString(strings.TrimPrefix(trimmed, "## ")) + "</h2>\n")
+		case strings.HasPrefix(trimmed, "# "):
+			buf.WriteString("<h1>" + html.EscapeString(strings.TrimPrefix(trimmed, "# ")) + "</h1>\n")
+		case strings.HasPrefix(trimmed, "- ") || strings.HasPrefix(trimmed, "  - "):
+			if !inList {
+				buf.WriteString("<ul>\n")
+				inList = true
+			}
+			text := strings.TrimPrefix(strings.TrimPrefix(trimmed, "  "), "- ")
+			buf.WriteString("<li>" + inlineBold(html.EscapeString(text)) + "</li>\n")
+		default:
+			buf.WriteString("<p>" + inlineBold(html.EscapeString(trimmed)) + "</p>\n")
+		}
+	}
+
+	if inList {
+		buf.WriteString("</ul>\n")
+	}
+
+	return buf.String()
+}
+
+// inlineBold converts **text** to <strong>text</strong> in already-escaped HTML.
+func inlineBold(s string) string {
+	result := s
+	for {
+		start := strings.Index(result, "**")
+		if start == -1 {
+			break
+		}
+		end := strings.Index(result[start+2:], "**")
+		if end == -1 {
+			break
+		}
+		end += start + 2
+		inner := result[start+2 : end]
+		result = result[:start] + "<strong>" + inner + "</strong>" + result[end+2:]
+	}
+	return result
 }

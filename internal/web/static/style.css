@@ -51,9 +51,18 @@ main { max-width: 1400px; margin: 0 auto; padding: 20px 24px; }
 /* Layout: editor + preview */
 .editor-layout { display: flex; gap: 16px; align-items: flex-start; }
 .editor-sections { flex: 1; min-width: 0; }
-.preview-panel { width: 420px; flex-shrink: 0; background: #fff; border: 1px solid #e0e0e0; border-radius: 8px; padding: 16px; position: sticky; top: 16px; max-height: 85vh; overflow-y: auto; }
+.preview-panel { width: 520px; flex-shrink: 0; background: #fff; border: 1px solid #e0e0e0; border-radius: 8px; padding: 16px; position: sticky; top: 16px; max-height: 85vh; overflow-y: auto; }
 .preview-panel h3 { font-size: 13px; color: #666; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
-.preview-panel pre { white-space: pre-wrap; font-family: 'SF Mono', 'Fira Code', monospace; font-size: 12px; line-height: 1.6; color: #333; }
+.preview-panel pre, .preview-raw { white-space: pre-wrap; font-family: 'SF Mono', 'Fira Code', monospace; font-size: 12px; line-height: 1.6; color: #333; }
+.preview-body { font-size: 13px; line-height: 1.6; color: #1a1a1a; }
+.preview-rendered h1 { font-size: 18px; font-weight: 700; margin: 12px 0 8px; border-bottom: 1px solid #eee; padding-bottom: 4px; }
+.preview-rendered h2 { font-size: 16px; font-weight: 600; margin: 10px 0 6px; }
+.preview-rendered h3 { font-size: 14px; font-weight: 600; margin: 10px 0 4px; text-transform: none; letter-spacing: 0; color: #1a1a1a; }
+.preview-rendered h4 { font-size: 13px; font-weight: 600; margin: 8px 0 4px; color: #333; }
+.preview-rendered ul { margin: 4px 0 8px 16px; padding: 0; }
+.preview-rendered li { margin: 2px 0; font-size: 12px; color: #444; }
+.preview-rendered p { margin: 4px 0; }
+.preview-rendered br { display: block; margin: 4px 0; content: ""; }
 
 /* Section cards */
 .section { background: #fff; border: 1px solid #e0e0e0; border-radius: 8px; margin-bottom: 10px; }

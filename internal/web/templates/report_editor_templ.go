@@ -242,7 +242,7 @@ func ReportEditor(data EditorData) templ.Component {
 						return templ_7745c5c3_Err
 					}
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 20, "</div><div class=\"preview-panel\"><h3>Markdown Preview</h3><pre id=\"preview-content\">Click \"Preview Markdown\" to see the rendered report.</pre></div></div>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 20, "</div><div class=\"preview-panel\"><h3>Markdown Preview</h3><div id=\"preview-content\" class=\"preview-body\"><p style=\"color:#999;\">Click \"Preview Markdown\" to see the rendered report.</p></div></div></div>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}

@@ -1,5 +1,13 @@
 package templates
 
-templ MarkdownPreview(content string) {
-	<pre>{ content }</pre>
+// MarkdownPreviewRaw shows raw markdown in a pre block (fallback).
+templ MarkdownPreviewRaw(content string) {
+	<pre class="preview-raw">{ content }</pre>
+}
+
+// MarkdownPreviewHTML shows rendered HTML from converted markdown.
+templ MarkdownPreviewHTML(htmlContent string) {
+	<div class="preview-rendered">
+		@templ.Raw(htmlContent)
+	</div>
 }
