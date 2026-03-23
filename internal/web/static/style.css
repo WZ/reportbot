@@ -51,7 +51,7 @@ main { max-width: 1400px; margin: 0 auto; padding: 20px 24px; }
 /* Layout: editor + preview */
 .editor-layout { display: flex; gap: 16px; align-items: flex-start; }
 .editor-sections { flex: 1; min-width: 0; }
-.preview-panel { width: 520px; flex-shrink: 0; background: #fff; border: 1px solid #e0e0e0; border-radius: 8px; padding: 16px; position: sticky; top: 16px; max-height: 85vh; overflow-y: auto; }
+.preview-panel { width: 520px; min-width: 280px; max-width: 70vw; flex-shrink: 0; background: #fff; border: 1px solid #e0e0e0; border-radius: 8px; padding: 16px; position: sticky; top: 16px; max-height: 85vh; overflow-y: auto; resize: horizontal; overflow-x: hidden; }
 .preview-panel h3 { font-size: 13px; color: #666; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
 .preview-panel pre, .preview-raw { white-space: pre-wrap; font-family: 'SF Mono', 'Fira Code', monospace; font-size: 12px; line-height: 1.6; color: #333; }
 .preview-body { font-size: 13px; line-height: 1.6; color: #1a1a1a; }
