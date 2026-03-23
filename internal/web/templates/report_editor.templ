@@ -3,18 +3,19 @@ package templates
 import "fmt"
 
 type EditorData struct {
-	TeamName   string
-	WeekLabel  string
-	WeekParam  string
-	PrevWeek   string
-	NextWeek   string
-	ItemCount  int
-	AuthorCount int
-	AvgConf    float64
-	Sections   []SectionData
-	IsManager  bool
-	CSRFToken  string
-	Mode       string
+	TeamName          string
+	WeekLabel         string
+	WeekParam         string
+	PrevWeek          string
+	NextWeek          string
+	ItemCount         int
+	AuthorCount       int
+	AvgConf           float64
+	Sections          []SectionData
+	IsManager         bool
+	CSRFToken         string
+	Mode              string
+	HasClassifications bool // true if items have existing LLM classifications
 }
 
 type SectionData struct {
@@ -60,6 +61,15 @@ templ ReportEditor(data EditorData) {
 					<span class="htmx-indicator"><span class="spinner"></span></span>
 					Generate Report
 				</button>
+				if !data.HasClassifications {
+					<a href={ templ.SafeURL("/?week=" + data.WeekParam + "&classify=1") } class="btn btn-secondary" style="background:#fef3c7;border-color:#f59e0b;color:#92400e;">
+						Classify Items
+					</a>
+				} else {
+					<a href={ templ.SafeURL("/?week=" + data.WeekParam + "&classify=1") } class="btn btn-secondary">
+						Re-classify
+					</a>
+				}
 			}
 			<button class="btn btn-secondary" hx-get={ "/preview?mode=" + data.Mode + "&week=" + data.WeekParam } hx-target="#preview-content" hx-swap="innerHTML" hx-indicator="#preview-loading">
 				Preview Markdown

@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"reportbot/internal/domain"
+	"strings"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -539,6 +540,52 @@ func GetLatestClassification(db *sql.DB, workItemID int64) (ClassificationRecord
 		&r.LLMProvider, &r.LLMModel, &r.ClassifiedAt,
 	)
 	return r, err
+}
+
+// GetLatestClassificationsForItems returns the most recent classification for each
+// of the given work item IDs. Items with no classification are omitted from the result.
+func GetLatestClassificationsForItems(db *sql.DB, itemIDs []int64) (map[int64]ClassificationRecord, error) {
+	if len(itemIDs) == 0 {
+		return nil, nil
+	}
+	// Build query with placeholders
+	placeholders := make([]string, len(itemIDs))
+	args := make([]interface{}, len(itemIDs))
+	for i, id := range itemIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	query := fmt.Sprintf(
+		`SELECT ch.id, ch.work_item_id, ch.section_id, ch.section_label, ch.confidence,
+		        ch.normalized_status, ch.ticket_ids, ch.duplicate_of, ch.llm_provider, ch.llm_model, ch.classified_at
+		 FROM classification_history ch
+		 INNER JOIN (
+		   SELECT work_item_id, MAX(classified_at) AS max_at
+		   FROM classification_history
+		   WHERE work_item_id IN (%s)
+		   GROUP BY work_item_id
+		 ) latest ON ch.work_item_id = latest.work_item_id AND ch.classified_at = latest.max_at`,
+		strings.Join(placeholders, ","),
+	)
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := make(map[int64]ClassificationRecord)
+	for rows.Next() {
+		var r ClassificationRecord
+		if err := rows.Scan(
+			&r.ID, &r.WorkItemID, &r.SectionID, &r.SectionLabel, &r.Confidence,
+			&r.NormalizedStatus, &r.TicketIDs, &r.DuplicateOf,
+			&r.LLMProvider, &r.LLMModel, &r.ClassifiedAt,
+		); err != nil {
+			return nil, err
+		}
+		result[r.WorkItemID] = r
+	}
+	return result, rows.Err()
 }
 
 // --- Classification Corrections ---

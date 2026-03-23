@@ -58,26 +58,28 @@ type depsSnapshot struct {
 	RenderMarkdownByMode         func(*web.ReportTemplate, string) string
 	ReclassifyItem               func(*sql.DB, web.ClassificationCorrection, string) error
 	UpdateWorkItemTextAndStatus  func(*sql.DB, int64, string, string) error
-	DeleteWorkItemByID           func(*sql.DB, int64) error
-	WriteReportFile              func(string, string, time.Time, string) (string, error)
-	IsManagerID                  func(web.Config, string) bool
-	ReportWeekRange              func(web.Config, time.Time) (time.Time, time.Time)
+	DeleteWorkItemByID                func(*sql.DB, int64) error
+	WriteReportFile                   func(string, string, time.Time, string) (string, error)
+	IsManagerID                       func(web.Config, string) bool
+	ReportWeekRange                   func(web.Config, time.Time) (time.Time, time.Time)
+	GetLatestClassificationsForItems  func(*sql.DB, []int64) (map[int64]web.ClassificationRecord, error)
 }
 
 func saveDeps() (restore func()) {
 	snap := depsSnapshot{
-		GetItemsByDateRange:          web.GetItemsByDateRange,
-		GetWorkItemByID:              web.GetWorkItemByID,
-		GetRecentCorrections:         web.GetRecentCorrections,
-		GetClassifiedItemsWithSections: web.GetClassifiedItemsWithSections,
-		BuildReportsFromLast:         web.BuildReportsFromLast,
-		RenderMarkdownByMode:         web.RenderMarkdownByMode,
-		ReclassifyItem:               web.ReclassifyItem,
-		UpdateWorkItemTextAndStatus:  web.UpdateWorkItemTextAndStatus,
-		DeleteWorkItemByID:           web.DeleteWorkItemByID,
-		WriteReportFile:              web.WriteReportFile,
-		IsManagerID:                  web.IsManagerID,
-		ReportWeekRange:              web.ReportWeekRange,
+		GetItemsByDateRange:              web.GetItemsByDateRange,
+		GetWorkItemByID:                  web.GetWorkItemByID,
+		GetRecentCorrections:             web.GetRecentCorrections,
+		GetClassifiedItemsWithSections:   web.GetClassifiedItemsWithSections,
+		BuildReportsFromLast:             web.BuildReportsFromLast,
+		RenderMarkdownByMode:             web.RenderMarkdownByMode,
+		ReclassifyItem:                   web.ReclassifyItem,
+		UpdateWorkItemTextAndStatus:      web.UpdateWorkItemTextAndStatus,
+		DeleteWorkItemByID:               web.DeleteWorkItemByID,
+		WriteReportFile:                  web.WriteReportFile,
+		IsManagerID:                      web.IsManagerID,
+		ReportWeekRange:                  web.ReportWeekRange,
+		GetLatestClassificationsForItems: web.GetLatestClassificationsForItems,
 	}
 	return func() {
 		web.GetItemsByDateRange = snap.GetItemsByDateRange
@@ -92,11 +94,15 @@ func saveDeps() (restore func()) {
 		web.WriteReportFile = snap.WriteReportFile
 		web.IsManagerID = snap.IsManagerID
 		web.ReportWeekRange = snap.ReportWeekRange
+		web.GetLatestClassificationsForItems = snap.GetLatestClassificationsForItems
 	}
 }
 
 // stubEmptyBuild stubs out the build pipeline to return empty/no-op results.
 func stubEmptyBuild() {
+	web.GetLatestClassificationsForItems = func(db *sql.DB, ids []int64) (map[int64]web.ClassificationRecord, error) {
+		return nil, nil
+	}
 	web.GetRecentCorrections = func(db *sql.DB, since time.Time, limit int) ([]web.ClassificationCorrection, error) {
 		return nil, nil
 	}

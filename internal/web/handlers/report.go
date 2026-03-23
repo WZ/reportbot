@@ -90,8 +90,21 @@ func ReportEditorPage(cfg web.Config, db *sql.DB) http.HandlerFunc {
 			items = filterByAuthorID(items, userID)
 		}
 
-		// Build sections from cached or fresh LLM classification
-		sections, avgConf := buildSectionsFromItems(cfg, db, items, monday)
+		// Decide whether to run LLM classification or use existing DB classifications
+		doClassify := r.URL.Query().Get("classify") == "1"
+		var sections []templates.SectionData
+		var avgConf float64
+		var hasClassifications bool
+
+		if doClassify {
+			// Explicit classify request — run LLM pipeline (expensive)
+			log.Printf("Running LLM classification for week %s (explicit request)", monday.Format("2006-01-02"))
+			sections, avgConf = classifyWithLLM(cfg, db, items, monday)
+			hasClassifications = len(sections) > 0
+		} else {
+			// Default — use existing classifications from DB (fast, no LLM)
+			sections, avgConf, hasClassifications = buildSectionsFromDB(db, items)
+		}
 
 		// Count unique authors
 		authorSet := make(map[string]bool)
@@ -105,18 +118,19 @@ func ReportEditorPage(cfg web.Config, db *sql.DB) http.HandlerFunc {
 		}
 
 		data := templates.EditorData{
-			TeamName:    cfg.TeamName,
-			WeekLabel:   weekLabel,
-			WeekParam:   monday.Format("2006-01-02"),
-			PrevWeek:    prevWeek,
-			NextWeek:    nextWeek,
-			ItemCount:   len(items),
-			AuthorCount: len(authorSet),
-			AvgConf:     avgConf,
-			Sections:    sections,
-			IsManager:   isManager,
-			CSRFToken:   csrf.Token(r),
-			Mode:        mode,
+			TeamName:           cfg.TeamName,
+			WeekLabel:          weekLabel,
+			WeekParam:          monday.Format("2006-01-02"),
+			PrevWeek:           prevWeek,
+			NextWeek:           nextWeek,
+			ItemCount:          len(items),
+			AuthorCount:        len(authorSet),
+			AvgConf:            avgConf,
+			Sections:           sections,
+			IsManager:          isManager,
+			CSRFToken:          csrf.Token(r),
+			Mode:               mode,
+			HasClassifications: hasClassifications,
 		}
 
 		if err := templates.ReportEditor(data).Render(r.Context(), w); err != nil {
@@ -431,17 +445,108 @@ func resolveWeek(cfg web.Config, weekParam string) (monday time.Time, label, pre
 	return
 }
 
-func buildSectionsFromItems(cfg web.Config, db *sql.DB, items []web.WorkItem, monday time.Time) ([]templates.SectionData, float64) {
+// buildSectionsFromDB groups items using their existing classifications from the DB.
+// No LLM calls — fast page loads. Items without classifications go to "Unclassified".
+func buildSectionsFromDB(db *sql.DB, items []web.WorkItem) ([]templates.SectionData, float64, bool) {
+	if len(items) == 0 {
+		return nil, 0, false
+	}
+
+	// Batch-fetch existing classifications
+	ids := make([]int64, len(items))
+	for i, item := range items {
+		ids[i] = item.ID
+	}
+	classifications, err := web.GetLatestClassificationsForItems(db, ids)
+	if err != nil {
+		log.Printf("Warning: failed to load classifications from DB: %v", err)
+		return buildUnclassifiedSection(items), 0, false
+	}
+
+	hasClassifications := len(classifications) > 0
+
+	// Group items by section
+	sectionMap := make(map[string]*templates.SectionData)
+	var sectionOrder []string
+	var totalConf float64
+	var confCount int
+
+	for _, item := range items {
+		cls, classified := classifications[item.ID]
+		sectionID := "UND"
+		sectionLabel := "Unclassified"
+		conf := 0.0
+
+		if classified {
+			sectionID = cls.SectionID
+			sectionLabel = cls.SectionLabel
+			if sectionLabel == "" {
+				sectionLabel = sectionID
+			}
+			conf = cls.Confidence
+			totalConf += conf
+			confCount++
+		}
+
+		sec, exists := sectionMap[sectionID]
+		if !exists {
+			sec = &templates.SectionData{
+				ID:   sectionID,
+				Name: sectionLabel,
+			}
+			sectionMap[sectionID] = sec
+			sectionOrder = append(sectionOrder, sectionID)
+		}
+
+		if conf < 0.7 {
+			sec.NeedsReview = true
+		}
+
+		sec.Items = append(sec.Items, templates.ItemData{
+			ID:          item.ID,
+			Description: item.Description,
+			Author:      item.Author,
+			Status:      item.Status,
+			Source:      item.Source,
+			SourceRef:   item.SourceRef,
+			Confidence:  conf,
+			SectionID:   sectionID,
+			TicketIDs:   item.TicketIDs,
+		})
+	}
+
+	// Build ordered result, putting "Unclassified" last
+	var sections []templates.SectionData
+	for _, id := range sectionOrder {
+		if id == "UND" {
+			continue
+		}
+		sections = append(sections, *sectionMap[id])
+	}
+	if und, ok := sectionMap["UND"]; ok {
+		sections = append(sections, *und)
+	}
+
+	avgConf := 0.0
+	if confCount > 0 {
+		avgConf = totalConf / float64(confCount)
+	}
+
+	return sections, avgConf, hasClassifications
+}
+
+// classifyWithLLM runs the full LLM classification pipeline.
+// Only called on explicit "Classify" or "Re-classify" button click.
+func classifyWithLLM(cfg web.Config, db *sql.DB, items []web.WorkItem, monday time.Time) ([]templates.SectionData, float64) {
 	if len(items) == 0 {
 		return nil, 0
 	}
 
 	cacheKey := monday.Format("2006-01-02")
 
-	// Check cache first
+	// Check cache first (from a recent classify action)
 	if cached, ok := buildResultCache.Load(cacheKey); ok {
 		cr := cached.(*cachedResult)
-		// Cache valid for 5 minutes
 		if time.Since(cr.created) < 5*time.Minute {
 			return convertBuildResult(cr.result, items), avgConfidence(cr.result.Decisions)
 		}
@@ -463,7 +568,7 @@ func buildSectionsFromItems(cfg web.Config, db *sql.DB, items []web.WorkItem, mo
 		return buildUnclassifiedSection(items), 0
 	}
 
-	// Store in cache
+	// Cache the result
 	buildResultCache.Store(cacheKey, &cachedResult{result: result, created: time.Now()})
 
 	return convertBuildResult(result, items), avgConfidence(result.Decisions)
