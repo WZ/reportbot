@@ -381,18 +381,35 @@ func handleReportOverwrite(api *slack.Client, db *sql.DB, cfg Config, channelID,
 		postEphemeralTo(api, channelID, userID, "Invalid action data.")
 		return
 	}
-	for _, id := range oldIDs {
+
+	// Update old items with new description/status (preserves original ReportedAt),
+	// then delete the newly-inserted duplicates.
+	updated := 0
+	for i := 0; i < len(oldIDs) && i < len(newIDs); i++ {
+		newItem, err := GetWorkItemByID(db, newIDs[i])
+		if err != nil {
+			log.Printf("report overwrite read new item error id=%d: %v", newIDs[i], err)
+			continue
+		}
+		if err := UpdateWorkItemTextAndStatus(db, oldIDs[i], newItem.Description, newItem.Status); err != nil {
+			log.Printf("report overwrite update error id=%d: %v", oldIDs[i], err)
+			continue
+		}
+		updated++
+	}
+	for _, id := range newIDs {
 		if err := DeleteWorkItemByID(db, id); err != nil {
-			log.Printf("report overwrite delete error id=%d: %v", id, err)
+			log.Printf("report overwrite cleanup error id=%d: %v", id, err)
 		}
 	}
-	postEphemeralTo(api, channelID, userID, fmt.Sprintf("Replaced %d duplicate item(s).", len(oldIDs)))
-	log.Printf("report overwrite user=%s deleted=%v", userID, oldIDs)
 
-	// Notify managers about the kept items.
+	postEphemeralTo(api, channelID, userID, fmt.Sprintf("Updated %d duplicate item(s).", updated))
+	log.Printf("report overwrite user=%s updated=%v deleted_new=%v", userID, oldIDs, newIDs)
+
+	// Notify managers about the updated items.
 	if !cfg.IsManagerID(userID) && len(cfg.ManagerSlackIDs) > 0 {
 		var items []WorkItem
-		for _, id := range newIDs {
+		for _, id := range oldIDs {
 			if item, err := GetWorkItemByID(db, id); err == nil {
 				items = append(items, item)
 			}
@@ -427,11 +444,7 @@ func handleReportCancel(api *slack.Client, db *sql.DB, channelID, userID, value 
 			log.Printf("report cancel delete error id=%d: %v", id, err)
 		}
 	}
-	msg := "Report cancelled — duplicate items not overwritten."
-	if len(newIDs) > 0 {
-		msg += " Other non-duplicate items in the batch were kept."
-	}
-	postEphemeralTo(api, channelID, userID, msg)
+	postEphemeralTo(api, channelID, userID, "Report cancelled — duplicate items not overwritten.")
 	log.Printf("report cancel user=%s deleted=%v", userID, newIDs)
 }
 
