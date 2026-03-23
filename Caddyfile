@@ -1,0 +1,4 @@
+{$WEB_HOST} {
+	tls internal
+	reverse_proxy reportbot:8082
+}

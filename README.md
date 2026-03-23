@@ -307,6 +307,41 @@ docker run -d --name reportbot \
 
 The volume persists the SQLite database and generated reports across restarts.
 
+#### Option C: Docker Compose with Web UI (HTTPS via Caddy)
+
+For running the web report editor alongside the Slack bot, use Docker Compose with
+the included Caddy reverse proxy for automatic HTTPS (self-signed cert, works with
+IP addresses on internal networks):
+
+```bash
+# 1. Set environment variables
+export SLACK_BOT_TOKEN=xoxb-...
+export SLACK_APP_TOKEN=xapp-...
+export GITLAB_TOKEN=glpat-...
+export OPENAI_API_KEY=sk-...
+export WEB_HOST=https://192.168.1.100          # your server IP or domain
+export WEB_CLIENT_SECRET=your-slack-secret     # from Slack app Basic Information
+export WEB_SESSION_SECRET=$(openssl rand -hex 32)
+
+# 2. Configure config.yaml with web settings
+#    web_enabled: true
+#    web_port: 8082
+#    web_client_id: "your-slack-client-id"
+#    web_base_url: "https://192.168.1.100"
+
+# 3. Add OAuth redirect URL in Slack app settings:
+#    https://192.168.1.100/auth/slack/callback
+
+# 4. Build and run
+docker build -t reportbot .
+docker-compose --project-name reportbot up -d
+```
+
+Caddy handles TLS termination with a self-signed certificate (no internet or domain
+required). Your browser will show a certificate warning on first visit — accept it
+once. The Slack OAuth flow works because the redirect happens in the browser, not
+server-to-server.
+
 ## Usage
 
 ### Reporting Work Items

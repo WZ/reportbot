@@ -18,4 +18,6 @@ WORKDIR /app
 COPY --from=builder /app/reportbot .
 RUN mkdir -p /app/reports
 
+EXPOSE 8082
+
 ENTRYPOINT ["./reportbot"]

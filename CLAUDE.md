@@ -21,6 +21,12 @@ docker run -d --name reportbot \
   -v /path/to/config.yaml:/app/config.yaml:ro \
   -v reportbot-data:/app/data \
   reportbot
+
+# Docker Compose with Web UI (HTTPS via Caddy)
+export WEB_HOST=https://192.168.1.100
+export WEB_CLIENT_SECRET=xxx
+export WEB_SESSION_SECRET=$(openssl rand -hex 32)
+docker-compose --project-name reportbot up -d
 ```
 
 ## Configuration
