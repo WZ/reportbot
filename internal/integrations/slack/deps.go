@@ -120,6 +120,10 @@ func GetItemsByDateRange(db *sql.DB, from, to time.Time) ([]WorkItem, error) {
 	return sqlite.GetItemsByDateRange(db, from, to)
 }
 
+func GetInProgressItems(db *sql.DB) ([]WorkItem, error) {
+	return sqlite.GetInProgressItems(db)
+}
+
 func GetRecentCorrections(db *sql.DB, since time.Time, limit int) ([]ClassificationCorrection, error) {
 	return sqlite.GetRecentCorrections(db, since, limit)
 }
