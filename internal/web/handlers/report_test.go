@@ -548,11 +548,21 @@ func TestPreviewMarkdown_BossMode(t *testing.T) {
 }
 
 func TestGenerateReport_StartsJob(t *testing.T) {
+	// NOTE: GenerateReport spawns a background goroutine that uses deps.
+	// We must NOT defer restore() before the goroutine completes, or the
+	// goroutine will call real deps with nil db and panic.
+	// Instead, we keep deps overridden for the lifetime of this test.
 	restore := saveDeps()
 	defer restore()
 
 	stubEmptyBuild()
 	web.GetItemsByDateRange = func(db *sql.DB, from, to time.Time) ([]web.WorkItem, error) {
+		return nil, nil
+	}
+	web.GetRecentCorrections = func(db *sql.DB, since time.Time, limit int) ([]web.ClassificationCorrection, error) {
+		return nil, nil
+	}
+	web.GetClassifiedItemsWithSections = func(db *sql.DB, since time.Time, limit int) ([]domain.HistoricalItem, error) {
 		return nil, nil
 	}
 	web.WriteReportFile = func(content, outputDir string, friday time.Time, teamName string) (string, error) {
@@ -584,6 +594,9 @@ func TestGenerateReport_StartsJob(t *testing.T) {
 	if !strings.Contains(body, "/status") {
 		t.Error("expected response to contain a /status URL for polling")
 	}
+
+	// Wait briefly for background goroutine to complete (it uses stubbed deps, so it's fast)
+	time.Sleep(100 * time.Millisecond)
 }
 
 func TestGenerateReport_PollStatus(t *testing.T) {
