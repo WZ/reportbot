@@ -144,6 +144,21 @@ func RenderNudgeForUser(api *slack.Client, db *sql.DB, cfg Config, userID, repor
 		return RenderedNudge{}, err
 	}
 
+	// Also include in-progress items from previous weeks so carry-over
+	// work appears in the interactive nudge.
+	ipItems, ipErr := GetInProgressItems(db)
+	if ipErr == nil {
+		seen := make(map[int64]bool, len(items))
+		for _, it := range items {
+			seen[it.ID] = true
+		}
+		for _, it := range ipItems {
+			if !seen[it.ID] {
+				items = append(items, it)
+			}
+		}
+	}
+
 	user, err := api.GetUserInfo(userID)
 	if err != nil {
 		log.Printf("nudge user lookup failed user=%s: %v", userID, err)

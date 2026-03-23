@@ -241,6 +241,46 @@ func TestRenderNudgeForUser_PaginatesAndUsesAllSources(t *testing.T) {
 	}
 }
 
+func TestRenderNudgeForUser_PreviousWeekInProgressItems(t *testing.T) {
+	db := newRenderTestDB(t)
+	api := newNudgeMockSlackAPI(t, map[string]map[string]string{
+		"U_MEMBER": {
+			"name":         "member",
+			"real_name":    "Member Real",
+			"display_name": "Member Display",
+		},
+	})
+
+	// "now" is Tuesday March 3 2026; current week is March 2-8.
+	now := time.Date(2026, 3, 3, 9, 0, 0, 0, time.UTC)
+	// Item reported last week, still in progress.
+	lastWeek := now.AddDate(0, 0, -7)
+
+	if err := sqlitedb.InsertWorkItem(db, sqlitedb.WorkItem{
+		Description: "Carry-over task from last week",
+		Author:      "Member Display",
+		AuthorID:    "U_MEMBER",
+		Source:      "slack",
+		Status:      "in progress",
+		ReportedAt:  lastWeek,
+	}); err != nil {
+		t.Fatalf("insert work item: %v", err)
+	}
+
+	cfg := Config{Location: time.UTC}
+	rendered, err := RenderNudgeForUser(api, db, cfg, "U_MEMBER", "C_REPORT", now, 0, false)
+	if err != nil {
+		t.Fatalf("RenderNudgeForUser returned error: %v", err)
+	}
+
+	if !strings.Contains(rendered.Text, "Carry-over task from last week") {
+		t.Fatalf("expected previous-week in-progress item in interactive nudge, got %q", rendered.Text)
+	}
+	if !strings.Contains(rendered.Text, "still marked") {
+		t.Fatalf("expected interactive nudge intro text, got %q", rendered.Text)
+	}
+}
+
 func TestRenderNudgeForUser_UpdatedNoItems(t *testing.T) {
 	db := newRenderTestDB(t)
 	api := newNudgeMockSlackAPI(t, map[string]map[string]string{

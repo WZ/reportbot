@@ -185,6 +185,32 @@ func GetItemsByDateRange(db *sql.DB, from, to time.Time) ([]WorkItem, error) {
 	return items, rows.Err()
 }
 
+func GetInProgressItems(db *sql.DB) ([]WorkItem, error) {
+	rows, err := db.Query(
+		`SELECT id, description, author, author_id, source, source_ref, category, status, ticket_ids, reported_at, created_at
+		 FROM work_items WHERE lower(trim(status)) LIKE '%in progress%' ORDER BY reported_at DESC, id DESC`,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var items []WorkItem
+	for rows.Next() {
+		var item WorkItem
+		err := rows.Scan(
+			&item.ID, &item.Description, &item.Author, &item.AuthorID, &item.Source,
+			&item.SourceRef, &item.Category, &item.Status, &item.TicketIDs,
+			&item.ReportedAt, &item.CreatedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
 func GetWorkItemByID(db *sql.DB, id int64) (WorkItem, error) {
 	var item WorkItem
 	err := db.QueryRow(
