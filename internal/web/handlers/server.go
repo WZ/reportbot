@@ -78,7 +78,7 @@ func NewServer(cfg web.Config, db *sql.DB) *http.Server {
 
 			r.Post("/items/{id}/reclassify", ReclassifyItemHandler(cfg, db))
 			r.Post("/items/{id}", UpdateItemHandler(db))
-			r.Delete("/items/{id}", DeleteItemHandler(db))
+			r.Post("/items/{id}/delete", DeleteItemHandler(db))
 			r.Get("/items/{id}/edit", EditItemForm(db))
 			r.Post("/generate", GenerateReport(cfg, db))
 			r.Get("/generate/{jobID}/status", GenerateStatus())

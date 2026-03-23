@@ -75,9 +75,9 @@ templ ItemRow(item ItemData, allSections []SectionData, isManager bool) {
 					title="Edit"
 				>&#9998;</button>
 				<button
-					hx-delete={ fmt.Sprintf("/items/%d", item.ID) }
+					hx-post={ fmt.Sprintf("/items/%d/delete", item.ID) }
 					hx-target={ fmt.Sprintf("#item-%d", item.ID) }
-					hx-swap="outerHTML"
+					hx-swap="delete"
 					hx-confirm="Delete this item?"
 					title="Delete"
 				>&times;</button>
