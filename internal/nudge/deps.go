@@ -22,6 +22,10 @@ func GetItemsByDateRange(db *sql.DB, from, to time.Time) ([]WorkItem, error) {
 	return sqlite.GetItemsByDateRange(db, from, to)
 }
 
+func GetInProgressItems(db *sql.DB) ([]WorkItem, error) {
+	return sqlite.GetInProgressItems(db)
+}
+
 func resolveUserIDs(api *slack.Client, identifiers []string) ([]string, []string, error) {
 	var ids []string
 	var names []string
