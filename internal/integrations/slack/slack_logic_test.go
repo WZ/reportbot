@@ -491,3 +491,60 @@ func TestFindLatestTeamReportFile_NoMatch(t *testing.T) {
 		t.Fatal("expected error when no matching team report exists")
 	}
 }
+
+func TestTicketExactMatch(t *testing.T) {
+	tests := []struct {
+		name   string
+		item   WorkItem
+		ticket string
+		want   bool
+	}{
+		{"match in ticket_ids single", WorkItem{TicketIDs: "1234"}, "1234", true},
+		{"match in ticket_ids comma-separated", WorkItem{TicketIDs: "5678,1234,9012"}, "1234", true},
+		{"no false positive in ticket_ids", WorkItem{TicketIDs: "12345"}, "1234", false},
+		{"match in description prefix", WorkItem{Description: "[PROJ-1234] Fix bug"}, "PROJ-1234", true},
+		{"no match without bracket", WorkItem{Description: "PROJ-1234 Fix bug"}, "PROJ-1234", false},
+		{"no false positive in description", WorkItem{Description: "[PROJ-12345] Fix bug"}, "PROJ-1234", false},
+		{"no match empty item", WorkItem{}, "1234", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ticketExactMatch(tt.item, tt.ticket); got != tt.want {
+				t.Errorf("ticketExactMatch(%+v, %q) = %v, want %v", tt.item, tt.ticket, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseReportDupButtonValue(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		wantOld []int64
+		wantNew []int64
+		wantOK  bool
+	}{
+		{"single IDs", "10|20", []int64{10}, []int64{20}, true},
+		{"multiple IDs", "10,11|20,21,22", []int64{10, 11}, []int64{20, 21, 22}, true},
+		{"missing pipe", "10,11", nil, nil, false},
+		{"invalid ID", "abc|20", nil, nil, false},
+		{"empty", "", nil, nil, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			oldIDs, newIDs, ok := parseReportDupButtonValue(tt.value)
+			if ok != tt.wantOK {
+				t.Fatalf("ok = %v, want %v", ok, tt.wantOK)
+			}
+			if !ok {
+				return
+			}
+			if fmt.Sprint(oldIDs) != fmt.Sprint(tt.wantOld) {
+				t.Errorf("oldIDs = %v, want %v", oldIDs, tt.wantOld)
+			}
+			if fmt.Sprint(newIDs) != fmt.Sprint(tt.wantNew) {
+				t.Errorf("newIDs = %v, want %v", newIDs, tt.wantNew)
+			}
+		})
+	}
+}

@@ -190,6 +190,76 @@ func TestWorkItemCRUDAndQueries(t *testing.T) {
 	}
 }
 
+func TestFindItemsByTicketID(t *testing.T) {
+	db := newTestDB(t)
+	now := time.Now().UTC().Truncate(time.Second)
+
+	items := []WorkItem{
+		{Description: "[1234] Fix login bug", Author: "Alice", AuthorID: "U001", Source: "slack", Status: "in progress", ReportedAt: now},
+		{Description: "Update API endpoint", Author: "Alice", AuthorID: "U001", Source: "gitlab", TicketIDs: "5678,9012", Status: "merged", ReportedAt: now.Add(time.Minute)},
+		{Description: "Unrelated task", Author: "Bob", AuthorID: "U002", Source: "slack", Status: "done", ReportedAt: now.Add(2 * time.Minute)},
+		{Description: "[12345] Similar ticket", Author: "Alice", AuthorID: "U001", Source: "slack", Status: "done", ReportedAt: now.Add(3 * time.Minute)},
+	}
+	if _, err := InsertWorkItems(db, items); err != nil {
+		t.Fatalf("InsertWorkItems: %v", err)
+	}
+
+	found, err := FindItemsByTicketID(db, "1234")
+	if err != nil {
+		t.Fatalf("FindItemsByTicketID: %v", err)
+	}
+	if len(found) < 1 {
+		t.Fatalf("expected at least 1 candidate, got %d", len(found))
+	}
+	hasExact := false
+	for _, f := range found {
+		if f.Description == "[1234] Fix login bug" {
+			hasExact = true
+		}
+	}
+	if !hasExact {
+		t.Fatal("expected to find [1234] item in candidates")
+	}
+
+	found2, err := FindItemsByTicketID(db, "5678")
+	if err != nil {
+		t.Fatalf("FindItemsByTicketID for ticket_ids: %v", err)
+	}
+	if len(found2) != 1 || found2[0].TicketIDs != "5678,9012" {
+		t.Fatalf("expected 1 item with ticket_ids containing 5678, got %d", len(found2))
+	}
+
+	found3, err := FindItemsByTicketID(db, "9999")
+	if err != nil {
+		t.Fatalf("FindItemsByTicketID no match: %v", err)
+	}
+	if len(found3) != 0 {
+		t.Fatalf("expected 0 items, got %d", len(found3))
+	}
+}
+
+func TestInsertWorkItemReturningID(t *testing.T) {
+	db := newTestDB(t)
+	now := time.Now().UTC().Truncate(time.Second)
+
+	id, err := InsertWorkItemReturningID(db, WorkItem{
+		Description: "Test item", Author: "Alice", AuthorID: "U001", Source: "slack", Status: "done", ReportedAt: now,
+	})
+	if err != nil {
+		t.Fatalf("InsertWorkItemReturningID: %v", err)
+	}
+	if id <= 0 {
+		t.Fatalf("expected positive ID, got %d", id)
+	}
+	item, err := GetWorkItemByID(db, id)
+	if err != nil {
+		t.Fatalf("GetWorkItemByID: %v", err)
+	}
+	if item.Description != "Test item" {
+		t.Fatalf("unexpected description: %q", item.Description)
+	}
+}
+
 func TestClassificationHistoryCorrectionsAndStats(t *testing.T) {
 	db := newTestDB(t)
 	now := time.Now().UTC().Truncate(time.Second)
