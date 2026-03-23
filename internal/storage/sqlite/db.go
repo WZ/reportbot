@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"database/sql"
+	"fmt"
 	"reportbot/internal/domain"
 	"time"
 
@@ -18,6 +19,14 @@ func InitDB(path string) (*sql.DB, error) {
 	db, err := sql.Open("sqlite3", path)
 	if err != nil {
 		return nil, err
+	}
+
+	// Enable WAL mode for concurrent readers + single writer (needed for web UI + Slack bot)
+	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
+		return nil, fmt.Errorf("enabling WAL mode: %w", err)
+	}
+	if _, err := db.Exec("PRAGMA busy_timeout=5000"); err != nil {
+		return nil, fmt.Errorf("setting busy timeout: %w", err)
 	}
 
 	schema := `
@@ -543,6 +552,33 @@ func InsertClassificationCorrection(db *sql.DB, c ClassificationCorrection) erro
 		c.CorrectedSectionID, c.CorrectedLabel, c.Description, c.CorrectedBy,
 	)
 	return err
+}
+
+// ReclassifyItem atomically records a correction and updates the item's category.
+func ReclassifyItem(db *sql.DB, c ClassificationCorrection, newCategory string) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin reclassify tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	_, err = tx.Exec(
+		`INSERT INTO classification_corrections
+		 (work_item_id, original_section_id, original_label, corrected_section_id, corrected_label, description, corrected_by)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		c.WorkItemID, c.OriginalSectionID, c.OriginalLabel,
+		c.CorrectedSectionID, c.CorrectedLabel, c.Description, c.CorrectedBy,
+	)
+	if err != nil {
+		return fmt.Errorf("insert correction: %w", err)
+	}
+
+	_, err = tx.Exec("UPDATE work_items SET category = ? WHERE id = ?", newCategory, c.WorkItemID)
+	if err != nil {
+		return fmt.Errorf("update category: %w", err)
+	}
+
+	return tx.Commit()
 }
 
 func GetRecentCorrections(db *sql.DB, since time.Time, limit int) ([]ClassificationCorrection, error) {

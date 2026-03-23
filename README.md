@@ -178,6 +178,13 @@ report_channel_id: "C01234567"
 external_http_timeout_seconds: 90  # optional: timeout for GitLab/GitHub/LLM HTTP calls
 tls_skip_verify: false             # optional: skip TLS cert verification for internal/corporate CAs
 
+# Web UI (optional)
+web_enabled: false
+web_port: 8080
+web_client_id: ""                  # Slack OAuth client ID
+web_client_secret: ""              # Slack OAuth client secret
+web_session_secret: ""             # Random secret for cookie signing (openssl rand -hex 32)
+web_base_url: "http://localhost:8080"
 ```
 
 Set `CONFIG_PATH` env var to load from a different path (default: `./config.yaml`).
@@ -206,6 +213,12 @@ export REPORT_CHANNEL_ID=C01234567
 export EXTERNAL_HTTP_TIMEOUT_SECONDS=90          # Optional: timeout for external API HTTP calls
 export TLS_SKIP_VERIFY=true                      # Optional: skip TLS cert verification
 export AUTO_FETCH_SCHEDULE="0 9 * * 1-5"        # Optional: cron schedule for auto-fetch
+export WEB_ENABLED=true                          # Optional: enable web UI
+export WEB_PORT=8080
+export WEB_CLIENT_ID=your-slack-client-id        # Slack OAuth client ID
+export WEB_CLIENT_SECRET=your-slack-client-secret
+export WEB_SESSION_SECRET=$(openssl rand -hex 32)
+export WEB_BASE_URL=http://localhost:8080
 export MONDAY_CUTOFF_TIME=12:00
 export TIMEZONE=America/Los_Angeles
 ```
@@ -227,6 +240,7 @@ Set `llm_critic_enabled` / `LLM_CRITIC_ENABLED` to enable a second LLM pass that
 Set `openai_base_url` / `OPENAI_BASE_URL` when `llm_provider=openai` and you want to use an OpenAI-compatible endpoint instead of `api.openai.com` (for example a lab-hosted `gpt-oss-120b` server).
 Set `external_http_timeout_seconds` / `EXTERNAL_HTTP_TIMEOUT_SECONDS` to tune timeout limits for GitLab/GitHub/LLM API requests.
 Set `tls_skip_verify` / `TLS_SKIP_VERIFY` to skip TLS certificate verification when connecting to internal or corporate API servers with self-signed or internal CA certificates.
+Set `web_enabled` / `WEB_ENABLED` to serve the report editor web UI alongside the Slack bot. Configure `web_client_id`, `web_client_secret` with your Slack app's OAuth credentials and set `web_session_secret` to a random 32-byte hex string for cookie signing. The web UI uses Slack OAuth for authentication and the same `manager_slack_ids` for permissions.
 
 Glossary example (`llm_glossary.yaml`):
 

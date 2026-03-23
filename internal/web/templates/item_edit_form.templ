@@ -1,0 +1,29 @@
+package templates
+
+import "fmt"
+
+templ ItemEditForm(itemID int64, description string, status string) {
+	<div id={ fmt.Sprintf("item-%d", itemID) } class="edit-form">
+		<form
+			hx-post={ fmt.Sprintf("/items/%d", itemID) }
+			hx-target={ fmt.Sprintf("#item-%d", itemID) }
+			hx-swap="outerHTML"
+		>
+			<input type="text" name="description" value={ description } placeholder="Description"/>
+			<div class="form-actions">
+				<select name="status">
+					<option value="done" selected?={ status == "done" }>done</option>
+					<option value="in progress" selected?={ status == "in progress" }>in progress</option>
+					<option value="in review" selected?={ status == "in review" }>in review</option>
+					<option value="in testing" selected?={ status == "in testing" }>in testing</option>
+				</select>
+				<button type="submit" class="btn btn-primary" style="padding:4px 12px;">Save</button>
+				<button type="button" class="btn btn-secondary" style="padding:4px 12px;"
+					hx-get={ fmt.Sprintf("/?partial=item&id=%d", itemID) }
+					hx-target={ fmt.Sprintf("#item-%d", itemID) }
+					hx-swap="outerHTML"
+				>Cancel</button>
+			</div>
+		</form>
+	</div>
+}

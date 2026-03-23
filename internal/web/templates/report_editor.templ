@@ -1,0 +1,91 @@
+package templates
+
+import "fmt"
+
+type EditorData struct {
+	TeamName   string
+	WeekLabel  string
+	WeekParam  string
+	PrevWeek   string
+	NextWeek   string
+	ItemCount  int
+	AuthorCount int
+	AvgConf    float64
+	Sections   []SectionData
+	IsManager  bool
+	CSRFToken  string
+	Mode       string
+}
+
+type SectionData struct {
+	ID        string
+	Name      string
+	Items     []ItemData
+	NeedsReview bool
+}
+
+type ItemData struct {
+	ID          int64
+	Description string
+	Author      string
+	Status      string
+	Source      string
+	SourceRef   string
+	Confidence  float64
+	SectionID   string
+	TicketIDs   string
+	IsNew       bool
+}
+
+templ ReportEditor(data EditorData) {
+	@Layout("Report Editor", data.CSRFToken, data.IsManager, "editor") {
+		<div class="editor-header">
+			<h1>Weekly Report</h1>
+			<div class="week-nav">
+				<a href={ templ.SafeURL("/?week=" + data.PrevWeek) } class="btn btn-secondary" style="padding:4px 8px;">&larr;</a>
+				<span>{ data.WeekLabel }</span>
+				<a href={ templ.SafeURL("/?week=" + data.NextWeek) } class="btn btn-secondary" style="padding:4px 8px;">&rarr;</a>
+			</div>
+			<div class="stats">
+				<span><span class="val">{ fmt.Sprintf("%d", data.ItemCount) }</span> items</span>
+				<span><span class="val">{ fmt.Sprintf("%d", data.AuthorCount) }</span> authors</span>
+				if data.AvgConf > 0 {
+					<span><span class="val">{ fmt.Sprintf("%.0f%%", data.AvgConf*100) }</span> avg confidence</span>
+				}
+			</div>
+		</div>
+		<div class="actions">
+			if data.IsManager {
+				<button class="btn btn-primary" hx-post="/generate" hx-target="#generate-status" hx-swap="innerHTML">
+					Generate Report
+				</button>
+			}
+			<button class="btn btn-secondary" hx-get={ "/preview?mode=" + data.Mode + "&week=" + data.WeekParam } hx-target="#preview-content" hx-swap="innerHTML">
+				Preview Markdown
+			</button>
+			<select class="btn btn-secondary" id="report-mode" onchange="this.form && this.form.submit()" style="font-size:13px;">
+				<option value="team" selected?={ data.Mode == "team" }>Team mode</option>
+				<option value="boss" selected?={ data.Mode == "boss" }>Boss mode</option>
+			</select>
+		</div>
+		<div id="generate-status"></div>
+		if data.ItemCount == 0 {
+			<div class="empty">
+				<p>No work items reported this week.</p>
+				<p style="margin-top:8px;color:#bbb;">Items from /report and /fetch will appear here.</p>
+			</div>
+		} else {
+			<div class="editor-layout">
+				<div class="editor-sections">
+					for _, section := range data.Sections {
+						@SectionGroup(section, data.Sections, data.IsManager)
+					}
+				</div>
+				<div class="preview-panel">
+					<h3>Markdown Preview</h3>
+					<pre id="preview-content">Click "Preview Markdown" to see the rendered report.</pre>
+				</div>
+			</div>
+		}
+	}
+}

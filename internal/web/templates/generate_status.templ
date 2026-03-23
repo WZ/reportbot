@@ -1,0 +1,23 @@
+package templates
+
+templ GenerateProgress(message string) {
+	<div class="generate-status" hx-get="" hx-trigger="every 2s" hx-swap="innerHTML">
+		<div class="spinner"></div>
+		<span>{ message }</span>
+	</div>
+}
+
+templ GenerateComplete(filePath string) {
+	<div class="flash flash-success">
+		Report generated successfully!
+		if filePath != "" {
+			<span> Saved to { filePath }</span>
+		}
+	</div>
+}
+
+templ GenerateError(message string) {
+	<div class="flash flash-error">
+		Generation failed: { message }
+	</div>
+}

@@ -78,3 +78,14 @@ timezone: "America/Los_Angeles"
 
 # Team name used in report titles and filenames
 team_name: "My Team"
+
+# Web UI (optional — set web_enabled: true to serve the report editor at localhost:8080)
+web_enabled: false
+web_port: 8080
+# Slack OAuth credentials for "Sign in with Slack" (from your Slack app settings)
+web_client_id: ""
+web_client_secret: ""
+# Random secret for signing session cookies (generate with: openssl rand -hex 32)
+web_session_secret: ""
+# Base URL for OAuth redirect (must match the redirect URL in Slack app settings)
+web_base_url: "http://localhost:8080"

@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 )
@@ -60,6 +61,9 @@ var classifySectionsFn = func(cfg Config, items []WorkItem, options []sectionOpt
 	return CategorizeItemsToSections(cfg, items, options, existing, corrections, historicalItems)
 }
 
+// GenerationMu prevents concurrent report generation from Slack and web UI.
+var GenerationMu sync.Mutex
+
 type BuildResult struct {
 	Template  *ReportTemplate
 	Usage     LLMUsage
@@ -87,6 +91,11 @@ func BuildReportsFromLast(cfg Config, items []WorkItem, reportDate time.Time, co
 			return BuildResult{Usage: llmUsage}, err
 		}
 	}
+
+	// Apply authoritative corrections: override LLM decisions with manual corrections.
+	// Corrections are hard overrides, not suggestions — if a manager moved an item
+	// to a section, that decision sticks even if the LLM disagrees.
+	applyAuthoritativeCorrections(decisions, corrections, items)
 
 	confidenceThreshold := cfg.LLMConfidence
 	if confidenceThreshold <= 0 || confidenceThreshold > 1 {
@@ -327,6 +336,35 @@ func trimDoneItems(t *ReportTemplate) {
 				filtered = append(filtered, item)
 			}
 			t.Categories[ci].Subsections[si].Items = filtered
+		}
+	}
+}
+
+// applyAuthoritativeCorrections overrides LLM decisions with manual corrections.
+// For each item that has a correction, the LLM's section assignment is replaced
+// with the corrected section, and confidence is set to 1.0 to ensure it passes
+// the confidence threshold.
+func applyAuthoritativeCorrections(decisions map[int64]LLMSectionDecision, corrections []ClassificationCorrection, items []WorkItem) {
+	if len(corrections) == 0 || len(decisions) == 0 {
+		return
+	}
+	// Build a map from work_item_id to the most recent correction
+	correctionByItem := make(map[int64]ClassificationCorrection)
+	for _, c := range corrections {
+		if existing, ok := correctionByItem[c.WorkItemID]; !ok || c.CorrectedAt.After(existing.CorrectedAt) {
+			correctionByItem[c.WorkItemID] = c
+		}
+	}
+	// Override LLM decisions for items that have corrections
+	for _, item := range items {
+		correction, ok := correctionByItem[item.ID]
+		if !ok {
+			continue
+		}
+		if d, exists := decisions[item.ID]; exists {
+			d.SectionID = correction.CorrectedSectionID
+			d.Confidence = 1.0 // Ensure it passes any confidence threshold
+			decisions[item.ID] = d
 		}
 	}
 }
@@ -596,6 +634,14 @@ func renderBossMarkdown(t *ReportTemplate) string {
 		},
 		formatBossItem,
 	)
+}
+
+// RenderMarkdownByMode renders a template as markdown in the given mode ("team" or "boss").
+func RenderMarkdownByMode(t *ReportTemplate, mode string) string {
+	if mode == "boss" {
+		return renderBossMarkdown(t)
+	}
+	return renderTeamMarkdown(t)
 }
 
 func renderMarkdown(

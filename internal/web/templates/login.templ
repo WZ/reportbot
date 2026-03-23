@@ -1,0 +1,22 @@
+package templates
+
+templ LoginPage(oauthURL string) {
+	<!DOCTYPE html>
+	<html lang="en">
+		<head>
+			<meta charset="UTF-8"/>
+			<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+			<title>Sign In - ReportBot</title>
+			<link rel="stylesheet" href="/static/style.css"/>
+		</head>
+		<body>
+			<div style="display:flex;justify-content:center;align-items:center;min-height:80vh;flex-direction:column;gap:16px;">
+				<h1>ReportBot</h1>
+				<p style="color:#666;">Sign in with your Slack account to access the report editor.</p>
+				<a href={ templ.SafeURL(oauthURL) } class="btn btn-primary" style="font-size:15px;padding:14px 28px;">
+					Sign in with Slack
+				</a>
+			</div>
+		</body>
+	</html>
+}

@@ -36,6 +36,7 @@ Configuration is layered: `config.yaml` is loaded first, then environment variab
 - **Report**: `report_private` (bool, when true `/generate-report` DMs the report to the caller instead of posting to the channel; default false)
 - **Network**: `tls_skip_verify` (bool, skip TLS cert verification for internal/corporate CAs; default false)
 - **Team**: `team_name` (used in report header and filename)
+- **Web UI**: `web_enabled` (bool), `web_port` (int, default 8080), `web_client_id`, `web_client_secret` (Slack OAuth), `web_session_secret` (cookie HMAC key), `web_base_url` (OAuth redirect base)
 
 See `config.yaml` and `README.md` for full reference.
 
@@ -43,7 +44,7 @@ See `config.yaml` and `README.md` for full reference.
 
 The application uses a cmd/internal layout with the executable under `cmd/reportbot` and core logic split by domain under `internal/*` packages:
 
-- **cmd/reportbot/main.go** — Entry point: loads config, initializes DB, creates Slack client, starts nudge and auto-fetch schedulers, starts Socket Mode bot
+- **cmd/reportbot/main.go** — Entry point: loads config, initializes DB, creates Slack client, starts nudge and auto-fetch schedulers, optionally starts web UI server, starts Socket Mode bot
 - **internal/config/config.go** — Config struct, YAML + env loading with validation, `IsManagerID()` permission check
 - **internal/domain/models.go** — Core types (`WorkItem`, `GitLabMR`, `GitHubPR`, `ReportSection`) and `CurrentWeekRange()` calendar week calculator
 - **internal/storage/sqlite/db.go** — SQLite schema and CRUD: `work_items`, `classification_history`, `classification_corrections` tables
@@ -58,6 +59,13 @@ The application uses a cmd/internal layout with the executable under `cmd/report
 - **internal/report/report_builder.go** — Template parsing, LLM classification pipeline, merge logic, status ordering, markdown rendering (team + boss modes)
 - **internal/report/report.go** — Report file writing (markdown `.md` and email draft `.eml`) to disk
 - **internal/nudge/nudge.go** — Scheduled weekly reminder and DM sender (`sendNudges` also used by `/check` nudge buttons)
+- **internal/web/handlers/server.go** — Web UI: chi router, CSRF middleware, Slack OAuth, report editor (Go + Templ + HTMX)
+- **internal/web/handlers/report.go** — Report editor handlers: editor page, reclassify, edit, delete, preview, generate with polling
+- **internal/web/handlers/auth.go** — Slack OAuth login/callback/logout handlers
+- **internal/web/middleware/auth.go** — Session cookie auth middleware, role derivation per-request via `IsManagerID()`
+- **internal/web/deps.go** — Package-level function vars wrapping sqlite/report/config calls (same pattern as slack/deps.go)
+- **internal/web/auth.go** — HMAC-signed session cookie create/validate, OAuth state generation
+- **internal/web/templates/*.templ** — Templ templates: layout, login, report editor, item rows, section groups, preview, edit form
 
 ## Key Flows
 

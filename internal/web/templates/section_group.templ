@@ -1,0 +1,17 @@
+package templates
+
+import (
+	"fmt"
+)
+
+templ SectionGroup(section SectionData, allSections []SectionData, isManager bool) {
+	<div id={ "section-" + section.ID } class={ "section", templ.KV("needs-review", section.NeedsReview) }>
+		<div class="section-header">
+			<span class="name">{ section.Name }</span>
+			<span class="count">{ fmt.Sprintf("%d items", len(section.Items)) }</span>
+		</div>
+		for _, item := range section.Items {
+			@ItemRow(item, allSections, isManager)
+		}
+	</div>
+}

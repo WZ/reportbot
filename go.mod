@@ -13,6 +13,10 @@ require (
 )
 
 require (
+	github.com/a-h/templ v0.3.1001 // indirect
+	github.com/go-chi/chi/v5 v5.2.5 // indirect
+	github.com/gorilla/csrf v1.7.3 // indirect
+	github.com/gorilla/securecookie v1.1.2 // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/tidwall/gjson v1.18.0 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
