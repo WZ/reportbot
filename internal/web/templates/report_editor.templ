@@ -56,7 +56,7 @@ templ ReportEditor(data EditorData) {
 		</div>
 		<div class="actions">
 			if data.IsManager {
-				<button class="btn btn-primary" hx-post="/generate" hx-target="#generate-status" hx-swap="innerHTML">
+				<button class="btn btn-primary" hx-post={ "/generate?week=" + data.WeekParam } hx-target="#generate-status" hx-swap="innerHTML">
 					Generate Report
 				</button>
 			}

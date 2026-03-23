@@ -22,7 +22,8 @@ type SessionPayload struct {
 }
 
 // CreateSessionCookie creates an HMAC-signed session cookie.
-func CreateSessionCookie(secret string, payload SessionPayload) (*http.Cookie, error) {
+// Set secure=true when serving over HTTPS (derived from WebBaseURL scheme).
+func CreateSessionCookie(secret string, payload SessionPayload, secure bool) (*http.Cookie, error) {
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return nil, fmt.Errorf("marshal session: %w", err)
@@ -40,7 +41,7 @@ func CreateSessionCookie(secret string, payload SessionPayload) (*http.Cookie, e
 		Path:     "/",
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
-		Secure:   false, // Set true in production with HTTPS
+		Secure:   secure,
 		MaxAge:   int(sessionDuration.Seconds()),
 	}, nil
 }

@@ -107,12 +107,13 @@ func SlackOAuthCallback(cfg web.Config) http.HandlerFunc {
 			return
 		}
 
-		// Create session cookie
+		// Create session cookie (Secure flag derived from base URL scheme)
+		isHTTPS := strings.HasPrefix(cfg.WebBaseURL, "https://")
 		cookie, err := web.CreateSessionCookie(cfg.WebSessionSecret, web.SessionPayload{
 			UserID:    oauthResp.User.ID,
 			UserName:  oauthResp.User.Name,
 			ExpiresAt: time.Now().Add(24 * time.Hour),
-		})
+		}, isHTTPS)
 		if err != nil {
 			log.Printf("Session cookie creation failed: %v", err)
 			http.Error(w, "Internal error", http.StatusInternalServerError)

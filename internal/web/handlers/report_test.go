@@ -589,7 +589,7 @@ func TestGenerateReport_StartsJob(t *testing.T) {
 func TestGenerateReport_PollStatus(t *testing.T) {
 	// Store a job directly in the generateJobs sync.Map
 	jobID := "test-job-123"
-	job := &generateJob{Status: "done", Message: "Report generated successfully!", Path: "/tmp/report.md"}
+	job := &generateJob{status: "done", message: "Report generated successfully!", path: "/tmp/report.md"}
 	generateJobs.Store(jobID, job)
 	defer generateJobs.Delete(jobID)
 

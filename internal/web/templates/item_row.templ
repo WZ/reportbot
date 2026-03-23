@@ -55,7 +55,7 @@ templ ItemRow(item ItemData, allSections []SectionData, isManager bool) {
 			</div>
 		</div>
 		<span class={ statusClass(item.Status) }>{ item.Status }</span>
-		if isManager {
+		if isManager && item.ID > 0 {
 			<select
 				class="reclassify"
 				hx-post={ fmt.Sprintf("/items/%d/reclassify", item.ID) }

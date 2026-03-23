@@ -4,7 +4,9 @@ import (
 	"database/sql"
 	"fmt"
 	"io/fs"
+	"log"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
@@ -22,20 +24,26 @@ func NewServer(cfg web.Config, db *sql.DB) *http.Server {
 	r.Use(chimw.Logger)
 	r.Use(chimw.Recoverer)
 
+	// Derive Secure flag from base URL scheme
+	isHTTPS := strings.HasPrefix(cfg.WebBaseURL, "https://")
+
 	// CSRF protection
 	csrfMiddleware := csrf.Protect(
 		[]byte(cfg.WebSessionSecret),
-		csrf.Secure(false), // Set true for HTTPS in production
+		csrf.Secure(isHTTPS),
 		csrf.Path("/"),
 		csrf.RequestHeader("X-CSRF-Token"),
 	)
 	r.Use(csrfMiddleware)
 
 	// Static files (embedded in web package)
-	staticFS, _ := fs.Sub(web.StaticFiles, "static")
+	staticFS, err := fs.Sub(web.StaticFiles, "static")
+	if err != nil {
+		log.Fatalf("Failed to load embedded static files: %v", err)
+	}
 	r.Handle("/static/*", http.StripPrefix("/static/", http.FileServer(http.FS(staticFS))))
 
-	// Auth middleware adapter — pass functions to avoid import cycle
+	// Auth middleware adapter — pass functions to break middleware <-> web import cycle
 	authMiddleware := mw.Auth(
 		func(cookie *http.Cookie) (mw.SessionPayload, error) {
 			payload, err := web.ValidateSessionCookie(cfg.WebSessionSecret, cookie)
@@ -60,7 +68,7 @@ func NewServer(cfg web.Config, db *sql.DB) *http.Server {
 
 		r.Post("/logout", Logout())
 
-		// Report editor
+		// Report editor (read-only for non-managers, preview filters by author)
 		r.Get("/", ReportEditorPage(cfg, db))
 		r.Get("/preview", PreviewMarkdown(cfg, db))
 

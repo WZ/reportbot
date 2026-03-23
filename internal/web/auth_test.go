@@ -14,7 +14,7 @@ func TestCreateSessionCookie(t *testing.T) {
 		ExpiresAt: time.Now().Add(24 * time.Hour),
 	}
 
-	cookie, err := CreateSessionCookie(secret, payload)
+	cookie, err := CreateSessionCookie(secret, payload, false)
 	if err != nil {
 		t.Fatalf("CreateSessionCookie failed: %v", err)
 	}
@@ -55,7 +55,7 @@ func TestValidateSessionCookie(t *testing.T) {
 		ExpiresAt: time.Now().Add(1 * time.Hour),
 	}
 
-	cookie, err := CreateSessionCookie(secret, payload)
+	cookie, err := CreateSessionCookie(secret, payload, false)
 	if err != nil {
 		t.Fatalf("CreateSessionCookie failed: %v", err)
 	}
@@ -81,7 +81,7 @@ func TestSessionCookieExpiry(t *testing.T) {
 		ExpiresAt: time.Now().Add(-1 * time.Hour), // already expired
 	}
 
-	cookie, err := CreateSessionCookie(secret, payload)
+	cookie, err := CreateSessionCookie(secret, payload, false)
 	if err != nil {
 		t.Fatalf("CreateSessionCookie failed: %v", err)
 	}
@@ -100,7 +100,7 @@ func TestSessionCookieHMACIntegrity(t *testing.T) {
 		ExpiresAt: time.Now().Add(1 * time.Hour),
 	}
 
-	cookie, err := CreateSessionCookie(secret, payload)
+	cookie, err := CreateSessionCookie(secret, payload, false)
 	if err != nil {
 		t.Fatalf("CreateSessionCookie failed: %v", err)
 	}

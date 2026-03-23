@@ -312,7 +312,7 @@ func ItemRow(item ItemData, allSections []SectionData, isManager bool) templ.Com
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		if isManager {
+		if isManager && item.ID > 0 {
 			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 22, "<select class=\"reclassify\" hx-post=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err

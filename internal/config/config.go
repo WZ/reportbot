@@ -245,6 +245,18 @@ func LoadConfig() Config {
 		log.Fatalf("llm_provider must be 'anthropic' or 'openai', got '%s'", cfg.LLMProvider)
 	}
 
+	if cfg.WebEnabled {
+		if cfg.WebSessionSecret == "" {
+			log.Fatalf("web_session_secret is required when web_enabled=true (generate with: openssl rand -hex 32)")
+		}
+		if cfg.WebClientID == "" {
+			log.Fatalf("web_client_id is required when web_enabled=true")
+		}
+		if cfg.WebClientSecret == "" {
+			log.Fatalf("web_client_secret is required when web_enabled=true")
+		}
+	}
+
 	if strings.EqualFold(cfg.Timezone, "Local") {
 		cfg.Location = time.Local
 	} else {
