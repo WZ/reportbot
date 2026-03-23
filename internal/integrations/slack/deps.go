@@ -136,6 +136,14 @@ func GetSlackAuthorIDsByDateRange(db *sql.DB, from, to time.Time) (map[string]bo
 	return sqlite.GetSlackAuthorIDsByDateRange(db, from, to)
 }
 
+func FindItemsByTicketID(db *sql.DB, ticketID string) ([]WorkItem, error) {
+	return sqlite.FindItemsByTicketID(db, ticketID)
+}
+
+func InsertWorkItemReturningID(db *sql.DB, item WorkItem) (int64, error) {
+	return sqlite.InsertWorkItemReturningID(db, item)
+}
+
 func GetWorkItemByID(db *sql.DB, id int64) (WorkItem, error) {
 	return sqlite.GetWorkItemByID(db, id)
 }

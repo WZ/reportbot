@@ -115,6 +115,19 @@ func InsertWorkItem(db *sql.DB, item WorkItem) error {
 	return err
 }
 
+func InsertWorkItemReturningID(db *sql.DB, item WorkItem) (int64, error) {
+	res, err := db.Exec(
+		`INSERT OR IGNORE INTO work_items (description, author, author_id, source, source_ref, category, status, ticket_ids, reported_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		item.Description, item.Author, item.AuthorID, item.Source, item.SourceRef,
+		item.Category, item.Status, item.TicketIDs, item.ReportedAt,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
 func InsertWorkItems(db *sql.DB, items []WorkItem) (int, error) {
 	tx, err := db.Begin()
 	if err != nil {
@@ -163,6 +176,36 @@ func GetItemsByDateRange(db *sql.DB, from, to time.Time) ([]WorkItem, error) {
 		`SELECT id, description, author, author_id, source, source_ref, category, status, ticket_ids, reported_at, created_at
 		 FROM work_items WHERE reported_at >= ? AND reported_at < ? ORDER BY category, author, reported_at, id`,
 		from, to,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var items []WorkItem
+	for rows.Next() {
+		var item WorkItem
+		err := rows.Scan(
+			&item.ID, &item.Description, &item.Author, &item.AuthorID, &item.Source,
+			&item.SourceRef, &item.Category, &item.Status, &item.TicketIDs,
+			&item.ReportedAt, &item.CreatedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func FindItemsByTicketID(db *sql.DB, ticketID string) ([]WorkItem, error) {
+	rows, err := db.Query(
+		`SELECT id, description, author, author_id, source, source_ref, category, status, ticket_ids, reported_at, created_at
+		 FROM work_items
+		 WHERE ticket_ids LIKE '%' || ? || '%'
+		    OR description LIKE '[' || ? || ']%'
+		 ORDER BY reported_at DESC, id DESC`,
+		ticketID, ticketID,
 	)
 	if err != nil {
 		return nil, err

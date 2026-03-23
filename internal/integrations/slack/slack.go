@@ -50,6 +50,9 @@ const (
 	actionNudgeAll            = "nudge_all"
 	modalNudgeConfirmCallback = "nudge_confirm_modal"
 	nudgeMetaPrefix           = "nudge:"
+
+	actionReportOverwrite = "report_overwrite"
+	actionReportCancel    = "report_cancel"
 )
 
 func StartSlackBot(cfg Config, db *sql.DB, api *slack.Client) error {
@@ -203,6 +206,84 @@ func handleReport(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashComm
 	for i := range items {
 		items[i].AuthorID = authorID
 	}
+
+	// Check for duplicate ticket IDs before inserting.
+	type dupMatch struct {
+		newIdx   int
+		existing WorkItem
+		ticket   string
+	}
+	var userInfo *slack.User
+	var matches []dupMatch
+	for i, item := range items {
+		ticket, ok := leadingTicketPrefix(item.Description)
+		if !ok {
+			continue
+		}
+		candidates, err := FindItemsByTicketID(db, ticket)
+		if err != nil || len(candidates) == 0 {
+			continue
+		}
+		if userInfo == nil && authorID != "" {
+			userInfo, _ = api.GetUserInfo(authorID)
+		}
+		for _, ex := range candidates {
+			if !ticketExactMatch(ex, ticket) {
+				continue
+			}
+			if itemBelongsToViewer(ex, authorID, userInfo) {
+				matches = append(matches, dupMatch{i, ex, ticket})
+				break
+			}
+		}
+	}
+
+	if len(matches) > 0 {
+		// Insert-then-reconcile: insert all new items, then prompt user.
+		var newIDs []int64
+		for _, item := range items {
+			id, err := InsertWorkItemReturningID(db, item)
+			if err != nil {
+				postEphemeral(api, cmd, fmt.Sprintf("Error saving item: %v", err))
+				log.Printf("report insert error user=%s: %v", cmd.UserID, err)
+				return
+			}
+			newIDs = append(newIDs, id)
+		}
+
+		var oldIDStrs, newIDStrs []string
+		for _, m := range matches {
+			oldIDStrs = append(oldIDStrs, fmt.Sprintf("%d", m.existing.ID))
+		}
+		for _, id := range newIDs {
+			newIDStrs = append(newIDStrs, fmt.Sprintf("%d", id))
+		}
+		buttonValue := strings.Join(oldIDStrs, ",") + "|" + strings.Join(newIDStrs, ",")
+
+		msg := "Duplicate ticket(s) found:\n"
+		for _, m := range matches {
+			msg += fmt.Sprintf("• [%s] %q (%s) — reported %s\n  → New: %q (%s)\n",
+				m.ticket, m.existing.Description, normalizeStatus(m.existing.Status),
+				m.existing.ReportedAt.Format("Jan 2"),
+				items[m.newIdx].Description, normalizeStatus(items[m.newIdx].Status))
+		}
+
+		overwriteBtn := slack.NewButtonBlockElement(actionReportOverwrite, buttonValue,
+			slack.NewTextBlockObject(slack.PlainTextType, "Overwrite", false, false))
+		cancelBtn := slack.NewButtonBlockElement(actionReportCancel, buttonValue,
+			slack.NewTextBlockObject(slack.PlainTextType, "Cancel", false, false))
+		blocks := []slack.Block{
+			slack.NewSectionBlock(slack.NewTextBlockObject(slack.MarkdownType, msg, false, false), nil, nil),
+			slack.NewActionBlock("report_dup_actions", overwriteBtn, cancelBtn),
+		}
+		if _, postErr := api.PostEphemeral(cmd.ChannelID, cmd.UserID, slack.MsgOptionBlocks(blocks...)); postErr != nil {
+			log.Printf("report dup prompt error user=%s: %v", cmd.UserID, postErr)
+			postEphemeral(api, cmd, msg+"\nUse /list to manage items.")
+		}
+		log.Printf("report duplicate detected user=%s tickets=%v", cmd.UserID, oldIDStrs)
+		return
+	}
+
 	if len(items) == 1 {
 		if err := InsertWorkItem(db, items[0]); err != nil {
 			postEphemeral(api, cmd, fmt.Sprintf("Error saving item: %v", err))
@@ -252,6 +333,74 @@ func handleReport(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashComm
 	}
 	postEphemeral(api, cmd, msg)
 	log.Printf("report saved user=%s author=%s count=%d", cmd.UserID, author, len(items))
+}
+
+func ticketExactMatch(item WorkItem, ticket string) bool {
+	if item.TicketIDs != "" {
+		for _, t := range strings.Split(item.TicketIDs, ",") {
+			if strings.TrimSpace(t) == ticket {
+				return true
+			}
+		}
+	}
+	if prefix, ok := leadingTicketPrefix(item.Description); ok {
+		if prefix == ticket {
+			return true
+		}
+	}
+	return false
+}
+
+func parseReportDupButtonValue(value string) (oldIDs, newIDs []int64, ok bool) {
+	parts := strings.SplitN(value, "|", 2)
+	if len(parts) != 2 {
+		return nil, nil, false
+	}
+	for _, s := range strings.Split(parts[0], ",") {
+		id, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
+		if err != nil {
+			return nil, nil, false
+		}
+		oldIDs = append(oldIDs, id)
+	}
+	for _, s := range strings.Split(parts[1], ",") {
+		id, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
+		if err != nil {
+			return nil, nil, false
+		}
+		newIDs = append(newIDs, id)
+	}
+	return oldIDs, newIDs, true
+}
+
+func handleReportOverwrite(api *slack.Client, db *sql.DB, channelID, userID, value string) {
+	oldIDs, _, ok := parseReportDupButtonValue(value)
+	if !ok {
+		postEphemeralTo(api, channelID, userID, "Invalid action data.")
+		return
+	}
+	for _, id := range oldIDs {
+		if err := DeleteWorkItemByID(db, id); err != nil {
+			log.Printf("report overwrite delete error id=%d: %v", id, err)
+		}
+	}
+	postEphemeralTo(api, channelID, userID, fmt.Sprintf("Replaced %d duplicate item(s).", len(oldIDs)))
+	log.Printf("report overwrite user=%s deleted=%v", userID, oldIDs)
+}
+
+func handleReportCancel(api *slack.Client, db *sql.DB, channelID, userID, value string) {
+	_, newIDs, ok := parseReportDupButtonValue(value)
+	if !ok {
+		postEphemeralTo(api, channelID, userID, "Invalid action data.")
+		return
+	}
+	for _, id := range newIDs {
+		if err := DeleteWorkItemByID(db, id); err != nil {
+			log.Printf("report cancel delete error id=%d: %v", id, err)
+		}
+	}
+	postEphemeralTo(api, channelID, userID, "Report cancelled — duplicate items not overwritten.")
+	log.Printf("report cancel user=%s deleted=%v", userID, newIDs)
 }
 
 func notifyManagersOnMemberReport(api *slack.Client, cfg Config, cmd slack.SlashCommand, author string, items []WorkItem) {
@@ -1241,6 +1390,12 @@ func handleBlockActions(api *slack.Client, db *sql.DB, cfg Config, cb slack.Inte
 	userID := cb.User.ID
 
 	switch act.ActionID {
+	case actionReportOverwrite:
+		handleReportOverwrite(api, db, channelID, userID, act.Value)
+		return
+	case actionReportCancel:
+		handleReportCancel(api, db, channelID, userID, act.Value)
+		return
 	case actionPagePrev, actionPageNext:
 		scope, page := parseListPageValue(act.Value)
 		renderListItems(api, db, cfg, channelID, userID, page, scope)
@@ -1911,7 +2066,7 @@ func handleNudgeDoneAction(api *slack.Client, db *sql.DB, cfg Config, cb slack.I
 	if !authorizeNudgeAction(api, cb, targetUserID) {
 		return
 	}
-	if !canActOnNudgeItem(api, db, cfg, itemID, targetUserID) {
+	if !canActOnNudgeItem(api, db, itemID, targetUserID) {
 		log.Printf("nudge done denied item=%d target=%s", itemID, targetUserID)
 		return
 	}
@@ -1935,7 +2090,7 @@ func handleNudgeMoreAction(api *slack.Client, db *sql.DB, cfg Config, cb slack.I
 	if !authorizeNudgeAction(api, cb, targetUserID) {
 		return
 	}
-	if !canActOnNudgeItem(api, db, cfg, itemID, targetUserID) {
+	if !canActOnNudgeItem(api, db, itemID, targetUserID) {
 		log.Printf("nudge status denied item=%d target=%s", itemID, targetUserID)
 		return
 	}
@@ -1970,7 +2125,7 @@ func authorizeNudgeAction(api *slack.Client, cb slack.InteractionCallback, targe
 	return true
 }
 
-func canActOnNudgeItem(api *slack.Client, db *sql.DB, cfg Config, itemID int64, targetUserID string) bool {
+func canActOnNudgeItem(api *slack.Client, db *sql.DB, itemID int64, targetUserID string) bool {
 	item, err := GetWorkItemByID(db, itemID)
 	if err != nil {
 		log.Printf("canActOnNudgeItem: failed to get work item id=%d: %v", itemID, err)
