@@ -144,6 +144,10 @@ func InsertWorkItemReturningID(db *sql.DB, item WorkItem) (int64, error) {
 	return sqlite.InsertWorkItemReturningID(db, item)
 }
 
+func InsertWorkItemsReturningIDs(db *sql.DB, items []WorkItem) ([]int64, error) {
+	return sqlite.InsertWorkItemsReturningIDs(db, items)
+}
+
 func GetWorkItemByID(db *sql.DB, id int64) (WorkItem, error) {
 	return sqlite.GetWorkItemByID(db, id)
 }

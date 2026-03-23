@@ -239,26 +239,28 @@ func handleReport(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashComm
 	}
 
 	if len(matches) > 0 {
-		// Insert-then-reconcile: insert all new items, then prompt user.
-		var newIDs []int64
-		for _, item := range items {
-			id, err := InsertWorkItemReturningID(db, item)
-			if err != nil {
-				postEphemeral(api, cmd, fmt.Sprintf("Error saving item: %v", err))
-				log.Printf("report insert error user=%s: %v", cmd.UserID, err)
-				return
-			}
-			newIDs = append(newIDs, id)
+		// Insert-then-reconcile: insert all new items in a transaction, then prompt user.
+		newIDs, err := InsertWorkItemsReturningIDs(db, items)
+		if err != nil {
+			postEphemeral(api, cmd, fmt.Sprintf("Error saving items: %v", err))
+			log.Printf("report insert error user=%s: %v", cmd.UserID, err)
+			return
 		}
 
-		var oldIDStrs, newIDStrs []string
+		// Build button value with only dup-matched new IDs so Cancel
+		// only removes duplicates, not unrelated items in the batch.
+		dupIdxs := make(map[int]bool, len(matches))
+		var oldIDStrs, dupNewIDStrs []string
 		for _, m := range matches {
 			oldIDStrs = append(oldIDStrs, fmt.Sprintf("%d", m.existing.ID))
+			dupIdxs[m.newIdx] = true
 		}
-		for _, id := range newIDs {
-			newIDStrs = append(newIDStrs, fmt.Sprintf("%d", id))
+		for i, id := range newIDs {
+			if dupIdxs[i] {
+				dupNewIDStrs = append(dupNewIDStrs, fmt.Sprintf("%d", id))
+			}
 		}
-		buttonValue := strings.Join(oldIDStrs, ",") + "|" + strings.Join(newIDStrs, ",")
+		buttonValue := strings.Join(oldIDStrs, ",") + "|" + strings.Join(dupNewIDStrs, ",")
 
 		msg := "Duplicate ticket(s) found:\n"
 		for _, m := range matches {
@@ -373,8 +375,8 @@ func parseReportDupButtonValue(value string) (oldIDs, newIDs []int64, ok bool) {
 	return oldIDs, newIDs, true
 }
 
-func handleReportOverwrite(api *slack.Client, db *sql.DB, channelID, userID, value string) {
-	oldIDs, _, ok := parseReportDupButtonValue(value)
+func handleReportOverwrite(api *slack.Client, db *sql.DB, cfg Config, channelID, userID, value string) {
+	oldIDs, newIDs, ok := parseReportDupButtonValue(value)
 	if !ok {
 		postEphemeralTo(api, channelID, userID, "Invalid action data.")
 		return
@@ -386,6 +388,32 @@ func handleReportOverwrite(api *slack.Client, db *sql.DB, channelID, userID, val
 	}
 	postEphemeralTo(api, channelID, userID, fmt.Sprintf("Replaced %d duplicate item(s).", len(oldIDs)))
 	log.Printf("report overwrite user=%s deleted=%v", userID, oldIDs)
+
+	// Notify managers about the kept items.
+	if !cfg.IsManagerID(userID) && len(cfg.ManagerSlackIDs) > 0 {
+		var items []WorkItem
+		for _, id := range newIDs {
+			if item, err := GetWorkItemByID(db, id); err == nil {
+				items = append(items, item)
+			}
+		}
+		if len(items) > 0 {
+			msg := buildManagerReportNotificationMessage(channelID, items[0].Author, items)
+			seen := make(map[string]bool)
+			for _, managerID := range cfg.ManagerSlackIDs {
+				managerID = strings.TrimSpace(managerID)
+				if managerID == "" || managerID == userID || seen[managerID] {
+					continue
+				}
+				seen[managerID] = true
+				ch, _, _, err := api.OpenConversation(&slack.OpenConversationParameters{Users: []string{managerID}})
+				if err != nil {
+					continue
+				}
+				api.PostMessage(ch.ID, slack.MsgOptionText(msg, false))
+			}
+		}
+	}
 }
 
 func handleReportCancel(api *slack.Client, db *sql.DB, channelID, userID, value string) {
@@ -399,7 +427,11 @@ func handleReportCancel(api *slack.Client, db *sql.DB, channelID, userID, value 
 			log.Printf("report cancel delete error id=%d: %v", id, err)
 		}
 	}
-	postEphemeralTo(api, channelID, userID, "Report cancelled — duplicate items not overwritten.")
+	msg := "Report cancelled — duplicate items not overwritten."
+	if len(newIDs) > 0 {
+		msg += " Other non-duplicate items in the batch were kept."
+	}
+	postEphemeralTo(api, channelID, userID, msg)
 	log.Printf("report cancel user=%s deleted=%v", userID, newIDs)
 }
 
@@ -1391,7 +1423,7 @@ func handleBlockActions(api *slack.Client, db *sql.DB, cfg Config, cb slack.Inte
 
 	switch act.ActionID {
 	case actionReportOverwrite:
-		handleReportOverwrite(api, db, channelID, userID, act.Value)
+		handleReportOverwrite(api, db, cfg, channelID, userID, act.Value)
 		return
 	case actionReportCancel:
 		handleReportCancel(api, db, channelID, userID, act.Value)
