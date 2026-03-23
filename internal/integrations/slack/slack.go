@@ -1079,7 +1079,25 @@ func renderListItems(api *slack.Client, db *sql.DB, cfg Config, channelID, userI
 		items = filtered
 	}
 
-	if len(items) == 0 {
+	// Fetch carry-over in-progress items from previous weeks.
+	var carryOver []WorkItem
+	if ipItems, ipErr := GetInProgressItems(db); ipErr == nil {
+		seen := make(map[int64]bool, len(items))
+		for _, it := range items {
+			seen[it.ID] = true
+		}
+		for _, it := range ipItems {
+			if seen[it.ID] {
+				continue
+			}
+			if scope == listScopeMine && !itemBelongsToViewer(it, userID, user) {
+				continue
+			}
+			carryOver = append(carryOver, it)
+		}
+	}
+
+	if len(items) == 0 && len(carryOver) == 0 {
 		msg := fmt.Sprintf("No items for this week (%s - %s)",
 			monday.Format("Jan 2"), nextMonday.AddDate(0, 0, -1).Format("Jan 2"))
 		if scope == listScopeMine {
@@ -1091,43 +1109,45 @@ func renderListItems(api *slack.Client, db *sql.DB, cfg Config, channelID, userI
 		return
 	}
 
-	// Precompute sort keys: lowercase first name from synthesized display name.
-	sortKeys := make([]string, len(items))
-	for idx := range items {
-		if fields := strings.Fields(synthesizeName(items[idx].Author)); len(fields) > 0 {
-			sortKeys[idx] = strings.ToLower(fields[0])
+	var blocks []slack.Block
+
+	if len(items) > 0 {
+		// Precompute sort keys: lowercase first name from synthesized display name.
+		sortKeys := make([]string, len(items))
+		for idx := range items {
+			if fields := strings.Fields(synthesizeName(items[idx].Author)); len(fields) > 0 {
+				sortKeys[idx] = strings.ToLower(fields[0])
+			}
 		}
-	}
-	// Sort: group by author (first name alphabetically), then by reported_at ascending.
-	sort.SliceStable(items, func(i, j int) bool {
-		if sortKeys[i] != sortKeys[j] {
-			return sortKeys[i] < sortKeys[j]
+		// Sort: group by author (first name alphabetically), then by reported_at ascending.
+		sort.SliceStable(items, func(i, j int) bool {
+			if sortKeys[i] != sortKeys[j] {
+				return sortKeys[i] < sortKeys[j]
+			}
+			return items[i].ReportedAt.Before(items[j].ReportedAt)
+		})
+
+		if page < 0 {
+			page = 0
 		}
-		return items[i].ReportedAt.Before(items[j].ReportedAt)
-	})
+		start := page * listItemsPageSize
+		if start >= len(items) {
+			page = (len(items) - 1) / listItemsPageSize
+			start = page * listItemsPageSize
+		}
+		end := start + listItemsPageSize
+		if end > len(items) {
+			end = len(items)
+		}
 
-	if page < 0 {
-		page = 0
-	}
-	start := page * listItemsPageSize
-	if start >= len(items) {
-		page = (len(items) - 1) / listItemsPageSize
-		start = page * listItemsPageSize
-	}
-	end := start + listItemsPageSize
-	if end > len(items) {
-		end = len(items)
-	}
+		titlePrefix := "Items"
+		if scope == listScopeMine {
+			titlePrefix = "Your items"
+		} else if scope == listScopeAll {
+			titlePrefix = "Team items"
+		}
 
-	titlePrefix := "Items"
-	if scope == listScopeMine {
-		titlePrefix = "Your items"
-	} else if scope == listScopeAll {
-		titlePrefix = "Team items"
-	}
-
-	blocks := []slack.Block{
-		slack.NewHeaderBlock(
+		blocks = append(blocks, slack.NewHeaderBlock(
 			slack.NewTextBlockObject(slack.PlainTextType,
 				fmt.Sprintf("%s for %s - %s (%d total)",
 					titlePrefix,
@@ -1136,67 +1156,47 @@ func renderListItems(api *slack.Client, db *sql.DB, cfg Config, channelID, userI
 					len(items)),
 				false, false,
 			),
-		),
-	}
+		))
 
-	for idx, item := range items[start:end] {
-		lineNumber := start + idx + 1
-		source := ""
-		switch item.Source {
-		case "gitlab":
-			source = " [GitLab]"
-		case "github":
-			source = " [GitHub]"
+		for idx, item := range items[start:end] {
+			lineNumber := start + idx + 1
+			blocks = appendListItemBlock(blocks, lineNumber, item, scope, isManager, userID, user)
 		}
-		category := ""
-		if item.Category != "" {
-			category = fmt.Sprintf(" _%s_", item.Category)
-		}
-		text := formatListItemText(lineNumber, item, source, category)
-		if canManageItem(item, isManager, userID, user) {
-			editOpt := slack.NewOptionBlockObject(
-				fmt.Sprintf("edit:%s:%d", scope, item.ID),
-				slack.NewTextBlockObject(slack.PlainTextType, "Edit", false, false),
-				nil,
-			)
-			deleteOpt := slack.NewOptionBlockObject(
-				fmt.Sprintf("delete:%s:%d", scope, item.ID),
-				slack.NewTextBlockObject(slack.PlainTextType, "Delete", false, false),
-				nil,
-			)
-			menu := slack.NewOverflowBlockElement(actionRowMenu, editOpt, deleteOpt)
-			blocks = append(blocks, slack.NewSectionBlock(
-				slack.NewTextBlockObject(slack.MarkdownType, text, false, false),
-				nil,
-				slack.NewAccessory(menu),
-			))
-		} else {
-			blocks = append(blocks, slack.NewSectionBlock(
-				slack.NewTextBlockObject(slack.MarkdownType, text, false, false),
-				nil,
-				nil,
-			))
+
+		if len(items) > listItemsPageSize {
+			var nav []slack.BlockElement
+			if page > 0 {
+				nav = append(nav, slack.NewButtonBlockElement(
+					actionPagePrev,
+					fmt.Sprintf("%s|%d", scope, page-1),
+					slack.NewTextBlockObject(slack.PlainTextType, "Prev", false, false),
+				))
+			}
+			if end < len(items) {
+				nav = append(nav, slack.NewButtonBlockElement(
+					actionPageNext,
+					fmt.Sprintf("%s|%d", scope, page+1),
+					slack.NewTextBlockObject(slack.PlainTextType, "Next", false, false),
+				))
+			}
+			if len(nav) > 0 {
+				blocks = append(blocks, slack.NewActionBlock("list_items_nav", nav...))
+			}
 		}
 	}
 
-	if len(items) > listItemsPageSize {
-		var nav []slack.BlockElement
-		if page > 0 {
-			nav = append(nav, slack.NewButtonBlockElement(
-				actionPagePrev,
-				fmt.Sprintf("%s|%d", scope, page-1),
-				slack.NewTextBlockObject(slack.PlainTextType, "Prev", false, false),
-			))
+	// Carry-over in-progress items from previous weeks.
+	if len(carryOver) > 0 {
+		if len(blocks) > 0 {
+			blocks = append(blocks, slack.NewDividerBlock())
 		}
-		if end < len(items) {
-			nav = append(nav, slack.NewButtonBlockElement(
-				actionPageNext,
-				fmt.Sprintf("%s|%d", scope, page+1),
-				slack.NewTextBlockObject(slack.PlainTextType, "Next", false, false),
-			))
-		}
-		if len(nav) > 0 {
-			blocks = append(blocks, slack.NewActionBlock("list_items_nav", nav...))
+		blocks = append(blocks, slack.NewHeaderBlock(
+			slack.NewTextBlockObject(slack.PlainTextType,
+				fmt.Sprintf("In progress from previous weeks (%d)", len(carryOver)),
+				false, false),
+		))
+		for idx, item := range carryOver {
+			blocks = appendListItemBlock(blocks, idx+1, item, scope, isManager, userID, user)
 		}
 	}
 
@@ -1207,6 +1207,44 @@ func renderListItems(api *slack.Client, db *sql.DB, cfg Config, channelID, userI
 		return
 	}
 	log.Printf("list-items count=%d page=%d", len(items), page)
+}
+
+func appendListItemBlock(blocks []slack.Block, lineNumber int, item WorkItem, scope string, isManager bool, userID string, user *slack.User) []slack.Block {
+	source := ""
+	switch item.Source {
+	case "gitlab":
+		source = " [GitLab]"
+	case "github":
+		source = " [GitHub]"
+	}
+	category := ""
+	if item.Category != "" {
+		category = fmt.Sprintf(" _%s_", item.Category)
+	}
+	text := formatListItemText(lineNumber, item, source, category)
+	if canManageItem(item, isManager, userID, user) {
+		editOpt := slack.NewOptionBlockObject(
+			fmt.Sprintf("edit:%s:%d", scope, item.ID),
+			slack.NewTextBlockObject(slack.PlainTextType, "Edit", false, false),
+			nil,
+		)
+		deleteOpt := slack.NewOptionBlockObject(
+			fmt.Sprintf("delete:%s:%d", scope, item.ID),
+			slack.NewTextBlockObject(slack.PlainTextType, "Delete", false, false),
+			nil,
+		)
+		menu := slack.NewOverflowBlockElement(actionRowMenu, editOpt, deleteOpt)
+		return append(blocks, slack.NewSectionBlock(
+			slack.NewTextBlockObject(slack.MarkdownType, text, false, false),
+			nil,
+			slack.NewAccessory(menu),
+		))
+	}
+	return append(blocks, slack.NewSectionBlock(
+		slack.NewTextBlockObject(slack.MarkdownType, text, false, false),
+		nil,
+		nil,
+	))
 }
 
 func handleListMissing(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashCommand) {
