@@ -56,13 +56,17 @@ templ ReportEditor(data EditorData) {
 		</div>
 		<div class="actions">
 			if data.IsManager {
-				<button class="btn btn-primary" hx-post={ "/generate?week=" + data.WeekParam } hx-target="#generate-status" hx-swap="innerHTML">
+				<button class="btn btn-primary" hx-post={ "/generate?week=" + data.WeekParam } hx-target="#generate-status" hx-swap="innerHTML" hx-disabled-elt="this">
+					<span class="htmx-indicator"><span class="spinner"></span></span>
 					Generate Report
 				</button>
 			}
-			<button class="btn btn-secondary" hx-get={ "/preview?mode=" + data.Mode + "&week=" + data.WeekParam } hx-target="#preview-content" hx-swap="innerHTML">
+			<button class="btn btn-secondary" hx-get={ "/preview?mode=" + data.Mode + "&week=" + data.WeekParam } hx-target="#preview-content" hx-swap="innerHTML" hx-indicator="#preview-loading">
 				Preview Markdown
 			</button>
+			<span id="preview-loading" class="htmx-indicator" style="display:inline-flex;align-items:center;gap:6px;">
+				<span class="spinner"></span> Loading preview...
+			</span>
 			<select class="btn btn-secondary" id="report-mode" onchange="this.form && this.form.submit()" style="font-size:13px;">
 				<option value="team" selected?={ data.Mode == "team" }>Team mode</option>
 				<option value="boss" selected?={ data.Mode == "boss" }>Boss mode</option>

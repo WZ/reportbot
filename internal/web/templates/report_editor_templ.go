@@ -184,7 +184,7 @@ func ReportEditor(data EditorData) templ.Component {
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 11, "\" hx-target=\"#generate-status\" hx-swap=\"innerHTML\">Generate Report</button> ")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 11, "\" hx-target=\"#generate-status\" hx-swap=\"innerHTML\" hx-disabled-elt=\"this\"><span class=\"htmx-indicator\"><span class=\"spinner\"></span></span> Generate Report</button> ")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
@@ -196,13 +196,13 @@ func ReportEditor(data EditorData) templ.Component {
 			var templ_7745c5c3_Var10 string
 			templ_7745c5c3_Var10, templ_7745c5c3_Err = templ.JoinStringErrs("/preview?mode=" + data.Mode + "&week=" + data.WeekParam)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/report_editor.templ`, Line: 63, Col: 102}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/report_editor.templ`, Line: 64, Col: 102}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var10))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 13, "\" hx-target=\"#preview-content\" hx-swap=\"innerHTML\">Preview Markdown</button> <select class=\"btn btn-secondary\" id=\"report-mode\" onchange=\"this.form && this.form.submit()\" style=\"font-size:13px;\"><option value=\"team\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 13, "\" hx-target=\"#preview-content\" hx-swap=\"innerHTML\" hx-indicator=\"#preview-loading\">Preview Markdown</button> <span id=\"preview-loading\" class=\"htmx-indicator\" style=\"display:inline-flex;align-items:center;gap:6px;\"><span class=\"spinner\"></span> Loading preview...</span> <select class=\"btn btn-secondary\" id=\"report-mode\" onchange=\"this.form && this.form.submit()\" style=\"font-size:13px;\"><option value=\"team\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}

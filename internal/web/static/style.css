@@ -123,5 +123,9 @@ main { max-width: 1400px; margin: 0 auto; padding: 20px 24px; }
 
 /* HTMX indicators */
 .htmx-indicator { display: none; }
-.htmx-request .htmx-indicator { display: inline; }
-.htmx-request.htmx-indicator { display: inline; }
+.htmx-request .htmx-indicator { display: inline-flex; align-items: center; gap: 6px; }
+.htmx-request.htmx-indicator { display: inline-flex; align-items: center; gap: 6px; }
+.htmx-request .btn { opacity: 0.7; cursor: wait; }
+
+/* Reclassify dropdown loading */
+select.htmx-request { opacity: 0.5; pointer-events: none; }
