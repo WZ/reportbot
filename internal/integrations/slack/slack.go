@@ -1080,11 +1080,24 @@ func renderListItems(api *slack.Client, db *sql.DB, cfg Config, channelID, userI
 	}
 
 	// Fetch carry-over in-progress items from previous weeks.
+	// Exclude items that already have a newer version in the current week
+	// (e.g., user reported "in progress" last week and "done" this week).
+	const maxCarryOver = 15
 	var carryOver []WorkItem
 	if ipItems, ipErr := GetInProgressItems(db); ipErr == nil {
+		// Build set of current-week item IDs and a set of ticket/description
+		// keys from current-week items to suppress stale carry-overs.
 		seen := make(map[int64]bool, len(items))
+		currentKeys := make(map[string]bool, len(items))
 		for _, it := range items {
 			seen[it.ID] = true
+			key := strings.ToLower(strings.TrimSpace(it.Description))
+			if key != "" {
+				currentKeys[key] = true
+			}
+			if ticket, ok := leadingTicketPrefix(it.Description); ok {
+				currentKeys[ticket] = true
+			}
 		}
 		for _, it := range ipItems {
 			if seen[it.ID] {
@@ -1093,8 +1106,21 @@ func renderListItems(api *slack.Client, db *sql.DB, cfg Config, channelID, userI
 			if scope == listScopeMine && !itemBelongsToViewer(it, userID, user) {
 				continue
 			}
+			// Skip if a current-week item supersedes this (same ticket or description).
+			if ticket, ok := leadingTicketPrefix(it.Description); ok && currentKeys[ticket] {
+				continue
+			}
+			desc := strings.ToLower(strings.TrimSpace(it.Description))
+			if desc != "" && currentKeys[desc] {
+				continue
+			}
 			carryOver = append(carryOver, it)
+			if len(carryOver) >= maxCarryOver {
+				break
+			}
 		}
+	} else {
+		log.Printf("list-items carry-over query error: %v", ipErr)
 	}
 
 	if len(items) == 0 && len(carryOver) == 0 {
@@ -1628,7 +1654,7 @@ func handleViewSubmission(api *slack.Client, db *sql.DB, cfg Config, cb slack.In
 		status = item.Status
 	}
 	monday, nextMonday := ReportWeekRange(cfg, time.Now().In(cfg.Location))
-	if !itemInRange(item, monday, nextMonday) {
+	if !itemEditable(item, monday, nextMonday) {
 		return
 	}
 	isManager, _ := isManagerUser(api, cfg, userID)
@@ -1674,7 +1700,7 @@ func deleteItemAction(api *slack.Client, db *sql.DB, cfg Config, channelID, user
 		return
 	}
 	monday, nextMonday := ReportWeekRange(cfg, time.Now().In(cfg.Location))
-	if !itemInRange(item, monday, nextMonday) {
+	if !itemEditable(item, monday, nextMonday) {
 		postEphemeralTo(api, channelID, userID, "You can only modify this week's items.")
 		return
 	}
@@ -1700,7 +1726,7 @@ func openEditModal(api *slack.Client, db *sql.DB, cfg Config, triggerID, channel
 		return
 	}
 	monday, nextMonday := ReportWeekRange(cfg, time.Now().In(cfg.Location))
-	if !itemInRange(item, monday, nextMonday) {
+	if !itemEditable(item, monday, nextMonday) {
 		postEphemeralTo(api, channelID, userID, "You can only modify this week's items.")
 		return
 	}
@@ -1849,7 +1875,7 @@ func openDeleteModal(api *slack.Client, db *sql.DB, cfg Config, triggerID, chann
 		return
 	}
 	monday, nextMonday := ReportWeekRange(cfg, time.Now().In(cfg.Location))
-	if !itemInRange(item, monday, nextMonday) {
+	if !itemEditable(item, monday, nextMonday) {
 		postEphemeralTo(api, channelID, userID, "You can only modify this week's items.")
 		return
 	}
@@ -1887,6 +1913,16 @@ func openDeleteModal(api *slack.Client, db *sql.DB, cfg Config, triggerID, chann
 
 func itemInRange(item WorkItem, from, to time.Time) bool {
 	return !item.ReportedAt.Before(from) && item.ReportedAt.Before(to)
+}
+
+// itemEditable returns true if the item is in the current week range OR is
+// still marked in-progress (carry-over items should be editable so users
+// can update their status).
+func itemEditable(item WorkItem, from, to time.Time) bool {
+	if itemInRange(item, from, to) {
+		return true
+	}
+	return strings.Contains(strings.ToLower(strings.TrimSpace(item.Status)), "in progress")
 }
 
 func formatItemDescriptionForList(item WorkItem) string {
