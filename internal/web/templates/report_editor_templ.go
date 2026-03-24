@@ -294,7 +294,7 @@ func ReportEditor(data EditorData) templ.Component {
 					return templ_7745c5c3_Err
 				}
 			} else {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 26, "<div class=\"editor-layout\"><div class=\"editor-sections\">")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 26, "<div class=\"editor-layout\" id=\"editor-layout\"><div class=\"editor-sections\" id=\"editor-sections\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
@@ -304,7 +304,7 @@ func ReportEditor(data EditorData) templ.Component {
 						return templ_7745c5c3_Err
 					}
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 27, "</div><div class=\"preview-panel\"><h3>Markdown Preview</h3><div id=\"preview-content\" class=\"preview-body\"><p style=\"color:#999;\">Click \"Preview Markdown\" to see the rendered report.</p></div></div></div>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 27, "</div><div class=\"resize-handle\" id=\"resize-handle\"></div><div class=\"preview-panel\" id=\"preview-panel\"><h3>Markdown Preview</h3><div id=\"preview-content\" class=\"preview-body\"><p style=\"color:#999;\">Click \"Preview Markdown\" to see the rendered report.</p></div></div></div><script>\n\t\t\t(function() {\n\t\t\t\tvar handle = document.getElementById('resize-handle');\n\t\t\t\tvar panel = document.getElementById('preview-panel');\n\t\t\t\tvar layout = document.getElementById('editor-layout');\n\t\t\t\tvar dragging = false;\n\n\t\t\t\thandle.addEventListener('mousedown', function(e) {\n\t\t\t\t\tdragging = true;\n\t\t\t\t\thandle.classList.add('dragging');\n\t\t\t\t\tdocument.body.style.cursor = 'col-resize';\n\t\t\t\t\tdocument.body.style.userSelect = 'none';\n\t\t\t\t\te.preventDefault();\n\t\t\t\t});\n\n\t\t\t\tdocument.addEventListener('mousemove', function(e) {\n\t\t\t\t\tif (!dragging) return;\n\t\t\t\t\tvar layoutRect = layout.getBoundingClientRect();\n\t\t\t\t\tvar newWidth = layoutRect.right - e.clientX - 8;\n\t\t\t\t\tif (newWidth < 200) newWidth = 200;\n\t\t\t\t\tif (newWidth > layoutRect.width * 0.8) newWidth = layoutRect.width * 0.8;\n\t\t\t\t\tpanel.style.width = newWidth + 'px';\n\t\t\t\t});\n\n\t\t\t\tdocument.addEventListener('mouseup', function() {\n\t\t\t\t\tif (!dragging) return;\n\t\t\t\t\tdragging = false;\n\t\t\t\t\thandle.classList.remove('dragging');\n\t\t\t\t\tdocument.body.style.cursor = '';\n\t\t\t\t\tdocument.body.style.userSelect = '';\n\t\t\t\t});\n\t\t\t})();\n\t\t\t</script>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}

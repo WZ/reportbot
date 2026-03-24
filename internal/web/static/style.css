@@ -56,10 +56,13 @@ main { max-width: 1600px; margin: 0 auto; padding: 20px 24px; }
 .btn-secondary:hover { background: #F1F5F9; border-color: #94A3B8; }
 .btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
-/* Layout: editor + preview */
-.editor-layout { display: flex; gap: 16px; align-items: flex-start; }
-.editor-sections { flex: 1; min-width: 0; }
-.preview-panel { width: 520px; min-width: 280px; max-width: 70vw; flex-shrink: 0; background: #fff; border: 1px solid #E2E8F0; border-radius: 8px; padding: 16px; position: sticky; top: 16px; max-height: 85vh; overflow-y: auto; resize: horizontal; overflow-x: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.04); }
+/* Layout: editor + preview with draggable divider */
+.editor-layout { display: flex; align-items: flex-start; }
+.editor-sections { flex: 1; min-width: 200px; overflow: hidden; }
+.resize-handle { width: 6px; cursor: col-resize; background: transparent; flex-shrink: 0; position: relative; margin: 0 2px; align-self: stretch; min-height: 300px; }
+.resize-handle::after { content: ""; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 4px; height: 40px; background: #CBD5E1; border-radius: 2px; transition: background 0.15s; }
+.resize-handle:hover::after, .resize-handle.dragging::after { background: #2563EB; width: 4px; height: 60px; }
+.preview-panel { width: 520px; min-width: 200px; max-width: 80vw; flex-shrink: 0; background: #fff; border: 1px solid #E2E8F0; border-radius: 8px; padding: 16px; position: sticky; top: 16px; max-height: 85vh; overflow-y: auto; overflow-x: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.04); }
 .preview-panel h3 { font-size: 11px; color: #94A3B8; text-transform: uppercase; letter-spacing: 0.8px; font-weight: 600; margin-bottom: 12px; }
 .preview-panel pre, .preview-raw { white-space: pre-wrap; font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace; font-size: 12px; line-height: 1.7; color: #334155; }
 .preview-body { font-size: 13px; line-height: 1.6; color: #1E293B; }
