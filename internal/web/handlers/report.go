@@ -394,6 +394,103 @@ func ViewItemRow(db *sql.DB) http.HandlerFunc {
 	}
 }
 
+// ClassifyItems starts async LLM classification with polling progress.
+func ClassifyItems(cfg web.Config, db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		weekParam := r.URL.Query().Get("week")
+		monday, _, _, _ := resolveWeek(cfg, weekParam)
+
+		jobID := fmt.Sprintf("cls-%d", rand.Int63())
+		job := &generateJob{status: "running", message: "Starting classification..."}
+		generateJobs.Store(jobID, job)
+
+		go func() {
+			from := monday
+			to := monday.AddDate(0, 0, 7)
+
+			job.update("running", "Loading items...")
+			items, err := web.GetItemsByDateRange(db, from, to)
+			if err != nil {
+				job.update("error", "Failed to load items. Check server logs.")
+				log.Printf("Classify: failed to load items: %v", err)
+				return
+			}
+
+			job.update("running", fmt.Sprintf("Classifying %d items...", len(items)))
+			corrections, err := web.GetRecentCorrections(db, monday.AddDate(0, -1, 0), 200)
+			if err != nil {
+				log.Printf("Classify: warning: failed to load corrections: %v", err)
+			}
+			historicalItems, err := web.GetClassifiedItemsWithSections(db, monday.AddDate(0, -3, 0), 500)
+			if err != nil {
+				log.Printf("Classify: warning: failed to load historical items: %v", err)
+			}
+
+			result, err := web.BuildReportsFromLast(cfg, items, monday, corrections, historicalItems)
+			if err != nil {
+				job.update("error", "Classification failed. Check server logs.")
+				log.Printf("Classify: failed: %v", err)
+				return
+			}
+
+			// Cache the result so the page reload uses it
+			cacheKey := monday.Format("2006-01-02")
+			buildResultCache.Store(cacheKey, &cachedResult{result: result, created: time.Now()})
+
+			job.update("done", fmt.Sprintf("Classified %d items into %d sections.", len(items), len(result.Options)))
+		}()
+
+		// Return polling element
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		safeID := html.EscapeString(jobID)
+		fmt.Fprintf(w,
+			`<div class="generate-status" hx-get="/classify/%s/status?week=%s" hx-trigger="every 2s" hx-swap="innerHTML">`+
+				`<div class="spinner"></div><span>Starting classification...</span></div>`,
+			safeID, html.EscapeString(weekParam))
+	}
+}
+
+// ClassifyStatus returns the current status of a classify job.
+func ClassifyStatus() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		jobID := chi.URLParam(r, "jobID")
+		weekParam := r.URL.Query().Get("week")
+		val, ok := generateJobs.Load(jobID)
+		if !ok {
+			http.Error(w, "Job not found", http.StatusNotFound)
+			return
+		}
+
+		job := val.(*generateJob)
+		status, message, _ := job.read()
+		safeID := html.EscapeString(jobID)
+		safeMsg := html.EscapeString(message)
+
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+
+		switch status {
+		case "running":
+			fmt.Fprintf(w,
+				`<div class="generate-status" hx-get="/classify/%s/status?week=%s" hx-trigger="every 2s" hx-swap="innerHTML">`+
+					`<div class="spinner"></div><span>%s</span></div>`,
+				safeID, html.EscapeString(weekParam), safeMsg)
+		case "done":
+			generateJobs.Delete(jobID)
+			// Redirect to reload with classify=1 so the page shows the cached results
+			redirectURL := "/"
+			if weekParam != "" {
+				redirectURL = "/?week=" + weekParam
+			}
+			fmt.Fprintf(w,
+				`<div class="flash flash-success" hx-get="%s" hx-trigger="load" hx-target="body" hx-push-url="true">%s</div>`,
+				html.EscapeString(redirectURL), safeMsg)
+		case "error":
+			generateJobs.Delete(jobID)
+			fmt.Fprintf(w, `<div class="flash flash-error">%s</div>`, safeMsg)
+		}
+	}
+}
+
 // GenerateReport starts async report generation.
 func GenerateReport(cfg web.Config, db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

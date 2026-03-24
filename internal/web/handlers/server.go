@@ -79,6 +79,8 @@ func NewServer(cfg web.Config, db *sql.DB) *http.Server {
 			r.Get("/categories/{id}/rename", RenameCategoryForm(db))
 			r.Get("/categories/{id}/cancel", CancelRename(db))
 			r.Post("/categories/{id}/rename", RenameCategory(db))
+			r.Post("/classify", ClassifyItems(cfg, db))
+			r.Get("/classify/{jobID}/status", ClassifyStatus())
 			r.Post("/generate", GenerateReport(cfg, db))
 			r.Get("/generate/{jobID}/status", GenerateStatus())
 		})

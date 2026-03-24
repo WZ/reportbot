@@ -191,38 +191,38 @@ func ReportEditor(data EditorData) templ.Component {
 					return templ_7745c5c3_Err
 				}
 				if !data.HasClassifications {
-					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 12, "<a href=\"")
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 12, "<button class=\"btn btn-secondary\" style=\"background:#fef3c7;border-color:#f59e0b;color:#92400e;\" hx-post=\"")
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
-					var templ_7745c5c3_Var10 templ.SafeURL
-					templ_7745c5c3_Var10, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL("/?week=" + data.WeekParam + "&classify=1"))
+					var templ_7745c5c3_Var10 string
+					templ_7745c5c3_Var10, templ_7745c5c3_Err = templ.JoinStringErrs("/classify?week=" + data.WeekParam)
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/report_editor.templ`, Line: 66, Col: 72}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/report_editor.templ`, Line: 66, Col: 146}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var10))
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
-					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 13, "\" class=\"btn btn-secondary\" style=\"background:#fef3c7;border-color:#f59e0b;color:#92400e;\" onclick=\"this.textContent='Classifying...';this.style.opacity='0.6';this.style.pointerEvents='none';\">Classify Items</a> ")
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 13, "\" hx-target=\"#classify-status\" hx-swap=\"innerHTML\" hx-disabled-elt=\"this\"><span class=\"htmx-indicator\"><span class=\"spinner\"></span></span> Classify Items</button> ")
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
 				} else {
-					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 14, "<a href=\"")
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 14, "<button class=\"btn btn-secondary\" hx-post=\"")
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
-					var templ_7745c5c3_Var11 templ.SafeURL
-					templ_7745c5c3_Var11, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL("/?week=" + data.WeekParam + "&classify=1"))
+					var templ_7745c5c3_Var11 string
+					templ_7745c5c3_Var11, templ_7745c5c3_Err = templ.JoinStringErrs("/classify?week=" + data.WeekParam)
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/report_editor.templ`, Line: 70, Col: 72}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/report_editor.templ`, Line: 71, Col: 83}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var11))
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
-					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 15, "\" class=\"btn btn-secondary\" onclick=\"this.textContent='Classifying...';this.style.opacity='0.6';this.style.pointerEvents='none';\">Re-classify</a> ")
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 15, "\" hx-target=\"#classify-status\" hx-swap=\"innerHTML\" hx-disabled-elt=\"this\"><span class=\"htmx-indicator\"><span class=\"spinner\"></span></span> Re-classify</button> ")
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
@@ -235,13 +235,13 @@ func ReportEditor(data EditorData) templ.Component {
 			var templ_7745c5c3_Var12 string
 			templ_7745c5c3_Var12, templ_7745c5c3_Err = templ.JoinStringErrs("/preview?mode=" + data.Mode + "&week=" + data.WeekParam)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/report_editor.templ`, Line: 75, Col: 102}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/report_editor.templ`, Line: 77, Col: 102}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var12))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 17, "\" hx-target=\"#preview-content\" hx-swap=\"innerHTML\" hx-indicator=\"#preview-loading\">Preview Markdown</button> <span id=\"preview-loading\" class=\"htmx-indicator\" style=\"display:inline-flex;align-items:center;gap:6px;\"><span class=\"spinner\"></span> Loading preview...</span> <select class=\"btn btn-secondary\" id=\"report-mode\" onchange=\"this.form && this.form.submit()\" style=\"font-size:13px;\"><option value=\"team\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 17, "\" hx-target=\"#preview-content\" hx-swap=\"innerHTML\" hx-disabled-elt=\"this\" hx-indicator=\"#preview-loading\">Preview Markdown</button> <span id=\"preview-loading\" class=\"htmx-indicator\" style=\"display:inline-flex;align-items:center;gap:6px;\"><span class=\"spinner\"></span> Classifying &amp; rendering...</span> <select class=\"btn btn-secondary\" id=\"report-mode\" onchange=\"this.form && this.form.submit()\" style=\"font-size:13px;\"><option value=\"team\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -273,7 +273,7 @@ func ReportEditor(data EditorData) templ.Component {
 				var templ_7745c5c3_Var13 string
 				templ_7745c5c3_Var13, templ_7745c5c3_Err = templ.JoinStringErrs("/categories/new?week=" + data.WeekParam)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/report_editor.templ`, Line: 86, Col: 87}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/report_editor.templ`, Line: 88, Col: 87}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var13))
 				if templ_7745c5c3_Err != nil {
@@ -284,7 +284,7 @@ func ReportEditor(data EditorData) templ.Component {
 					return templ_7745c5c3_Err
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 24, "</div><div id=\"new-category-form\"></div><div id=\"generate-status\"></div>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 24, "</div><div id=\"new-category-form\"></div><div id=\"classify-status\"></div><div id=\"generate-status\"></div>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}

@@ -63,20 +63,22 @@ templ ReportEditor(data EditorData) {
 					Generate Report
 				</button>
 				if !data.HasClassifications {
-					<a href={ templ.SafeURL("/?week=" + data.WeekParam + "&classify=1") } class="btn btn-secondary" style="background:#fef3c7;border-color:#f59e0b;color:#92400e;" onclick="this.textContent='Classifying...';this.style.opacity='0.6';this.style.pointerEvents='none';">
+					<button class="btn btn-secondary" style="background:#fef3c7;border-color:#f59e0b;color:#92400e;" hx-post={ "/classify?week=" + data.WeekParam } hx-target="#classify-status" hx-swap="innerHTML" hx-disabled-elt="this">
+						<span class="htmx-indicator"><span class="spinner"></span></span>
 						Classify Items
-					</a>
+					</button>
 				} else {
-					<a href={ templ.SafeURL("/?week=" + data.WeekParam + "&classify=1") } class="btn btn-secondary" onclick="this.textContent='Classifying...';this.style.opacity='0.6';this.style.pointerEvents='none';">
+					<button class="btn btn-secondary" hx-post={ "/classify?week=" + data.WeekParam } hx-target="#classify-status" hx-swap="innerHTML" hx-disabled-elt="this">
+						<span class="htmx-indicator"><span class="spinner"></span></span>
 						Re-classify
-					</a>
+					</button>
 				}
 			}
-			<button class="btn btn-secondary" hx-get={ "/preview?mode=" + data.Mode + "&week=" + data.WeekParam } hx-target="#preview-content" hx-swap="innerHTML" hx-indicator="#preview-loading">
+			<button class="btn btn-secondary" hx-get={ "/preview?mode=" + data.Mode + "&week=" + data.WeekParam } hx-target="#preview-content" hx-swap="innerHTML" hx-disabled-elt="this" hx-indicator="#preview-loading">
 				Preview Markdown
 			</button>
 			<span id="preview-loading" class="htmx-indicator" style="display:inline-flex;align-items:center;gap:6px;">
-				<span class="spinner"></span> Loading preview...
+				<span class="spinner"></span> Classifying &amp; rendering...
 			</span>
 			<select class="btn btn-secondary" id="report-mode" onchange="this.form && this.form.submit()" style="font-size:13px;">
 				<option value="team" selected?={ data.Mode == "team" }>Team mode</option>
@@ -89,6 +91,7 @@ templ ReportEditor(data EditorData) {
 			}
 		</div>
 		<div id="new-category-form"></div>
+		<div id="classify-status"></div>
 		<div id="generate-status"></div>
 		if data.ItemCount == 0 {
 			<div class="empty">
