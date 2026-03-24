@@ -600,6 +600,7 @@ func RenameCategory(db *sql.DB) http.HandlerFunc {
 
 // buildAllSections merges current sections with all known section labels from DB.
 // This ensures the reclassify dropdown includes sections that have no items this week.
+// Parent sections that have subcategories (name contains " > ") are hidden from the dropdown.
 func buildAllSections(db *sql.DB, currentSections []templates.SectionData) []templates.SectionData {
 	allLabels, err := web.GetAllSectionLabels(db)
 	if err != nil {
@@ -607,19 +608,45 @@ func buildAllSections(db *sql.DB, currentSections []templates.SectionData) []tem
 		return currentSections
 	}
 
-	// Start with current sections
-	seen := make(map[string]bool)
-	result := make([]templates.SectionData, len(currentSections))
-	copy(result, currentSections)
+	// Collect all label names to detect parent/child relationships
+	allNames := make(map[string]bool)
+	for _, label := range allLabels {
+		allNames[label] = true
+	}
 	for _, s := range currentSections {
-		seen[s.ID] = true
+		allNames[s.Name] = true
 	}
 
-	// Add any sections from DB that aren't already present
+	// Build set of parent names that have subcategories
+	parentsWithChildren := make(map[string]bool)
+	for name := range allNames {
+		if idx := strings.Index(name, " > "); idx > 0 {
+			parent := name[:idx]
+			parentsWithChildren[parent] = true
+		}
+	}
+
+	// Filter: skip parent sections that have subcategories
+	shouldInclude := func(name string) bool {
+		return !parentsWithChildren[name]
+	}
+
+	// Start with current sections (filtered)
+	seen := make(map[string]bool)
+	var result []templates.SectionData
+	for _, s := range currentSections {
+		seen[s.ID] = true
+		if shouldInclude(s.Name) {
+			result = append(result, s)
+		}
+	}
+
+	// Add any sections from DB that aren't already present (filtered)
 	var extra []templates.SectionData
 	for id, label := range allLabels {
-		if !seen[id] && id != "UND" {
+		if !seen[id] && id != "UND" && shouldInclude(label) {
 			extra = append(extra, templates.SectionData{ID: id, Name: label})
+			seen[id] = true
 		}
 	}
 
@@ -628,7 +655,18 @@ func buildAllSections(db *sql.DB, currentSections []templates.SectionData) []tem
 		return extra[i].ID < extra[j].ID
 	})
 
-	return append(result, extra...)
+	// Deduplicate by name (same name can appear under different section IDs)
+	combined := append(result, extra...)
+	seenNames := make(map[string]bool)
+	var deduped []templates.SectionData
+	for _, s := range combined {
+		if !seenNames[s.Name] {
+			seenNames[s.Name] = true
+			deduped = append(deduped, s)
+		}
+	}
+
+	return deduped
 }
 
 func resolveWeek(cfg web.Config, weekParam string) (monday time.Time, label, prevWeek, nextWeek string) {
@@ -954,13 +992,33 @@ func avgConfidence(decisions map[int64]web.LLMSectionDecision) float64 {
 }
 
 // loadAllSectionsForDropdown returns all known sections for the reclassify dropdown.
+// Excludes parent sections that have subcategories (e.g., "Release and Support" is hidden
+// if "Release and Support > FAZ-BD 7.6.2 release" exists).
 func loadAllSectionsForDropdown(db *sql.DB) []templates.SectionData {
 	labels, err := web.GetAllSectionLabels(db)
 	if err != nil {
 		return nil
 	}
+
+	// Find parents that have children
+	parentsWithChildren := make(map[string]bool)
+	for _, label := range labels {
+		if idx := strings.Index(label, " > "); idx > 0 {
+			parentsWithChildren[label[:idx]] = true
+		}
+	}
+
+	// Build filtered, deduped list
+	seenNames := make(map[string]bool)
 	var sections []templates.SectionData
 	for id, label := range labels {
+		if parentsWithChildren[label] {
+			continue // skip parent that has subcategories
+		}
+		if seenNames[label] {
+			continue // skip duplicate names
+		}
+		seenNames[label] = true
 		sections = append(sections, templates.SectionData{ID: id, Name: label})
 	}
 	sort.Slice(sections, func(i, j int) bool { return sections[i].ID < sections[j].ID })
