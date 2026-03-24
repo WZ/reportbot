@@ -289,7 +289,8 @@ func DeleteItemHandler(db *sql.DB) http.HandlerFunc {
 		}
 
 		invalidateCache()
-		// Return 200 with empty body; HTMX will remove the element via hx-swap="outerHTML"
+		// Reload page so section counts update
+		w.Header().Set("HX-Redirect", r.Header.Get("HX-Current-URL"))
 		w.WriteHeader(http.StatusOK)
 	}
 }

@@ -102,9 +102,9 @@ main { max-width: 1600px; margin: 0 auto; padding: 20px 24px; }
 .src-github { background: #DBEAFE; color: #2563EB; }
 
 /* Item content */
-.item-desc { flex: 1; min-width: 0; }
+.item-desc { flex: 1; min-width: 0; overflow: hidden; }
 .item-desc .text { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #1E293B; }
-.item-desc .meta { font-size: 11px; color: #94A3B8; margin-top: 2px; }
+.item-desc .meta { font-size: 11px; color: #94A3B8; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .item-desc .meta a { color: #94A3B8; transition: color 0.15s; }
 .item-desc .meta a:hover { color: #2563EB; }
 
