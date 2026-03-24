@@ -10,7 +10,6 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
-	"github.com/gorilla/csrf"
 
 	"reportbot/internal/web"
 	mw "reportbot/internal/web/middleware"
@@ -25,16 +24,10 @@ func NewServer(cfg web.Config, db *sql.DB) *http.Server {
 	r.Use(chimw.Recoverer)
 
 	// Derive Secure flag from base URL scheme
-	isHTTPS := strings.HasPrefix(cfg.WebBaseURL, "https://")
+	_ = strings.HasPrefix(cfg.WebBaseURL, "https://")
 
-	// CSRF protection
-	csrfMiddleware := csrf.Protect(
-		[]byte(cfg.WebSessionSecret),
-		csrf.Secure(isHTTPS),
-		csrf.Path("/"),
-		csrf.RequestHeader("X-CSRF-Token"),
-	)
-	r.Use(csrfMiddleware)
+	// CSRF protection — double-submit cookie (replaces gorilla/csrf)
+	r.Use(web.CSRFMiddleware)
 
 	// Static files (embedded in web package)
 	staticFS, err := fs.Sub(web.StaticFiles, "static")

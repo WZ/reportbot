@@ -20,7 +20,6 @@ import (
 	"reportbot/internal/web/templates"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/gorilla/csrf"
 )
 
 // buildResultCache caches BuildResult per week to avoid re-running the LLM pipeline
@@ -133,7 +132,7 @@ func ReportEditorPage(cfg web.Config, db *sql.DB) http.HandlerFunc {
 			Sections:           sections,
 			AllSections:        allSections,
 			IsManager:          isManager,
-			CSRFToken:          csrf.Token(r),
+			CSRFToken:          web.GetCSRFToken(r),
 			Mode:               mode,
 			HasClassifications: hasClassifications,
 		}

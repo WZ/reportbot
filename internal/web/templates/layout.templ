@@ -14,9 +14,10 @@ templ Layout(title string, csrfToken string, isManager bool, activePage string) 
 		<body>
 			<script>
 				document.body.addEventListener('htmx:configRequest', function(e) {
-					var token = document.querySelector('meta[name="csrf-token"]');
-					if (token) {
-						e.detail.headers['X-CSRF-Token'] = token.content;
+					// Read CSRF token from cookie (double-submit cookie pattern)
+					var match = document.cookie.match(/(^|;\s*)_csrf=([^;]*)/);
+					if (match) {
+						e.detail.headers['X-CSRF-Token'] = decodeURIComponent(match[2]);
 					}
 				});
 			</script>
