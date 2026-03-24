@@ -632,7 +632,8 @@ func InsertClassificationCorrection(db *sql.DB, c ClassificationCorrection) erro
 	return err
 }
 
-// ReclassifyItem atomically records a correction and updates the item's category.
+// ReclassifyItem atomically records a correction, updates the item's category,
+// and inserts a new classification_history record so the web UI shows the change immediately.
 func ReclassifyItem(db *sql.DB, c ClassificationCorrection, newCategory string) error {
 	tx, err := db.Begin()
 	if err != nil {
@@ -654,6 +655,18 @@ func ReclassifyItem(db *sql.DB, c ClassificationCorrection, newCategory string) 
 	_, err = tx.Exec("UPDATE work_items SET category = ? WHERE id = ?", newCategory, c.WorkItemID)
 	if err != nil {
 		return fmt.Errorf("update category: %w", err)
+	}
+
+	// Insert a classification_history record so GetLatestClassificationsForItems
+	// returns the corrected section on next page load
+	_, err = tx.Exec(
+		`INSERT INTO classification_history
+		 (work_item_id, section_id, section_label, confidence, llm_provider, llm_model)
+		 VALUES (?, ?, ?, 1.0, 'manual', 'user')`,
+		c.WorkItemID, c.CorrectedSectionID, c.CorrectedLabel,
+	)
+	if err != nil {
+		return fmt.Errorf("insert classification history: %w", err)
 	}
 
 	return tx.Commit()

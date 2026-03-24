@@ -280,6 +280,9 @@ func TestReclassifyItem_Success(t *testing.T) {
 		capturedNewSection = newCategory
 		return nil
 	}
+	web.GetAllSectionLabels = func(db *sql.DB) (map[string]string, error) {
+		return map[string]string{"S0_0": "Infra", "S1_0": "Backend"}, nil
+	}
 
 	cfg := testConfig()
 	r := chi.NewRouter()

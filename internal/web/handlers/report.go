@@ -227,10 +227,18 @@ func ReclassifyItemHandler(cfg web.Config, db *sql.DB) http.HandlerFunc {
 			return
 		}
 
+		// Look up section label for the new section
+		labels, _ := web.GetAllSectionLabels(db)
+		newLabel := newSectionID
+		if l, ok := labels[newSectionID]; ok {
+			newLabel = l
+		}
+
 		correction := web.ClassificationCorrection{
 			WorkItemID:         item.ID,
 			OriginalSectionID:  item.Category,
 			CorrectedSectionID: newSectionID,
+			CorrectedLabel:     newLabel,
 			Description:        item.Description,
 			CorrectedBy:        middleware.UserID(r),
 		}
