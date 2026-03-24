@@ -1,4 +1,4 @@
-{$WEB_HOST} {
-	tls internal
-	reverse_proxy reportbot:8082
+:443 {
+	tls /certs/cert.pem /certs/key.pem
+	reverse_proxy reportbot:8088
 }

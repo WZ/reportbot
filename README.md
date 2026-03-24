@@ -325,7 +325,7 @@ export WEB_SESSION_SECRET=$(openssl rand -hex 32)
 
 # 2. Configure config.yaml with web settings
 #    web_enabled: true
-#    web_port: 8082
+#    web_port: 8088
 #    web_client_id: "your-slack-client-id"
 #    web_base_url: "https://192.168.1.100"
 

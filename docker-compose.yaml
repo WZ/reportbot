@@ -22,10 +22,9 @@ services:
     ports:
       - "80:80"
       - "443:443"
-    environment:
-      WEB_HOST: "${WEB_HOST}"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./certs:/certs:ro
       - caddy-data:/data
       - caddy-config:/config
 
@@ -33,7 +32,7 @@ services:
     container_name: reportbot
     image: reportbot
     expose:
-      - "8082"
+      - "8088"
     environment:
       SLACK_BOT_TOKEN: "${SLACK_BOT_TOKEN}"
       SLACK_APP_TOKEN: "${SLACK_APP_TOKEN}"
