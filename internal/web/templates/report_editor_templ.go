@@ -204,7 +204,7 @@ func ReportEditor(data EditorData) templ.Component {
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
-					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 13, "\" class=\"btn btn-secondary\" style=\"background:#fef3c7;border-color:#f59e0b;color:#92400e;\">Classify Items</a> ")
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 13, "\" class=\"btn btn-secondary\" style=\"background:#fef3c7;border-color:#f59e0b;color:#92400e;\" onclick=\"this.textContent='Classifying...';this.style.opacity='0.6';this.style.pointerEvents='none';\">Classify Items</a> ")
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
@@ -222,7 +222,7 @@ func ReportEditor(data EditorData) templ.Component {
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
-					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 15, "\" class=\"btn btn-secondary\">Re-classify</a> ")
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 15, "\" class=\"btn btn-secondary\" onclick=\"this.textContent='Classifying...';this.style.opacity='0.6';this.style.pointerEvents='none';\">Re-classify</a> ")
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}

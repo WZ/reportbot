@@ -63,11 +63,11 @@ templ ReportEditor(data EditorData) {
 					Generate Report
 				</button>
 				if !data.HasClassifications {
-					<a href={ templ.SafeURL("/?week=" + data.WeekParam + "&classify=1") } class="btn btn-secondary" style="background:#fef3c7;border-color:#f59e0b;color:#92400e;">
+					<a href={ templ.SafeURL("/?week=" + data.WeekParam + "&classify=1") } class="btn btn-secondary" style="background:#fef3c7;border-color:#f59e0b;color:#92400e;" onclick="this.textContent='Classifying...';this.style.opacity='0.6';this.style.pointerEvents='none';">
 						Classify Items
 					</a>
 				} else {
-					<a href={ templ.SafeURL("/?week=" + data.WeekParam + "&classify=1") } class="btn btn-secondary">
+					<a href={ templ.SafeURL("/?week=" + data.WeekParam + "&classify=1") } class="btn btn-secondary" onclick="this.textContent='Classifying...';this.style.opacity='0.6';this.style.pointerEvents='none';">
 						Re-classify
 					</a>
 				}
