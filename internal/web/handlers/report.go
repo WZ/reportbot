@@ -724,6 +724,35 @@ func buildSectionsFromDB(db *sql.DB, items []web.WorkItem) ([]templates.SectionD
 		sections = append(sections, *sectionMap[id])
 	}
 
+	// Add empty custom categories so they show as visible section cards
+	allLabels, err := web.GetAllSectionLabels(db)
+	if err == nil {
+		seen := make(map[string]bool)
+		for _, id := range sectionOrder {
+			seen[id] = true
+		}
+		var customSections []templates.SectionData
+		for id, label := range allLabels {
+			if !seen[id] && strings.HasPrefix(id, "CUSTOM_") {
+				customSections = append(customSections, templates.SectionData{
+					ID:   id,
+					Name: label,
+				})
+			}
+		}
+		sort.Slice(customSections, func(i, j int) bool {
+			return customSections[i].ID < customSections[j].ID
+		})
+		// Insert custom sections before UND
+		if len(sections) > 0 && sections[len(sections)-1].ID == "UND" {
+			und := sections[len(sections)-1]
+			sections = append(sections[:len(sections)-1], customSections...)
+			sections = append(sections, und)
+		} else {
+			sections = append(sections, customSections...)
+		}
+	}
+
 	avgConf := 0.0
 	if confCount > 0 {
 		avgConf = totalConf / float64(confCount)
