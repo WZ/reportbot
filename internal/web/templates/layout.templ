@@ -1,0 +1,51 @@
+package templates
+
+templ Layout(title string, csrfToken string, isManager bool, activePage string) {
+	<!DOCTYPE html>
+	<html lang="en">
+		<head>
+			<meta charset="UTF-8"/>
+			<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+			<meta name="csrf-token" content={ csrfToken }/>
+			<title>{ title } - ReportBot</title>
+			<link rel="stylesheet" href="/static/style.css"/>
+			<script src="https://unpkg.com/htmx.org@2.0.4"></script>
+		</head>
+		<body>
+			<script>
+				document.body.addEventListener('htmx:configRequest', function(e) {
+					// Read CSRF token from _csrf cookie (double-submit cookie pattern)
+					var cookies = document.cookie.split(';');
+					for (var i = 0; i < cookies.length; i++) {
+						var c = cookies[i].trim();
+						if (c.indexOf('_csrf=') === 0) {
+							e.detail.headers['X-CSRF-Token'] = c.substring(6);
+							break;
+						}
+					}
+				});
+			</script>
+			<nav>
+				<span class="logo">ReportBot</span>
+				<div class="nav-links">
+					<a href="/" class={ templ.KV("active", activePage == "editor") }>Report Editor</a>
+				</div>
+				if isManager {
+					<span class="role-badge manager">Manager</span>
+				} else {
+					<span class="role-badge">Viewer</span>
+				}
+			</nav>
+			<main>
+				<div id="flash-container"></div>
+				{ children... }
+			</main>
+		</body>
+	</html>
+}
+
+templ Flash(message string, level string) {
+	<div class={ "flash", "flash-" + level } role="alert">
+		{ message }
+	</div>
+}

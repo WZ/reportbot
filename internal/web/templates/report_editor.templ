@@ -1,0 +1,148 @@
+package templates
+
+import "fmt"
+
+type EditorData struct {
+	TeamName          string
+	WeekLabel         string
+	WeekParam         string
+	PrevWeek          string
+	NextWeek          string
+	ItemCount         int
+	AuthorCount       int
+	AvgConf           float64
+	Sections          []SectionData
+	AllSections       []SectionData // all known sections (for reclassify dropdown, includes empty ones)
+	IsManager         bool
+	CSRFToken         string
+	Mode              string
+	HasClassifications bool
+}
+
+type SectionData struct {
+	ID        string
+	Name      string
+	Items     []ItemData
+	NeedsReview bool
+}
+
+type ItemData struct {
+	ID          int64
+	Description string
+	Author      string
+	Status      string
+	Source      string
+	SourceRef   string
+	Confidence  float64
+	SectionID   string
+	TicketIDs   string
+	IsNew       bool
+}
+
+templ ReportEditor(data EditorData) {
+	@Layout("Report Editor", data.CSRFToken, data.IsManager, "editor") {
+		<div class="editor-header">
+			<h1>Weekly Report</h1>
+			<div class="week-nav">
+				<a href={ templ.SafeURL("/?week=" + data.PrevWeek) } class="btn btn-secondary" style="padding:4px 8px;">&larr;</a>
+				<span>{ data.WeekLabel }</span>
+				<a href={ templ.SafeURL("/?week=" + data.NextWeek) } class="btn btn-secondary" style="padding:4px 8px;">&rarr;</a>
+			</div>
+			<div class="stats">
+				<span><span class="val">{ fmt.Sprintf("%d", data.ItemCount) }</span> items</span>
+				<span><span class="val">{ fmt.Sprintf("%d", data.AuthorCount) }</span> authors</span>
+				if data.AvgConf > 0 {
+					<span><span class="val">{ fmt.Sprintf("%.0f%%", data.AvgConf*100) }</span> avg confidence</span>
+				}
+			</div>
+		</div>
+		<div class="actions">
+			if data.IsManager {
+				<button class="btn btn-primary" hx-post={ "/generate?week=" + data.WeekParam } hx-target="#generate-status" hx-swap="innerHTML" hx-disabled-elt="this">
+					<span class="htmx-indicator"><span class="spinner"></span></span>
+					Generate Report
+				</button>
+				if !data.HasClassifications {
+					<a href={ templ.SafeURL("/?week=" + data.WeekParam + "&classify=1") } class="btn btn-secondary" style="background:#fef3c7;border-color:#f59e0b;color:#92400e;" onclick="this.textContent='Classifying...';this.style.opacity='0.6';this.style.pointerEvents='none';">
+						Classify Items
+					</a>
+				} else {
+					<a href={ templ.SafeURL("/?week=" + data.WeekParam + "&classify=1") } class="btn btn-secondary" onclick="this.textContent='Classifying...';this.style.opacity='0.6';this.style.pointerEvents='none';">
+						Re-classify
+					</a>
+				}
+			}
+			<button class="btn btn-secondary" hx-get={ "/preview?mode=" + data.Mode + "&week=" + data.WeekParam } hx-target="#preview-content" hx-swap="innerHTML" hx-indicator="#preview-loading">
+				Preview Markdown
+			</button>
+			<span id="preview-loading" class="htmx-indicator" style="display:inline-flex;align-items:center;gap:6px;">
+				<span class="spinner"></span> Loading preview...
+			</span>
+			<select class="btn btn-secondary" id="report-mode" onchange="this.form && this.form.submit()" style="font-size:13px;">
+				<option value="team" selected?={ data.Mode == "team" }>Team mode</option>
+				<option value="boss" selected?={ data.Mode == "boss" }>Boss mode</option>
+			</select>
+		if data.IsManager {
+				<button class="btn btn-secondary" hx-get={ "/categories/new?week=" + data.WeekParam } hx-target="#new-category-form" hx-swap="innerHTML">
+					+ Category
+				</button>
+			}
+		</div>
+		<div id="new-category-form"></div>
+		<div id="generate-status"></div>
+		if data.ItemCount == 0 {
+			<div class="empty">
+				<p>No work items reported this week.</p>
+				<p style="margin-top:8px;color:#bbb;">Items from /report and /fetch will appear here.</p>
+			</div>
+		} else {
+			<div class="editor-layout" id="editor-layout">
+				<div class="editor-sections" id="editor-sections">
+					for _, section := range data.Sections {
+						@SectionGroup(section, data.AllSections, data.IsManager)
+					}
+				</div>
+				<div class="resize-handle" id="resize-handle"></div>
+				<div class="preview-panel" id="preview-panel">
+					<h3>Markdown Preview</h3>
+					<div id="preview-content" class="preview-body">
+						<p style="color:#999;">Click "Preview Markdown" to see the rendered report.</p>
+					</div>
+				</div>
+			</div>
+			<script>
+			(function() {
+				var handle = document.getElementById('resize-handle');
+				var panel = document.getElementById('preview-panel');
+				var layout = document.getElementById('editor-layout');
+				var dragging = false;
+
+				handle.addEventListener('mousedown', function(e) {
+					dragging = true;
+					handle.classList.add('dragging');
+					document.body.style.cursor = 'col-resize';
+					document.body.style.userSelect = 'none';
+					e.preventDefault();
+				});
+
+				document.addEventListener('mousemove', function(e) {
+					if (!dragging) return;
+					var layoutRect = layout.getBoundingClientRect();
+					var newWidth = layoutRect.right - e.clientX - 8;
+					if (newWidth < 200) newWidth = 200;
+					if (newWidth > layoutRect.width * 0.8) newWidth = layoutRect.width * 0.8;
+					panel.style.width = newWidth + 'px';
+				});
+
+				document.addEventListener('mouseup', function() {
+					if (!dragging) return;
+					dragging = false;
+					handle.classList.remove('dragging');
+					document.body.style.cursor = '';
+					document.body.style.userSelect = '';
+				});
+			})();
+			</script>
+		}
+	}
+}

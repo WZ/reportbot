@@ -2,6 +2,10 @@
 # export SLACK_APP_TOKEN=xxxx
 # export GITLAB_TOKEN=xxxx
 # export OPENAI_API_KEY=xxxx
+# export WEB_HOST=https://192.168.1.100      # IP or domain for HTTPS
+# export WEB_CLIENT_SECRET=xxxx             # Slack OAuth client secret
+# export WEB_SESSION_SECRET=xxxx            # openssl rand -hex 32
+#
 # docker-compose --project-name reportbot up
 # docker-compose --project-name reportbot down
 #
@@ -12,17 +16,37 @@
 #         - ./my-custom-config.yaml:/app/config.yaml:ro
 #         - ./my-custom-glossary.yaml:/app/llm_glossary.yaml
 services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./certs:/certs:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
   reportbot:
     container_name: reportbot
     image: reportbot
+    expose:
+      - "8088"
     environment:
       SLACK_BOT_TOKEN: "${SLACK_BOT_TOKEN}"
       SLACK_APP_TOKEN: "${SLACK_APP_TOKEN}"
       GITLAB_TOKEN: "${GITLAB_TOKEN}"
       OPENAI_API_KEY: "${OPENAI_API_KEY}"
+      WEB_CLIENT_SECRET: "${WEB_CLIENT_SECRET}"
+      WEB_SESSION_SECRET: "${WEB_SESSION_SECRET}"
     volumes:
       - ./reportbot-data:/app/data
       - ./reportbot-reports:/app/reports
       - ./llm_glossary.yaml:/app/llm_glossary.yaml
       - ./llm_classification_guide.md:/app/llm_classification_guide.md
       - ./config.yaml:/app/config.yaml:ro
+
+volumes:
+  caddy-data:
+  caddy-config:

@@ -57,6 +57,14 @@ type Config struct {
 	Timezone          string   `yaml:"timezone"`
 	TeamName          string   `yaml:"team_name"`
 
+	// Web UI
+	WebEnabled      bool   `yaml:"web_enabled"`
+	WebPort         int    `yaml:"web_port"`
+	WebClientID     string `yaml:"web_client_id"`
+	WebClientSecret string `yaml:"web_client_secret"`
+	WebSessionSecret string `yaml:"web_session_secret"`
+	WebBaseURL      string `yaml:"web_base_url"`
+
 	Location *time.Location `yaml:"-"` // computed from Timezone, not from YAML
 }
 
@@ -115,6 +123,12 @@ func LoadConfig() Config {
 	envOverride(&cfg.AutoFetchSchedule, "AUTO_FETCH_SCHEDULE")
 	envOverride(&cfg.MondayCutoffTime, "MONDAY_CUTOFF_TIME")
 	envOverride(&cfg.Timezone, "TIMEZONE")
+	envOverrideBool(&cfg.WebEnabled, "WEB_ENABLED")
+	envOverrideInt(&cfg.WebPort, "WEB_PORT")
+	envOverride(&cfg.WebClientID, "WEB_CLIENT_ID")
+	envOverride(&cfg.WebClientSecret, "WEB_CLIENT_SECRET")
+	envOverride(&cfg.WebSessionSecret, "WEB_SESSION_SECRET")
+	envOverride(&cfg.WebBaseURL, "WEB_BASE_URL")
 
 	if ids := os.Getenv("MANAGER_SLACK_IDS"); ids != "" {
 		cfg.ManagerSlackIDs = nil
@@ -171,6 +185,12 @@ func LoadConfig() Config {
 	if cfg.TeamName == "" {
 		cfg.TeamName = "My Team"
 	}
+	if cfg.WebPort == 0 {
+		cfg.WebPort = 8080
+	}
+	if cfg.WebBaseURL == "" {
+		cfg.WebBaseURL = fmt.Sprintf("http://localhost:%d", cfg.WebPort)
+	}
 	if cfg.Timezone == "" {
 		cfg.Timezone = "Local"
 	}
@@ -223,6 +243,18 @@ func LoadConfig() Config {
 		}
 	default:
 		log.Fatalf("llm_provider must be 'anthropic' or 'openai', got '%s'", cfg.LLMProvider)
+	}
+
+	if cfg.WebEnabled {
+		if cfg.WebSessionSecret == "" {
+			log.Fatalf("web_session_secret is required when web_enabled=true (generate with: openssl rand -hex 32)")
+		}
+		if cfg.WebClientID == "" {
+			log.Fatalf("web_client_id is required when web_enabled=true")
+		}
+		if cfg.WebClientSecret == "" {
+			log.Fatalf("web_client_secret is required when web_enabled=true")
+		}
 	}
 
 	if strings.EqualFold(cfg.Timezone, "Local") {

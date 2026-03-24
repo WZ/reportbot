@@ -2,7 +2,9 @@ package sqlite
 
 import (
 	"database/sql"
+	"fmt"
 	"reportbot/internal/domain"
+	"strings"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -18,6 +20,14 @@ func InitDB(path string) (*sql.DB, error) {
 	db, err := sql.Open("sqlite3", path)
 	if err != nil {
 		return nil, err
+	}
+
+	// Enable WAL mode for concurrent readers + single writer (needed for web UI + Slack bot)
+	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
+		return nil, fmt.Errorf("enabling WAL mode: %w", err)
+	}
+	if _, err := db.Exec("PRAGMA busy_timeout=5000"); err != nil {
+		return nil, fmt.Errorf("setting busy timeout: %w", err)
 	}
 
 	schema := `
@@ -532,6 +542,83 @@ func GetLatestClassification(db *sql.DB, workItemID int64) (ClassificationRecord
 	return r, err
 }
 
+// GetLatestClassificationsForItems returns the most recent classification for each
+// of the given work item IDs. Items with no classification are omitted from the result.
+func GetLatestClassificationsForItems(db *sql.DB, itemIDs []int64) (map[int64]ClassificationRecord, error) {
+	if len(itemIDs) == 0 {
+		return nil, nil
+	}
+	// Build query with placeholders
+	placeholders := make([]string, len(itemIDs))
+	args := make([]interface{}, len(itemIDs))
+	for i, id := range itemIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	query := fmt.Sprintf(
+		`SELECT ch.id, ch.work_item_id, ch.section_id, ch.section_label, ch.confidence,
+		        ch.normalized_status, ch.ticket_ids, ch.duplicate_of, ch.llm_provider, ch.llm_model, ch.classified_at
+		 FROM classification_history ch
+		 INNER JOIN (
+		   SELECT work_item_id, MAX(classified_at) AS max_at
+		   FROM classification_history
+		   WHERE work_item_id IN (%s)
+		   GROUP BY work_item_id
+		 ) latest ON ch.work_item_id = latest.work_item_id AND ch.classified_at = latest.max_at`,
+		strings.Join(placeholders, ","),
+	)
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := make(map[int64]ClassificationRecord)
+	for rows.Next() {
+		var r ClassificationRecord
+		if err := rows.Scan(
+			&r.ID, &r.WorkItemID, &r.SectionID, &r.SectionLabel, &r.Confidence,
+			&r.NormalizedStatus, &r.TicketIDs, &r.DuplicateOf,
+			&r.LLMProvider, &r.LLMModel, &r.ClassifiedAt,
+		); err != nil {
+			return nil, err
+		}
+		result[r.WorkItemID] = r
+	}
+	return result, rows.Err()
+}
+
+// GetAllSectionLabels returns all distinct section_id → section_label pairs from classification history.
+func GetAllSectionLabels(db *sql.DB) (map[string]string, error) {
+	rows, err := db.Query(
+		`SELECT DISTINCT section_id, section_label FROM classification_history WHERE section_id != '' ORDER BY section_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make(map[string]string)
+	for rows.Next() {
+		var id, label string
+		if err := rows.Scan(&id, &label); err != nil {
+			return nil, err
+		}
+		if label == "" {
+			label = id
+		}
+		result[id] = label
+	}
+	return result, rows.Err()
+}
+
+// RenameSectionLabel updates the display label for all classification records with the given section_id.
+// This is display-only — the section_id (used by LLM) is unchanged.
+func RenameSectionLabel(db *sql.DB, sectionID, newLabel string) error {
+	_, err := db.Exec(
+		"UPDATE classification_history SET section_label = ? WHERE section_id = ?",
+		newLabel, sectionID)
+	return err
+}
+
 // --- Classification Corrections ---
 
 func InsertClassificationCorrection(db *sql.DB, c ClassificationCorrection) error {
@@ -543,6 +630,46 @@ func InsertClassificationCorrection(db *sql.DB, c ClassificationCorrection) erro
 		c.CorrectedSectionID, c.CorrectedLabel, c.Description, c.CorrectedBy,
 	)
 	return err
+}
+
+// ReclassifyItem atomically records a correction, updates the item's category,
+// and inserts a new classification_history record so the web UI shows the change immediately.
+func ReclassifyItem(db *sql.DB, c ClassificationCorrection, newCategory string) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin reclassify tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	_, err = tx.Exec(
+		`INSERT INTO classification_corrections
+		 (work_item_id, original_section_id, original_label, corrected_section_id, corrected_label, description, corrected_by)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		c.WorkItemID, c.OriginalSectionID, c.OriginalLabel,
+		c.CorrectedSectionID, c.CorrectedLabel, c.Description, c.CorrectedBy,
+	)
+	if err != nil {
+		return fmt.Errorf("insert correction: %w", err)
+	}
+
+	_, err = tx.Exec("UPDATE work_items SET category = ? WHERE id = ?", newCategory, c.WorkItemID)
+	if err != nil {
+		return fmt.Errorf("update category: %w", err)
+	}
+
+	// Insert a classification_history record so GetLatestClassificationsForItems
+	// returns the corrected section on next page load
+	_, err = tx.Exec(
+		`INSERT INTO classification_history
+		 (work_item_id, section_id, section_label, confidence, llm_provider, llm_model)
+		 VALUES (?, ?, ?, 1.0, 'manual', 'user')`,
+		c.WorkItemID, c.CorrectedSectionID, c.CorrectedLabel,
+	)
+	if err != nil {
+		return fmt.Errorf("insert classification history: %w", err)
+	}
+
+	return tx.Commit()
 }
 
 func GetRecentCorrections(db *sql.DB, since time.Time, limit int) ([]ClassificationCorrection, error) {

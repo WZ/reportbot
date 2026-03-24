@@ -1,0 +1,87 @@
+package templates
+
+import (
+	"fmt"
+)
+
+func confClass(conf float64) string {
+	if conf >= 0.9 { return "conf conf-high" }
+	if conf >= 0.7 { return "conf conf-med" }
+	return "conf conf-low"
+}
+
+func srcClass(source string) string {
+	switch source {
+	case "gitlab": return "src src-gitlab"
+	case "github": return "src src-github"
+	default: return "src src-slack"
+	}
+}
+
+func srcLabel(source string) string {
+	switch source {
+	case "gitlab": return "GL"
+	case "github": return "GH"
+	default: return "S"
+	}
+}
+
+func statusClass(status string) string {
+	switch status {
+	case "done": return "status status-done"
+	case "in progress": return "status status-progress"
+	case "in review", "in testing": return "status status-review"
+	default: return "status"
+	}
+}
+
+templ ItemRow(item ItemData, allSections []SectionData, isManager bool) {
+	<div id={ fmt.Sprintf("item-%d", item.ID) } class={ "item", templ.KV("needs-review", item.Confidence < 0.7) }>
+		<span class={ confClass(item.Confidence) } title={ fmt.Sprintf("%.0f%% confidence", item.Confidence*100) }>
+			{ fmt.Sprintf("%.0f", item.Confidence*100) }
+		</span>
+		<span class={ srcClass(item.Source) }>{ srcLabel(item.Source) }</span>
+		<div class="item-desc">
+			<div class="text">{ item.Description }</div>
+			<div class="meta">
+				{ item.Author }
+				if item.SourceRef != "" {
+					<span> &middot; </span>
+					<a href={ templ.SafeURL(item.SourceRef) } target="_blank" style="color:#999;">{ item.SourceRef }</a>
+				}
+				if item.TicketIDs != "" {
+					<span> &middot; { item.TicketIDs }</span>
+				}
+			</div>
+		</div>
+		<span class={ statusClass(item.Status) }>{ item.Status }</span>
+		if isManager && item.ID > 0 {
+			<select
+				class="reclassify"
+				hx-post={ fmt.Sprintf("/items/%d/reclassify", item.ID) }
+				hx-target={ fmt.Sprintf("#item-%d", item.ID) }
+				hx-swap="outerHTML"
+				name="section_id"
+			>
+				for _, s := range allSections {
+					<option value={ s.ID } selected?={ s.ID == item.SectionID }>{ s.Name }</option>
+				}
+			</select>
+			<div class="item-actions">
+				<button
+					hx-get={ fmt.Sprintf("/items/%d/edit", item.ID) }
+					hx-target={ fmt.Sprintf("#item-%d", item.ID) }
+					hx-swap="outerHTML"
+					title="Edit"
+				>&#9998;</button>
+				<button
+					hx-post={ fmt.Sprintf("/items/%d/delete", item.ID) }
+					hx-target={ fmt.Sprintf("#item-%d", item.ID) }
+					hx-swap="delete"
+					hx-confirm="Delete this item?"
+					title="Delete"
+				>&times;</button>
+			</div>
+		}
+	</div>
+}
