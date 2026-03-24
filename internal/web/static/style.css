@@ -79,6 +79,8 @@ main { max-width: 1600px; margin: 0 auto; padding: 20px 24px; }
 .section-header:hover { background: #F8FAFC; }
 .section-header .name { font-weight: 600; font-size: 13px; color: #0F172A; }
 .section-header .count { font-size: 11px; color: #64748B; background: #F1F5F9; padding: 1px 8px; border-radius: 10px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.section-header .rename-btn { background: none; border: none; color: #CBD5E1; cursor: pointer; font-size: 12px; padding: 2px 4px; border-radius: 3px; transition: color 0.15s; }
+.section-header .rename-btn:hover { color: #2563EB; }
 .section.needs-review .section-header { background: #FFFBEB; }
 .section.needs-review .count { background: #FEF3C7; color: #92400E; }
 

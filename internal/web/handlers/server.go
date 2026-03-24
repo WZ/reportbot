@@ -83,6 +83,8 @@ func NewServer(cfg web.Config, db *sql.DB) *http.Server {
 			r.Get("/items/{id}/view", ViewItemRow(db))
 			r.Get("/categories/new", NewCategoryForm())
 			r.Post("/categories", CreateCategory(db))
+			r.Get("/categories/{id}/rename", RenameCategoryForm(db))
+			r.Post("/categories/{id}/rename", RenameCategory(db))
 			r.Post("/generate", GenerateReport(cfg, db))
 			r.Get("/generate/{jobID}/status", GenerateStatus())
 		})

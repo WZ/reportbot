@@ -40,6 +40,10 @@ var GetAllSectionLabels = func(db *sql.DB) (map[string]string, error) {
 	return sqlite.GetAllSectionLabels(db)
 }
 
+var RenameSectionLabel = func(db *sql.DB, sectionID, newLabel string) error {
+	return sqlite.RenameSectionLabel(db, sectionID, newLabel)
+}
+
 var GetRecentCorrections = func(db *sql.DB, since time.Time, limit int) ([]ClassificationCorrection, error) {
 	return sqlite.GetRecentCorrections(db, since, limit)
 }

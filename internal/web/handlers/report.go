@@ -512,6 +512,53 @@ func CreateCategory(db *sql.DB) http.HandlerFunc {
 	}
 }
 
+// RenameCategoryForm returns an inline rename form for a section.
+func RenameCategoryForm(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		sectionID := chi.URLParam(r, "id")
+		weekParam := r.URL.Query().Get("week")
+
+		// Look up current name
+		labels, _ := web.GetAllSectionLabels(db)
+		currentName := sectionID
+		if name, ok := labels[sectionID]; ok {
+			currentName = name
+		}
+
+		if err := templates.SectionRenameForm(sectionID, currentName, weekParam).Render(r.Context(), w); err != nil {
+			log.Printf("Error rendering rename form: %v", err)
+		}
+	}
+}
+
+// RenameCategory updates a section's display label.
+func RenameCategory(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		sectionID := chi.URLParam(r, "id")
+		newName := strings.TrimSpace(r.FormValue("name"))
+		if newName == "" {
+			http.Error(w, "Category name is required", http.StatusBadRequest)
+			return
+		}
+
+		if err := web.RenameSectionLabel(db, sectionID, newName); err != nil {
+			log.Printf("Error renaming category %s: %v", sectionID, err)
+			http.Error(w, "Failed to rename category", http.StatusInternalServerError)
+			return
+		}
+
+		invalidateCache()
+
+		weekParam := r.URL.Query().Get("week")
+		redirectURL := "/"
+		if weekParam != "" {
+			redirectURL = "/?week=" + weekParam
+		}
+		w.Header().Set("HX-Redirect", redirectURL)
+		w.WriteHeader(http.StatusOK)
+	}
+}
+
 // --- Helpers ---
 
 // buildAllSections merges current sections with all known section labels from DB.

@@ -610,6 +610,15 @@ func GetAllSectionLabels(db *sql.DB) (map[string]string, error) {
 	return result, rows.Err()
 }
 
+// RenameSectionLabel updates the display label for all classification records with the given section_id.
+// This is display-only — the section_id (used by LLM) is unchanged.
+func RenameSectionLabel(db *sql.DB, sectionID, newLabel string) error {
+	_, err := db.Exec(
+		"UPDATE classification_history SET section_label = ? WHERE section_id = ?",
+		newLabel, sectionID)
+	return err
+}
+
 // --- Classification Corrections ---
 
 func InsertClassificationCorrection(db *sql.DB, c ClassificationCorrection) error {
