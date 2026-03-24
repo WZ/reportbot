@@ -55,7 +55,7 @@ func Layout(title string, csrfToken string, isManager bool, activePage string) t
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, " - ReportBot</title><link rel=\"stylesheet\" href=\"/static/style.css\"><script src=\"https://unpkg.com/htmx.org@2.0.4\"></script><script>\n\t\t\t\tdocument.body.addEventListener('htmx:configRequest', function(e) {\n\t\t\t\t\tvar token = document.querySelector('meta[name=\"csrf-token\"]');\n\t\t\t\t\tif (token) {\n\t\t\t\t\t\te.detail.headers['X-CSRF-Token'] = token.content;\n\t\t\t\t\t}\n\t\t\t\t});\n\t\t\t</script></head><body><nav><span class=\"logo\">ReportBot</span><div class=\"nav-links\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, " - ReportBot</title><link rel=\"stylesheet\" href=\"/static/style.css\"><script src=\"https://unpkg.com/htmx.org@2.0.4\"></script></head><body><script>\n\t\t\t\tdocument.body.addEventListener('htmx:configRequest', function(e) {\n\t\t\t\t\tvar token = document.querySelector('meta[name=\"csrf-token\"]');\n\t\t\t\t\tif (token) {\n\t\t\t\t\t\te.detail.headers['X-CSRF-Token'] = token.content;\n\t\t\t\t\t}\n\t\t\t\t});\n\t\t\t</script><nav><span class=\"logo\">ReportBot</span><div class=\"nav-links\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
