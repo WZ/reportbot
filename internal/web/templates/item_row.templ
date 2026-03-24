@@ -59,7 +59,7 @@ templ ItemRow(item ItemData, allSections []SectionData, isManager bool) {
 			<select
 				class="reclassify"
 				hx-post={ fmt.Sprintf("/items/%d/reclassify", item.ID) }
-				hx-target={ "#section-" + item.SectionID }
+				hx-target={ fmt.Sprintf("#item-%d", item.ID) }
 				hx-swap="outerHTML"
 				name="section_id"
 			>

@@ -250,8 +250,9 @@ func ReclassifyItemHandler(cfg web.Config, db *sql.DB) http.HandlerFunc {
 
 		invalidateCache()
 
-		// Trigger full page reload via HTMX HX-Redirect header
-		w.Header().Set("HX-Redirect", r.Header.Get("HX-Current-URL"))
+		// Retarget to the item row and remove it (it moved to a different section)
+		w.Header().Set("HX-Retarget", fmt.Sprintf("#item-%d", itemID))
+		w.Header().Set("HX-Reswap", "delete")
 		w.WriteHeader(http.StatusOK)
 	}
 }
