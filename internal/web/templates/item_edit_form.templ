@@ -19,7 +19,7 @@ templ ItemEditForm(itemID int64, description string, status string) {
 				</select>
 				<button type="submit" class="btn btn-primary" style="padding:4px 12px;">Save</button>
 				<button type="button" class="btn btn-secondary" style="padding:4px 12px;"
-					hx-get={ fmt.Sprintf("/?partial=item&id=%d", itemID) }
+					hx-get={ fmt.Sprintf("/items/%d/view", itemID) }
 					hx-target={ fmt.Sprintf("#item-%d", itemID) }
 					hx-swap="outerHTML"
 				>Cancel</button>

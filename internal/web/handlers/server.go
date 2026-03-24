@@ -80,6 +80,7 @@ func NewServer(cfg web.Config, db *sql.DB) *http.Server {
 			r.Post("/items/{id}", UpdateItemHandler(db))
 			r.Post("/items/{id}/delete", DeleteItemHandler(db))
 			r.Get("/items/{id}/edit", EditItemForm(db))
+			r.Get("/items/{id}/view", ViewItemRow(db))
 			r.Post("/generate", GenerateReport(cfg, db))
 			r.Get("/generate/{jobID}/status", GenerateStatus())
 		})

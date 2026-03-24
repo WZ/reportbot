@@ -321,6 +321,50 @@ func EditItemForm(db *sql.DB) http.HandlerFunc {
 	}
 }
 
+// ViewItemRow returns a single item row (used by cancel edit to restore the row).
+func ViewItemRow(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		itemID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+		if err != nil {
+			http.Error(w, "Invalid item ID", http.StatusBadRequest)
+			return
+		}
+
+		item, err := web.GetWorkItemByID(db, itemID)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				http.Error(w, "Item not found", http.StatusNotFound)
+			} else {
+				log.Printf("DB error fetching item %d: %v", itemID, err)
+				http.Error(w, "Failed to load item", http.StatusInternalServerError)
+			}
+			return
+		}
+
+		// Get classification for confidence score
+		cls, _ := web.GetLatestClassification(db, itemID)
+
+		itemData := templates.ItemData{
+			ID:          item.ID,
+			Description: item.Description,
+			Author:      item.Author,
+			Status:      item.Status,
+			Source:      item.Source,
+			SourceRef:   item.SourceRef,
+			Confidence:  cls.Confidence,
+			SectionID:   cls.SectionID,
+			TicketIDs:   item.TicketIDs,
+		}
+
+		isManager := middleware.IsManager(r)
+		// Pass empty sections list — reclassify dropdown won't show on the restored row
+		// (page reload will restore it fully)
+		if err := templates.ItemRow(itemData, nil, isManager).Render(r.Context(), w); err != nil {
+			log.Printf("Error rendering item row: %v", err)
+		}
+	}
+}
+
 // GenerateReport starts async report generation.
 func GenerateReport(cfg web.Config, db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
