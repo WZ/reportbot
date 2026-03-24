@@ -431,7 +431,7 @@ func GenerateReport(cfg web.Config, db *sql.DB) http.HandlerFunc {
 			}
 
 			invalidateCache()
-			job.setDone("Report generated successfully!", path)
+			job.setDone(fmt.Sprintf("Report generated: %s", path), path)
 		}()
 
 		// Return polling element with HTML-escaped jobID
