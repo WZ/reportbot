@@ -1,10 +1,9 @@
 package templates
 
 templ CategoryForm(weekParam string) {
-	<div class="category-form">
-		<form
+	<div class="category-form" style="display:inline-flex;align-items:center;gap:8px;">
+		<form style="display:inline-flex;align-items:center;gap:6px;"
 			hx-post={ "/categories?week=" + weekParam }
-			hx-target="body"
 		>
 			<input type="text" name="name" placeholder="New category name..." required autofocus style="padding:6px 10px;border:1px solid #CBD5E1;border-radius:6px;font-size:13px;width:220px;"/>
 			<button type="submit" class="btn btn-primary" style="padding:4px 12px;">Add</button>

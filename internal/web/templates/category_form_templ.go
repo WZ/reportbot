@@ -29,7 +29,7 @@ func CategoryForm(weekParam string) templ.Component {
 			templ_7745c5c3_Var1 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<div class=\"category-form\"><form hx-post=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<div class=\"category-form\" style=\"display:inline-flex;align-items:center;gap:8px;\"><form style=\"display:inline-flex;align-items:center;gap:6px;\" hx-post=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -42,7 +42,7 @@ func CategoryForm(weekParam string) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, "\" hx-target=\"body\"><input type=\"text\" name=\"name\" placeholder=\"New category name...\" required autofocus style=\"padding:6px 10px;border:1px solid #CBD5E1;border-radius:6px;font-size:13px;width:220px;\"> <button type=\"submit\" class=\"btn btn-primary\" style=\"padding:4px 12px;\">Add</button> <button type=\"button\" class=\"btn btn-secondary\" style=\"padding:4px 12px;\" onclick=\"document.getElementById('new-category-form').textContent=''\">Cancel</button></form></div>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, "\"><input type=\"text\" name=\"name\" placeholder=\"New category name...\" required autofocus style=\"padding:6px 10px;border:1px solid #CBD5E1;border-radius:6px;font-size:13px;width:220px;\"> <button type=\"submit\" class=\"btn btn-primary\" style=\"padding:4px 12px;\">Add</button> <button type=\"button\" class=\"btn btn-secondary\" style=\"padding:4px 12px;\" onclick=\"document.getElementById('new-category-form').textContent=''\">Cancel</button></form></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

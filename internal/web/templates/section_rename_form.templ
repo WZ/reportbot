@@ -4,7 +4,6 @@ templ SectionRenameForm(sectionID string, currentName string, weekParam string) 
 	<form
 		class="section-rename-form"
 		hx-post={ "/categories/" + sectionID + "/rename?week=" + weekParam }
-		hx-target="body"
 		style="display:inline-flex;align-items:center;gap:6px;"
 	>
 		<input type="text" name="name" value={ currentName } required autofocus
