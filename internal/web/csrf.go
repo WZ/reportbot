@@ -2,7 +2,8 @@ package web
 
 import (
 	"crypto/rand"
-	"encoding/base64"
+	"encoding/hex"
+	"log"
 	"net/http"
 )
 
@@ -35,6 +36,7 @@ func CSRFMiddleware(next http.Handler) http.Handler {
 			// Mutation methods — validate token
 			cookie, err := r.Cookie(csrfCookieName)
 			if err != nil || cookie.Value == "" {
+				log.Printf("CSRF reject %s %s: cookie missing (err=%v)", r.Method, r.URL.Path, err)
 				http.Error(w, "CSRF cookie missing", http.StatusForbidden)
 				return
 			}
@@ -43,6 +45,7 @@ func CSRFMiddleware(next http.Handler) http.Handler {
 				headerToken = r.FormValue("csrf_token")
 			}
 			if headerToken != cookie.Value {
+				log.Printf("CSRF reject %s %s: token mismatch (header=%q cookie=%q)", r.Method, r.URL.Path, headerToken, cookie.Value)
 				http.Error(w, "CSRF token mismatch", http.StatusForbidden)
 				return
 			}
@@ -64,5 +67,5 @@ func GetCSRFToken(r *http.Request) string {
 func generateCSRFToken() string {
 	b := make([]byte, csrfTokenLength)
 	rand.Read(b)
-	return base64.URLEncoding.EncodeToString(b)
+	return hex.EncodeToString(b)
 }

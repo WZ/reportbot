@@ -14,10 +14,14 @@ templ Layout(title string, csrfToken string, isManager bool, activePage string) 
 		<body>
 			<script>
 				document.body.addEventListener('htmx:configRequest', function(e) {
-					// Read CSRF token from cookie (double-submit cookie pattern)
-					var match = document.cookie.match(/(^|;\s*)_csrf=([^;]*)/);
-					if (match) {
-						e.detail.headers['X-CSRF-Token'] = decodeURIComponent(match[2]);
+					// Read CSRF token from _csrf cookie (double-submit cookie pattern)
+					var cookies = document.cookie.split(';');
+					for (var i = 0; i < cookies.length; i++) {
+						var c = cookies[i].trim();
+						if (c.indexOf('_csrf=') === 0) {
+							e.detail.headers['X-CSRF-Token'] = c.substring(6);
+							break;
+						}
 					}
 				});
 			</script>

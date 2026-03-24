@@ -55,7 +55,7 @@ func Layout(title string, csrfToken string, isManager bool, activePage string) t
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, " - ReportBot</title><link rel=\"stylesheet\" href=\"/static/style.css\"><script src=\"https://unpkg.com/htmx.org@2.0.4\"></script></head><body><script>\n\t\t\t\tdocument.body.addEventListener('htmx:configRequest', function(e) {\n\t\t\t\t\t// Read CSRF token from cookie (double-submit cookie pattern)\n\t\t\t\t\tvar match = document.cookie.match(/(^|;\\s*)_csrf=([^;]*)/);\n\t\t\t\t\tif (match) {\n\t\t\t\t\t\te.detail.headers['X-CSRF-Token'] = decodeURIComponent(match[2]);\n\t\t\t\t\t}\n\t\t\t\t});\n\t\t\t</script><nav><span class=\"logo\">ReportBot</span><div class=\"nav-links\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, " - ReportBot</title><link rel=\"stylesheet\" href=\"/static/style.css\"><script src=\"https://unpkg.com/htmx.org@2.0.4\"></script></head><body><script>\n\t\t\t\tdocument.body.addEventListener('htmx:configRequest', function(e) {\n\t\t\t\t\t// Read CSRF token from _csrf cookie (double-submit cookie pattern)\n\t\t\t\t\tvar cookies = document.cookie.split(';');\n\t\t\t\t\tfor (var i = 0; i < cookies.length; i++) {\n\t\t\t\t\t\tvar c = cookies[i].trim();\n\t\t\t\t\t\tif (c.indexOf('_csrf=') === 0) {\n\t\t\t\t\t\t\te.detail.headers['X-CSRF-Token'] = c.substring(6);\n\t\t\t\t\t\t\tbreak;\n\t\t\t\t\t\t}\n\t\t\t\t\t}\n\t\t\t\t});\n\t\t\t</script><nav><span class=\"logo\">ReportBot</span><div class=\"nav-links\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -154,7 +154,7 @@ func Flash(message string, level string) templ.Component {
 		var templ_7745c5c3_Var9 string
 		templ_7745c5c3_Var9, templ_7745c5c3_Err = templ.JoinStringErrs(message)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/layout.templ`, Line: 45, Col: 11}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/layout.templ`, Line: 49, Col: 11}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var9))
 		if templ_7745c5c3_Err != nil {
