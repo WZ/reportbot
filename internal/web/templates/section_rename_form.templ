@@ -1,18 +1,22 @@
 package templates
 
 templ SectionRenameForm(sectionID string, currentName string, weekParam string) {
-	<form
-		class="section-rename-form"
-		hx-post={ "/categories/" + sectionID + "/rename?week=" + weekParam }
-		style="display:inline-flex;align-items:center;gap:6px;"
-	>
-		<input type="text" name="name" value={ currentName } required autofocus
-			style="padding:4px 8px;border:1px solid #CBD5E1;border-radius:4px;font-size:13px;font-weight:600;width:200px;"/>
-		<button type="submit" class="btn btn-primary" style="padding:2px 10px;font-size:12px;">Save</button>
-		<button type="button" class="btn btn-secondary" style="padding:2px 10px;font-size:12px;"
-			hx-get={ "/?week=" + weekParam }
-			hx-target="body"
-			hx-push-url="true"
-		>Cancel</button>
-	</form>
+	<span id={ "section-name-" + sectionID } style="display:inline-flex;align-items:center;gap:6px;">
+		<form
+			class="section-rename-form"
+			hx-post={ "/categories/" + sectionID + "/rename?week=" + weekParam }
+			hx-target={ "#section-name-" + sectionID }
+			hx-swap="outerHTML"
+			style="display:inline-flex;align-items:center;gap:6px;"
+		>
+			<input type="text" name="name" value={ currentName } required autofocus
+				style="padding:4px 8px;border:1px solid #CBD5E1;border-radius:4px;font-size:13px;font-weight:600;width:200px;"/>
+			<button type="submit" class="btn btn-primary" style="padding:2px 10px;font-size:12px;">Save</button>
+			<button type="button" class="btn btn-secondary" style="padding:2px 10px;font-size:12px;"
+				hx-get={ "/categories/" + sectionID + "/cancel" }
+				hx-target={ "#section-name-" + sectionID }
+				hx-swap="outerHTML"
+			>Cancel</button>
+		</form>
+	</span>
 }

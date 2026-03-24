@@ -366,6 +366,15 @@ func TestUpdateItem_Success(t *testing.T) {
 		capturedStatus = status
 		return nil
 	}
+	web.GetWorkItemByID = func(db *sql.DB, id int64) (web.WorkItem, error) {
+		return web.WorkItem{ID: id, Description: "Updated description", Author: "Test", Status: "in progress"}, nil
+	}
+	web.GetLatestClassification = func(db *sql.DB, id int64) (web.ClassificationRecord, error) {
+		return web.ClassificationRecord{SectionID: "S0_0", Confidence: 0.9}, nil
+	}
+	web.GetAllSectionLabels = func(db *sql.DB) (map[string]string, error) {
+		return map[string]string{"S0_0": "Test Section"}, nil
+	}
 
 	r := chi.NewRouter()
 	r.Use(authMiddleware("UMGR", "manager", true))

@@ -280,8 +280,25 @@ func UpdateItemHandler(db *sql.DB) http.HandlerFunc {
 		}
 
 		invalidateCache()
-		w.Header().Set("HX-Redirect", r.Header.Get("HX-Current-URL"))
-		w.WriteHeader(http.StatusOK)
+
+		// Re-fetch and render the updated item row in place
+		item, err := web.GetWorkItemByID(db, itemID)
+		if err != nil {
+			w.Header().Set("HX-Redirect", r.Header.Get("HX-Current-URL"))
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		cls, _ := web.GetLatestClassification(db, itemID)
+		allSections := loadAllSectionsForDropdown(db)
+		itemData := templates.ItemData{
+			ID: item.ID, Description: item.Description, Author: item.Author,
+			Status: item.Status, Source: item.Source, SourceRef: item.SourceRef,
+			Confidence: cls.Confidence, SectionID: cls.SectionID, TicketIDs: item.TicketIDs,
+		}
+		isManager := middleware.IsManager(r)
+		if err := templates.ItemRow(itemData, allSections, isManager).Render(r.Context(), w); err != nil {
+			log.Printf("Error rendering updated item row: %v", err)
+		}
 	}
 }
 
@@ -301,8 +318,7 @@ func DeleteItemHandler(db *sql.DB) http.HandlerFunc {
 		}
 
 		invalidateCache()
-		// Reload page so section counts update
-		w.Header().Set("HX-Redirect", r.Header.Get("HX-Current-URL"))
+		// Return empty — hx-swap="delete" on the button removes the item from DOM
 		w.WriteHeader(http.StatusOK)
 	}
 }
@@ -509,13 +525,14 @@ func CreateCategory(db *sql.DB) http.HandlerFunc {
 
 		invalidateCache()
 
-		weekParam := r.URL.Query().Get("week")
-		redirectURL := "/"
-		if weekParam != "" {
-			redirectURL = "/?week=" + weekParam
+		// Return empty section card + clear the form — no full page reload
+		isManager := middleware.IsManager(r)
+		section := templates.SectionData{ID: sectionID, Name: name}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		allSections := loadAllSectionsForDropdown(db)
+		if err := templates.SectionGroup(section, allSections, isManager).Render(r.Context(), w); err != nil {
+			log.Printf("Error rendering new section: %v", err)
 		}
-		w.Header().Set("HX-Redirect", redirectURL)
-		w.WriteHeader(http.StatusOK)
 	}
 }
 
@@ -538,6 +555,21 @@ func RenameCategoryForm(db *sql.DB) http.HandlerFunc {
 	}
 }
 
+// CancelRename returns the original section name span (restores after rename form cancel).
+func CancelRename(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		sectionID := chi.URLParam(r, "id")
+		labels, _ := web.GetAllSectionLabels(db)
+		name := sectionID
+		if l, ok := labels[sectionID]; ok {
+			name = l
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprintf(w, `<span id="section-name-%s" class="name">%s</span>`,
+			html.EscapeString(sectionID), html.EscapeString(name))
+	}
+}
+
 // RenameCategory updates a section's display label.
 func RenameCategory(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -556,13 +588,10 @@ func RenameCategory(db *sql.DB) http.HandlerFunc {
 
 		invalidateCache()
 
-		weekParam := r.URL.Query().Get("week")
-		redirectURL := "/"
-		if weekParam != "" {
-			redirectURL = "/?week=" + weekParam
-		}
-		w.Header().Set("HX-Redirect", redirectURL)
-		w.WriteHeader(http.StatusOK)
+		// Return just the updated name span — swaps in place without reload
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprintf(w, `<span id="section-name-%s" class="name">%s</span>`,
+			html.EscapeString(sectionID), html.EscapeString(newName))
 	}
 }
 
@@ -921,6 +950,20 @@ func avgConfidence(decisions map[int64]web.LLMSectionDecision) float64 {
 		total += d.Confidence
 	}
 	return total / float64(len(decisions))
+}
+
+// loadAllSectionsForDropdown returns all known sections for the reclassify dropdown.
+func loadAllSectionsForDropdown(db *sql.DB) []templates.SectionData {
+	labels, err := web.GetAllSectionLabels(db)
+	if err != nil {
+		return nil
+	}
+	var sections []templates.SectionData
+	for id, label := range labels {
+		sections = append(sections, templates.SectionData{ID: id, Name: label})
+	}
+	sort.Slice(sections, func(i, j int) bool { return sections[i].ID < sections[j].ID })
+	return sections
 }
 
 func filterByAuthorID(items []web.WorkItem, userID string) []web.WorkItem {
