@@ -63,6 +63,7 @@ type depsSnapshot struct {
 	IsManagerID                       func(web.Config, string) bool
 	ReportWeekRange                   func(web.Config, time.Time) (time.Time, time.Time)
 	GetLatestClassificationsForItems  func(*sql.DB, []int64) (map[int64]web.ClassificationRecord, error)
+	GetAllSectionLabels               func(*sql.DB) (map[string]string, error)
 }
 
 func saveDeps() (restore func()) {
@@ -80,6 +81,7 @@ func saveDeps() (restore func()) {
 		IsManagerID:                      web.IsManagerID,
 		ReportWeekRange:                  web.ReportWeekRange,
 		GetLatestClassificationsForItems: web.GetLatestClassificationsForItems,
+		GetAllSectionLabels:              web.GetAllSectionLabels,
 	}
 	return func() {
 		web.GetItemsByDateRange = snap.GetItemsByDateRange
@@ -95,12 +97,16 @@ func saveDeps() (restore func()) {
 		web.IsManagerID = snap.IsManagerID
 		web.ReportWeekRange = snap.ReportWeekRange
 		web.GetLatestClassificationsForItems = snap.GetLatestClassificationsForItems
+		web.GetAllSectionLabels = snap.GetAllSectionLabels
 	}
 }
 
 // stubEmptyBuild stubs out the build pipeline to return empty/no-op results.
 func stubEmptyBuild() {
 	web.GetLatestClassificationsForItems = func(db *sql.DB, ids []int64) (map[int64]web.ClassificationRecord, error) {
+		return nil, nil
+	}
+	web.GetAllSectionLabels = func(db *sql.DB) (map[string]string, error) {
 		return nil, nil
 	}
 	web.GetRecentCorrections = func(db *sql.DB, since time.Time, limit int) ([]web.ClassificationCorrection, error) {

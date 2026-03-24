@@ -7,6 +7,7 @@ import (
 	"log"
 	"math/rand"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -117,6 +118,9 @@ func ReportEditorPage(cfg web.Config, db *sql.DB) http.HandlerFunc {
 			mode = "team"
 		}
 
+		// Build allSections for reclassify dropdown (includes all known sections, even empty ones)
+		allSections := buildAllSections(db, sections)
+
 		data := templates.EditorData{
 			TeamName:           cfg.TeamName,
 			WeekLabel:          weekLabel,
@@ -127,6 +131,7 @@ func ReportEditorPage(cfg web.Config, db *sql.DB) http.HandlerFunc {
 			AuthorCount:        len(authorSet),
 			AvgConf:            avgConf,
 			Sections:           sections,
+			AllSections:        allSections,
 			IsManager:          isManager,
 			CSRFToken:          csrf.Token(r),
 			Mode:               mode,
@@ -459,7 +464,88 @@ func GenerateStatus() http.HandlerFunc {
 	}
 }
 
+// NewCategoryForm returns the inline form for adding a new category.
+func NewCategoryForm() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		weekParam := r.URL.Query().Get("week")
+		if err := templates.CategoryForm(weekParam).Render(r.Context(), w); err != nil {
+			log.Printf("Error rendering category form: %v", err)
+		}
+	}
+}
+
+// CreateCategory creates a new custom category section.
+func CreateCategory(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		name := strings.TrimSpace(r.FormValue("name"))
+		if name == "" {
+			http.Error(w, "Category name is required", http.StatusBadRequest)
+			return
+		}
+
+		// Generate a unique section ID for the custom category
+		sectionID := fmt.Sprintf("CUSTOM_%d", time.Now().UnixMilli())
+
+		// Insert a placeholder classification record so the section appears in DB queries.
+		// We use work_item_id=0 as a sentinel — it won't match any real item.
+		_, err := db.Exec(
+			`INSERT INTO classification_history
+			 (work_item_id, section_id, section_label, confidence, llm_provider, llm_model)
+			 VALUES (0, ?, ?, 1.0, 'manual', 'user')`,
+			sectionID, name,
+		)
+		if err != nil {
+			log.Printf("Error creating category: %v", err)
+			http.Error(w, "Failed to create category", http.StatusInternalServerError)
+			return
+		}
+
+		invalidateCache()
+
+		weekParam := r.URL.Query().Get("week")
+		redirectURL := "/"
+		if weekParam != "" {
+			redirectURL = "/?week=" + weekParam
+		}
+		w.Header().Set("HX-Redirect", redirectURL)
+		w.WriteHeader(http.StatusOK)
+	}
+}
+
 // --- Helpers ---
+
+// buildAllSections merges current sections with all known section labels from DB.
+// This ensures the reclassify dropdown includes sections that have no items this week.
+func buildAllSections(db *sql.DB, currentSections []templates.SectionData) []templates.SectionData {
+	allLabels, err := web.GetAllSectionLabels(db)
+	if err != nil {
+		log.Printf("Warning: failed to load section labels: %v", err)
+		return currentSections
+	}
+
+	// Start with current sections
+	seen := make(map[string]bool)
+	result := make([]templates.SectionData, len(currentSections))
+	copy(result, currentSections)
+	for _, s := range currentSections {
+		seen[s.ID] = true
+	}
+
+	// Add any sections from DB that aren't already present
+	var extra []templates.SectionData
+	for id, label := range allLabels {
+		if !seen[id] && id != "UND" {
+			extra = append(extra, templates.SectionData{ID: id, Name: label})
+		}
+	}
+
+	// Sort extra sections
+	sort.Slice(extra, func(i, j int) bool {
+		return extra[i].ID < extra[j].ID
+	})
+
+	return append(result, extra...)
+}
 
 func resolveWeek(cfg web.Config, weekParam string) (monday time.Time, label, prevWeek, nextWeek string) {
 	now := time.Now()
@@ -560,16 +646,28 @@ func buildSectionsFromDB(db *sql.DB, items []web.WorkItem) ([]templates.SectionD
 		})
 	}
 
-	// Build ordered result, putting "Unclassified" last
+	// Sort sections by section_id to preserve template ordering.
+	// Section IDs like S0_0, S0_1, S1_0 sort lexicographically in template order.
+	// "UND" and "CUSTOM_*" go last.
+	sort.Slice(sectionOrder, func(i, j int) bool {
+		a, b := sectionOrder[i], sectionOrder[j]
+		if a == "UND" {
+			return false
+		}
+		if b == "UND" {
+			return true
+		}
+		aCustom := strings.HasPrefix(a, "CUSTOM_")
+		bCustom := strings.HasPrefix(b, "CUSTOM_")
+		if aCustom != bCustom {
+			return !aCustom // template sections before custom
+		}
+		return a < b
+	})
+
 	var sections []templates.SectionData
 	for _, id := range sectionOrder {
-		if id == "UND" {
-			continue
-		}
 		sections = append(sections, *sectionMap[id])
-	}
-	if und, ok := sectionMap["UND"]; ok {
-		sections = append(sections, *und)
 	}
 
 	avgConf := 0.0

@@ -36,6 +36,10 @@ var GetLatestClassificationsForItems = func(db *sql.DB, itemIDs []int64) (map[in
 	return sqlite.GetLatestClassificationsForItems(db, itemIDs)
 }
 
+var GetAllSectionLabels = func(db *sql.DB) (map[string]string, error) {
+	return sqlite.GetAllSectionLabels(db)
+}
+
 var GetRecentCorrections = func(db *sql.DB, since time.Time, limit int) ([]ClassificationCorrection, error) {
 	return sqlite.GetRecentCorrections(db, since, limit)
 }

@@ -12,10 +12,11 @@ type EditorData struct {
 	AuthorCount       int
 	AvgConf           float64
 	Sections          []SectionData
+	AllSections       []SectionData // all known sections (for reclassify dropdown, includes empty ones)
 	IsManager         bool
 	CSRFToken         string
 	Mode              string
-	HasClassifications bool // true if items have existing LLM classifications
+	HasClassifications bool
 }
 
 type SectionData struct {
@@ -81,7 +82,13 @@ templ ReportEditor(data EditorData) {
 				<option value="team" selected?={ data.Mode == "team" }>Team mode</option>
 				<option value="boss" selected?={ data.Mode == "boss" }>Boss mode</option>
 			</select>
+		if data.IsManager {
+				<button class="btn btn-secondary" hx-get={ "/categories/new?week=" + data.WeekParam } hx-target="#new-category-form" hx-swap="innerHTML">
+					+ Category
+				</button>
+			}
 		</div>
+		<div id="new-category-form"></div>
 		<div id="generate-status"></div>
 		if data.ItemCount == 0 {
 			<div class="empty">
@@ -92,7 +99,7 @@ templ ReportEditor(data EditorData) {
 			<div class="editor-layout">
 				<div class="editor-sections">
 					for _, section := range data.Sections {
-						@SectionGroup(section, data.Sections, data.IsManager)
+						@SectionGroup(section, data.AllSections, data.IsManager)
 					}
 				</div>
 				<div class="preview-panel">

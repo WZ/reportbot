@@ -588,6 +588,28 @@ func GetLatestClassificationsForItems(db *sql.DB, itemIDs []int64) (map[int64]Cl
 	return result, rows.Err()
 }
 
+// GetAllSectionLabels returns all distinct section_id → section_label pairs from classification history.
+func GetAllSectionLabels(db *sql.DB) (map[string]string, error) {
+	rows, err := db.Query(
+		`SELECT DISTINCT section_id, section_label FROM classification_history WHERE section_id != '' ORDER BY section_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make(map[string]string)
+	for rows.Next() {
+		var id, label string
+		if err := rows.Scan(&id, &label); err != nil {
+			return nil, err
+		}
+		if label == "" {
+			label = id
+		}
+		result[id] = label
+	}
+	return result, rows.Err()
+}
+
 // --- Classification Corrections ---
 
 func InsertClassificationCorrection(db *sql.DB, c ClassificationCorrection) error {
