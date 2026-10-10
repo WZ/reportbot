@@ -94,6 +94,7 @@ llm_provider: "anthropic"       # "anthropic" or "openai"
 llm_batch_size: 50              # optional: items per LLM call when re-classifying after a Taxonomy edit
 llm_example_count: 20           # optional: similar past Work Items shown to the LLM
 llm_example_max_chars: 140      # optional: max chars per example snippet
+llm_reasoning_effort: ""        # optional (openai provider): low, medium or high; empty sends none
 anthropic_api_key: "sk-ant-..."
 openai_api_key: ""
 openai_base_url: "https://api.openai.com/v1"  # optional: OpenAI-compatible base URL
@@ -159,6 +160,7 @@ export OPENAI_BASE_URL=https://api.openai.com/v1
 export LLM_BATCH_SIZE=50
 export LLM_EXAMPLE_COUNT=20
 export LLM_EXAMPLE_MAX_CHARS=140
+export LLM_REASONING_EFFORT=low                 # Optional (openai provider): low, medium or high
 export DECISION_MODEL_URL=https://api.compat.example
 export DECISION_MODEL_API_KEY=...
 export DECISION_MODEL_NAME=...
@@ -191,6 +193,7 @@ Set `llm_model` in YAML or `LLM_MODEL` env var to override.
 When `llm_provider=openai`, the Section pick uses the OpenAI-compatible `responses` API with schema-constrained JSON output (`section_id` only).
 Set `llm_example_count` / `llm_example_max_chars` to tune prompt context, and `llm_batch_size` for re-classification after Taxonomy edits.
 Set `openai_base_url` / `OPENAI_BASE_URL` when `llm_provider=openai` and you want an OpenAI-compatible endpoint instead of `api.openai.com`.
+Set `llm_reasoning_effort` / `LLM_REASONING_EFFORT` (`low`, `medium`, `high`) to send a reasoning effort to an OpenAI-compatible reasoning model; empty sends none.
 Set `decision_model_url`, `decision_model_api_key` and `decision_model_name` (or `DECISION_MODEL_*`) for the decision model; requests go to `{decision_model_url}/v1/systemone`. `decision_model_confidence` is the Section-check probability needed to file without asking; the ship-gate eval measured about 93% accuracy among items filed at 0.70.
 Set `external_http_timeout_seconds` / `EXTERNAL_HTTP_TIMEOUT_SECONDS` to tune timeout limits for GitLab/GitHub/LLM API requests.
 Set `tls_skip_verify` / `TLS_SKIP_VERIFY` to skip TLS certificate verification when connecting to internal or corporate API servers with self-signed or internal CA certificates.

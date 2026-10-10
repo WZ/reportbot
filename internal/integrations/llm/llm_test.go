@@ -106,6 +106,17 @@ func TestClassifySectionsOpenAIStructured(t *testing.T) {
 	if format["type"] != "json_schema" || format["strict"] != true {
 		t.Fatalf("expected strict json_schema format, got %v", format)
 	}
+	if _, sent := gotBody["reasoning"]; sent {
+		t.Fatalf("no reasoning effort configured, none sent: %v", gotBody["reasoning"])
+	}
+
+	cfg.LLMReasoningEffort = "low"
+	if _, err := ClassifySections(cfg, testSections, nil, []PromptItem{{ID: 5, Text: "Rack power"}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if r, _ := gotBody["reasoning"].(map[string]any); r["effort"] != "low" {
+		t.Fatalf("expected reasoning effort low, got %v", gotBody["reasoning"])
+	}
 }
 
 func TestClassifySectionsHTTPError(t *testing.T) {

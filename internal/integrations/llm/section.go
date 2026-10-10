@@ -201,7 +201,7 @@ func ClassifySections(cfg Config, sections []domain.Section, recent map[int64][]
 	log.Printf("llm section provider=%s model=%s items=%d sections=%d", cfg.LLMProvider, model, len(items), len(sections))
 	switch cfg.LLMProvider {
 	case "openai":
-		res.RawText, res.Usage, err = callOpenAIStructured(cfg.OpenAIAPIKey, cfg.OpenAIBaseURL, model, system, user, "section_placement", SectionSchema(sections))
+		res.RawText, res.Usage, err = callOpenAIStructured(cfg.OpenAIAPIKey, cfg.OpenAIBaseURL, model, cfg.LLMReasoningEffort, system, user, "section_placement", SectionSchema(sections))
 	default:
 		res.RawText, res.Usage, err = callAnthropic(cfg.AnthropicAPIKey, model, system, user)
 	}

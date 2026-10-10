@@ -88,6 +88,19 @@ type openAIResponsesRequest struct {
 	Input       string                    `json:"input"`
 	Temperature float64                   `json:"temperature,omitempty"`
 	Text        *openAIResponsesTextParam `json:"text,omitempty"`
+	Reasoning   *openAIReasoningParam     `json:"reasoning,omitempty"`
+}
+
+type openAIReasoningParam struct {
+	Effort string `json:"effort"`
+}
+
+// reasoningParam is nil when no effort is configured, so the provider default applies.
+func reasoningParam(effort string) *openAIReasoningParam {
+	if effort == "" {
+		return nil
+	}
+	return &openAIReasoningParam{Effort: effort}
 }
 
 type openAIResponsesTextParam struct {
@@ -120,10 +133,11 @@ type openAIResponsesResponse struct {
 	} `json:"error"`
 }
 
-func callOpenAIStructured(apiKey, baseURL, model, systemPrompt, userPrompt, schemaName string, schema map[string]any) (string, LLMUsage, error) {
+func callOpenAIStructured(apiKey, baseURL, model, effort, systemPrompt, userPrompt, schemaName string, schema map[string]any) (string, LLMUsage, error) {
 	reqBody := openAIResponsesRequest{
-		Model: model,
-		Input: buildResponsesInput(systemPrompt, userPrompt),
+		Model:     model,
+		Input:     buildResponsesInput(systemPrompt, userPrompt),
+		Reasoning: reasoningParam(effort),
 		Text: &openAIResponsesTextParam{
 			Format: openAIResponsesFormatParam{
 				Type:   "json_schema",
@@ -241,10 +255,11 @@ func extractResponsesOutputText(resp openAIResponsesResponse) (string, error) {
 	return "", fmt.Errorf("no structured text content in OpenAI Responses payload")
 }
 
-func callOpenAI(apiKey, baseURL, model, systemPrompt, userPrompt string) (string, LLMUsage, error) {
+func callOpenAI(apiKey, baseURL, model, effort, systemPrompt, userPrompt string) (string, LLMUsage, error) {
 	responseText, usage, err := doOpenAIResponsesRequest(apiKey, baseURL, openAIResponsesRequest{
-		Model: model,
-		Input: buildResponsesInput(systemPrompt, userPrompt),
+		Model:     model,
+		Input:     buildResponsesInput(systemPrompt, userPrompt),
+		Reasoning: reasoningParam(effort),
 	})
 	if err != nil {
 		return "", usage, err

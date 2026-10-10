@@ -33,7 +33,7 @@ func SuggestSectionDescriptions(cfg Config, sections []domain.Section, correctio
 	var err error
 	switch cfg.LLMProvider {
 	case "openai":
-		text, usage, err = callOpenAI(cfg.OpenAIAPIKey, cfg.OpenAIBaseURL, model, system, user)
+		text, usage, err = callOpenAI(cfg.OpenAIAPIKey, cfg.OpenAIBaseURL, model, cfg.LLMReasoningEffort, system, user)
 	default:
 		text, usage, err = callAnthropic(cfg.AnthropicAPIKey, model, system, user)
 	}

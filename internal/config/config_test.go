@@ -91,6 +91,7 @@ external_http_timeout_seconds: 75
 	t.Setenv("DECISION_MODEL_API_KEY", "dm-test")
 	t.Setenv("DECISION_MODEL_NAME", "test-model")
 	t.Setenv("DECISION_MODEL_CONFIDENCE", "0.55")
+	t.Setenv("LLM_REASONING_EFFORT", "low")
 	t.Setenv("LLM_PROVIDER", "openai")
 	t.Setenv("OPENAI_API_KEY", "sk-env")
 	t.Setenv("OPENAI_BASE_URL", "https://api.compat.example/v1/")
@@ -124,6 +125,9 @@ external_http_timeout_seconds: 75
 	}
 	if cfg.GitLabRefTicketLabel != "Jira" {
 		t.Fatalf("expected ticket field label from env override, got %q", cfg.GitLabRefTicketLabel)
+	}
+	if cfg.LLMReasoningEffort != "low" {
+		t.Fatalf("expected reasoning effort from env override, got %q", cfg.LLMReasoningEffort)
 	}
 	if cfg.DecisionModelConfidence != 0.55 {
 		t.Fatalf("expected decision model confidence from env override, got %v", cfg.DecisionModelConfidence)
@@ -200,6 +204,7 @@ func TestLoadConfigFatalCases(t *testing.T) {
 		_ = os.Setenv("DECISION_MODEL_NAME", "test-model")
 		_ = os.Setenv("TIMEZONE", os.Getenv("TEST_FATAL_TZ"))
 		_ = os.Setenv("DECISION_MODEL_CONFIDENCE", os.Getenv("TEST_FATAL_CONFIDENCE"))
+		_ = os.Setenv("LLM_REASONING_EFFORT", os.Getenv("TEST_FATAL_EFFORT"))
 		if os.Getenv("TEST_FATAL_DROP_DECISION_URL") == "1" {
 			_ = os.Unsetenv("DECISION_MODEL_URL")
 		}

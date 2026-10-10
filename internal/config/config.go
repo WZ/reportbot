@@ -32,9 +32,11 @@ type Config struct {
 	LLMBatchSize     int    `yaml:"llm_batch_size"`
 	LLMExampleCount  int    `yaml:"llm_example_count"`
 	LLMExampleMaxLen int    `yaml:"llm_example_max_chars"`
-	AnthropicAPIKey  string `yaml:"anthropic_api_key"`
-	OpenAIAPIKey     string `yaml:"openai_api_key"`
-	OpenAIBaseURL    string `yaml:"openai_base_url"`
+	// Reasoning effort sent to OpenAI-compatible providers; empty sends none.
+	LLMReasoningEffort string `yaml:"llm_reasoning_effort"`
+	AnthropicAPIKey    string `yaml:"anthropic_api_key"`
+	OpenAIAPIKey       string `yaml:"openai_api_key"`
+	OpenAIBaseURL      string `yaml:"openai_base_url"`
 
 	DecisionModelURL        string  `yaml:"decision_model_url"`
 	DecisionModelAPIKey     string  `yaml:"decision_model_api_key"`
@@ -103,6 +105,7 @@ func LoadConfig() Config {
 	envOverrideInt(&cfg.LLMBatchSize, "LLM_BATCH_SIZE")
 	envOverrideInt(&cfg.LLMExampleCount, "LLM_EXAMPLE_COUNT")
 	envOverrideInt(&cfg.LLMExampleMaxLen, "LLM_EXAMPLE_MAX_CHARS")
+	envOverride(&cfg.LLMReasoningEffort, "LLM_REASONING_EFFORT")
 	envOverride(&cfg.AnthropicAPIKey, "ANTHROPIC_API_KEY")
 	envOverride(&cfg.OpenAIAPIKey, "OPENAI_API_KEY")
 	envOverride(&cfg.OpenAIBaseURL, "OPENAI_BASE_URL")
@@ -276,6 +279,11 @@ func LoadConfig() Config {
 	}
 	if cfg.LLMExampleMaxLen < 20 {
 		log.Fatalf("invalid llm_example_max_chars '%d': must be >= 20", cfg.LLMExampleMaxLen)
+	}
+	switch cfg.LLMReasoningEffort {
+	case "", "low", "medium", "high":
+	default:
+		log.Fatalf("invalid llm_reasoning_effort '%s': must be empty, low, medium or high", cfg.LLMReasoningEffort)
 	}
 	if cfg.ExternalHTTPTimeoutSeconds < 5 {
 		log.Fatalf("invalid external_http_timeout_seconds '%d': must be >= 5", cfg.ExternalHTTPTimeoutSeconds)
