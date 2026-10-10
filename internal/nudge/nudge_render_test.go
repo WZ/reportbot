@@ -122,7 +122,7 @@ func TestRenderNudgeForUser_GenericOnlyWhenNoActiveItems(t *testing.T) {
 	})
 
 	now := time.Date(2026, 3, 3, 9, 0, 0, 0, time.UTC)
-	if err := sqlitedb.InsertWorkItem(db, sqlitedb.WorkItem{
+	if _, err := sqlitedb.InsertWorkItem(db, sqlitedb.WorkItem{
 		Description: "Already shipped",
 		Author:      "Member Display",
 		AuthorID:    "U_MEMBER",
@@ -142,7 +142,7 @@ func TestRenderNudgeForUser_GenericOnlyWhenNoActiveItems(t *testing.T) {
 	if !strings.Contains(rendered.Text, "Friendly reminder to report your work items") {
 		t.Fatalf("expected generic reminder text, got %q", rendered.Text)
 	}
-	if strings.Contains(rendered.Text, "still marked") {
+	if strings.Contains(rendered.Text, "still open") {
 		t.Fatalf("did not expect active-item copy in generic nudge: %q", rendered.Text)
 	}
 	if len(rendered.Blocks) != 1 {
@@ -163,7 +163,7 @@ func TestRenderNudgeForUser_PaginatesAndUsesAllSources(t *testing.T) {
 
 	insert := func(item sqlitedb.WorkItem) {
 		t.Helper()
-		if err := sqlitedb.InsertWorkItem(db, item); err != nil {
+		if _, err := sqlitedb.InsertWorkItem(db, item); err != nil {
 			t.Fatalf("insert work item: %v", err)
 		}
 	}
@@ -187,10 +187,11 @@ func TestRenderNudgeForUser_PaginatesAndUsesAllSources(t *testing.T) {
 		Description: "GitHub task",
 		Author:      "Pat",
 		Source:      "github",
-		Status:      "resolved in session; root cause analysis in progress",
+		Status:      "in progress",
+		StatusNote:  "resolved in session; root cause analysis in progress",
 		ReportedAt:  now.Add(2 * time.Minute),
 	})
-	// Older in-progress row should be hidden by newer done row with same dedupe key.
+	// A done row is not open, so only the open row with this key is listed.
 	insert(sqlitedb.WorkItem{
 		Description: "[7001] Duplicate task",
 		Author:      "Pat",
@@ -222,26 +223,23 @@ func TestRenderNudgeForUser_PaginatesAndUsesAllSources(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RenderNudgeForUser first page error: %v", err)
 	}
-	if !strings.Contains(firstPage.Text, "Showing 1-10 of 12 active items") {
+	if !strings.Contains(firstPage.Text, "Showing 1-10 of 13 active items") {
 		t.Fatalf("expected first-page summary, got %q", firstPage.Text)
 	}
 	if !strings.Contains(firstPage.Text, "GitLab task") || !strings.Contains(firstPage.Text, "GitHub task") {
 		t.Fatalf("expected all-source active items in rendered text, got %q", firstPage.Text)
-	}
-	if strings.Contains(firstPage.Text, "Duplicate task") {
-		t.Fatalf("expected deduped latest done item to be excluded, got %q", firstPage.Text)
 	}
 
 	secondPage, err := RenderNudgeForUser(api, db, cfg, "U_MEMBER", "", now, 99, false)
 	if err != nil {
 		t.Fatalf("RenderNudgeForUser second page error: %v", err)
 	}
-	if !strings.Contains(secondPage.Text, "Showing 11-12 of 12 active items") {
+	if !strings.Contains(secondPage.Text, "Showing 11-13 of 13 active items") {
 		t.Fatalf("expected clamped second-page summary, got %q", secondPage.Text)
 	}
 }
 
-func TestRenderNudgeForUser_PreviousWeekInProgressItems(t *testing.T) {
+func TestRenderNudgeForUser_PreviousWeekOpenItems(t *testing.T) {
 	db := newRenderTestDB(t)
 	api := newNudgeMockSlackAPI(t, map[string]map[string]string{
 		"U_MEMBER": {
@@ -256,7 +254,7 @@ func TestRenderNudgeForUser_PreviousWeekInProgressItems(t *testing.T) {
 	// Item reported last week, still in progress.
 	lastWeek := now.AddDate(0, 0, -7)
 
-	if err := sqlitedb.InsertWorkItem(db, sqlitedb.WorkItem{
+	if _, err := sqlitedb.InsertWorkItem(db, sqlitedb.WorkItem{
 		Description: "Carry-over task from last week",
 		Author:      "Member Display",
 		AuthorID:    "U_MEMBER",
@@ -276,7 +274,7 @@ func TestRenderNudgeForUser_PreviousWeekInProgressItems(t *testing.T) {
 	if !strings.Contains(rendered.Text, "Carry-over task from last week") {
 		t.Fatalf("expected previous-week in-progress item in interactive nudge, got %q", rendered.Text)
 	}
-	if !strings.Contains(rendered.Text, "still marked") {
+	if !strings.Contains(rendered.Text, "still open") {
 		t.Fatalf("expected interactive nudge intro text, got %q", rendered.Text)
 	}
 }
@@ -297,7 +295,7 @@ func TestRenderNudgeForUser_UpdatedNoItems(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RenderNudgeForUser returned error: %v", err)
 	}
-	if !strings.Contains(rendered.Text, "Updated. No items are currently marked in progress.") {
+	if !strings.Contains(rendered.Text, "Updated. You have no open items.") {
 		t.Fatalf("expected updated no-items text, got %q", rendered.Text)
 	}
 }

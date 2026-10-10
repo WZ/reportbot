@@ -12,12 +12,17 @@ import (
 	"strings"
 	"time"
 
+	"reportbot/internal/domain"
+	"reportbot/internal/filing"
+	"reportbot/internal/publish"
+	"reportbot/internal/report"
+	"reportbot/internal/storage/sqlite"
+
 	"github.com/slack-go/slack"
 	"github.com/slack-go/slack/slackevents"
 	"github.com/slack-go/slack/socketmode"
 )
 
-var statusRegex = regexp.MustCompile(`\(([^)]+)\)\s*$`)
 var delegatedAuthorRegex = regexp.MustCompile(`^\{([^{}]+)\}\s*`)
 
 const (
@@ -36,12 +41,10 @@ const (
 	editActionDescription = "description_input"
 	editBlockStatus       = "edit_status"
 	editActionStatus      = "status_input"
-	editBlockCategory     = "edit_category"
-	editActionCategory    = "category_input"
-
-	actionUncertaintySelect = "uncertainty_select"
-	actionUncertaintyOther  = "uncertainty_other"
-	noCategoryChangeValue   = "__NO_CHANGE__"
+	editBlockStatusNote   = "edit_status_note"
+	editActionStatusNote  = "status_note_input"
+	editBlockSection      = "edit_section"
+	editActionSection     = "section_input"
 
 	actionRetroApply   = "retro_apply"
 	actionRetroDismiss = "retro_dismiss"
@@ -51,11 +54,26 @@ const (
 	modalNudgeConfirmCallback = "nudge_confirm_modal"
 	nudgeMetaPrefix           = "nudge:"
 
-	actionReportOverwrite = "report_overwrite"
-	actionReportCancel    = "report_cancel"
+	actionPlacePick      = "place_pick"
+	actionPlaceOther     = "place_other"
+	actionUpdateConfirm  = "update_confirm"
+	actionUpdateReject   = "update_reject"
+	actionLinkConfirm    = "link_confirm"
+	actionLinkReject     = "link_reject"
+	actionPlacementUndo  = "placement_undo"
+	actionCheckDone      = "check_done"
+	actionPublishAnyway  = "publish_anyway"
+	undeterminedOptValue = "0"
 )
 
-func StartSlackBot(cfg Config, db *sql.DB, api *slack.Client) error {
+// wakeFiling starts the filing workers on new jobs; set by StartSlackBot.
+var wakeFiling = func() {}
+
+// StartSlackBot runs the Socket Mode loop; wake tells the filing workers new jobs exist.
+func StartSlackBot(cfg Config, db *sql.DB, api *slack.Client, wake func()) error {
+	if wake != nil {
+		wakeFiling = wake
+	}
 	client := socketmode.New(api)
 
 	go func() {
@@ -207,245 +225,22 @@ func handleReport(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashComm
 		items[i].AuthorID = authorID
 	}
 
-	// Check for duplicate ticket IDs before inserting.
-	type dupMatch struct {
-		newIdx   int
-		existing WorkItem
-		ticket   string
+	saved := "Saved — filing it…"
+	if len(items) > 1 {
+		saved = fmt.Sprintf("Saved %d items — filing them…", len(items))
 	}
-	var userInfo *slack.User
-	var matches []dupMatch
-	for i, item := range items {
-		ticket, ok := leadingTicketPrefix(item.Description)
-		if !ok {
-			continue
-		}
-		candidates, err := FindItemsByTicketID(db, ticket)
-		if err != nil || len(candidates) == 0 {
-			continue
-		}
-		if userInfo == nil && authorID != "" {
-			userInfo, _ = api.GetUserInfo(authorID)
-		}
-		for _, ex := range candidates {
-			if !ticketExactMatch(ex, ticket) {
-				continue
-			}
-			if itemBelongsToViewer(ex, authorID, userInfo) {
-				matches = append(matches, dupMatch{i, ex, ticket})
-				break
-			}
-		}
-	}
+	respond(api, cmd.ResponseURL, cmd.ChannelID, cmd.UserID, false, saved, nil)
 
-	if len(matches) > 0 {
-		// Insert-then-reconcile: insert all new items in a transaction, then prompt user.
-		newIDs, err := InsertWorkItemsReturningIDs(db, items)
-		if err != nil {
-			postEphemeral(api, cmd, fmt.Sprintf("Error saving items: %v", err))
-			log.Printf("report insert error user=%s: %v", cmd.UserID, err)
-			return
-		}
-
-		// Build button value with only dup-matched new IDs so Cancel
-		// only removes duplicates, not unrelated items in the batch.
-		dupIdxs := make(map[int]bool, len(matches))
-		var oldIDStrs, dupNewIDStrs []string
-		for _, m := range matches {
-			oldIDStrs = append(oldIDStrs, fmt.Sprintf("%d", m.existing.ID))
-			dupIdxs[m.newIdx] = true
-		}
-		for i, id := range newIDs {
-			if dupIdxs[i] {
-				dupNewIDStrs = append(dupNewIDStrs, fmt.Sprintf("%d", id))
-			}
-		}
-		buttonValue := strings.Join(oldIDStrs, ",") + "|" + strings.Join(dupNewIDStrs, ",")
-
-		msg := "Duplicate ticket(s) found:\n"
-		for _, m := range matches {
-			msg += fmt.Sprintf("• [%s] %q (%s) — reported %s\n  → New: %q (%s)\n",
-				m.ticket, m.existing.Description, normalizeStatus(m.existing.Status),
-				m.existing.ReportedAt.Format("Jan 2"),
-				items[m.newIdx].Description, normalizeStatus(items[m.newIdx].Status))
-		}
-
-		overwriteBtn := slack.NewButtonBlockElement(actionReportOverwrite, buttonValue,
-			slack.NewTextBlockObject(slack.PlainTextType, "Overwrite", false, false))
-		cancelBtn := slack.NewButtonBlockElement(actionReportCancel, buttonValue,
-			slack.NewTextBlockObject(slack.PlainTextType, "Cancel", false, false))
-		blocks := []slack.Block{
-			slack.NewSectionBlock(slack.NewTextBlockObject(slack.MarkdownType, msg, false, false), nil, nil),
-			slack.NewActionBlock("report_dup_actions", overwriteBtn, cancelBtn),
-		}
-		if _, postErr := api.PostEphemeral(cmd.ChannelID, cmd.UserID, slack.MsgOptionBlocks(blocks...)); postErr != nil {
-			log.Printf("report dup prompt error user=%s: %v", cmd.UserID, postErr)
-			postEphemeral(api, cmd, msg+"\nUse /list to manage items.")
-		}
-		log.Printf("report duplicate detected user=%s tickets=%v", cmd.UserID, oldIDStrs)
+	payload := filing.Payload{Kind: "arrival", ResponseURL: cmd.ResponseURL, ChannelID: cmd.ChannelID, UserID: cmd.UserID, Replace: len(items) == 1}
+	if _, err := sqlite.InsertWorkItemsForFiling(db, items, payload.JSON()); err != nil {
+		postEphemeral(api, cmd, fmt.Sprintf("Error saving items: %v", err))
+		log.Printf("report insert error user=%s: %v", cmd.UserID, err)
 		return
 	}
-
-	if len(items) == 1 {
-		if err := InsertWorkItem(db, items[0]); err != nil {
-			postEphemeral(api, cmd, fmt.Sprintf("Error saving item: %v", err))
-			log.Printf("report insert error user=%s: %v", cmd.UserID, err)
-			return
-		}
-	} else {
-		if _, err := InsertWorkItems(db, items); err != nil {
-			postEphemeral(api, cmd, fmt.Sprintf("Error saving items: %v", err))
-			log.Printf("report batch insert error user=%s: %v", cmd.UserID, err)
-			return
-		}
-	}
+	wakeFiling()
 
 	notifyManagersOnMemberReport(api, cfg, cmd, author, items)
-
-	monday, nextMonday := ReportWeekRange(cfg, time.Now().In(cfg.Location))
-	weekItems, err := GetSlackItemsByAuthorAndDateRange(db, author, monday, nextMonday)
-	if err != nil {
-		log.Printf("report weekly items lookup error user=%s author=%s: %v", cmd.UserID, author, err)
-		postEphemeral(api, cmd, fmt.Sprintf("Recorded %d item(s) for %s.", len(items), author))
-		return
-	}
-
-	msg := fmt.Sprintf("Recorded %d item(s) for %s.", len(items), author)
-	previewLimit := 5
-	if len(items) <= previewLimit {
-		for _, it := range items {
-			msg += fmt.Sprintf("\n• %s (%s)", it.Description, normalizeStatus(it.Status))
-		}
-	} else {
-		for i := 0; i < previewLimit; i++ {
-			msg += fmt.Sprintf("\n• %s (%s)", items[i].Description, normalizeStatus(items[i].Status))
-		}
-		msg += fmt.Sprintf("\n• ... and %d more", len(items)-previewLimit)
-	}
-	if len(weekItems) > 0 {
-		msg += "\n\nItems reported this week:"
-		limit := 8
-		for i, p := range weekItems {
-			if i >= limit {
-				msg += fmt.Sprintf("\n• ... and %d more", len(weekItems)-limit)
-				break
-			}
-			msg += fmt.Sprintf("\n• %s (%s)", p.Description, normalizeStatus(p.Status))
-		}
-	}
-	postEphemeral(api, cmd, msg)
 	log.Printf("report saved user=%s author=%s count=%d", cmd.UserID, author, len(items))
-}
-
-func ticketExactMatch(item WorkItem, ticket string) bool {
-	if item.TicketIDs != "" {
-		for _, t := range strings.Split(item.TicketIDs, ",") {
-			if strings.TrimSpace(t) == ticket {
-				return true
-			}
-		}
-	}
-	if prefix, ok := leadingTicketPrefix(item.Description); ok {
-		if prefix == ticket {
-			return true
-		}
-	}
-	return false
-}
-
-func parseReportDupButtonValue(value string) (oldIDs, newIDs []int64, ok bool) {
-	parts := strings.SplitN(value, "|", 2)
-	if len(parts) != 2 {
-		return nil, nil, false
-	}
-	for _, s := range strings.Split(parts[0], ",") {
-		id, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
-		if err != nil {
-			return nil, nil, false
-		}
-		oldIDs = append(oldIDs, id)
-	}
-	for _, s := range strings.Split(parts[1], ",") {
-		id, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
-		if err != nil {
-			return nil, nil, false
-		}
-		newIDs = append(newIDs, id)
-	}
-	return oldIDs, newIDs, true
-}
-
-func handleReportOverwrite(api *slack.Client, db *sql.DB, cfg Config, channelID, userID, value string) {
-	oldIDs, newIDs, ok := parseReportDupButtonValue(value)
-	if !ok {
-		postEphemeralTo(api, channelID, userID, "Invalid action data.")
-		return
-	}
-
-	// Update old items with new description/status (preserves original ReportedAt),
-	// then delete the newly-inserted duplicates.
-	updated := 0
-	for i := 0; i < len(oldIDs) && i < len(newIDs); i++ {
-		newItem, err := GetWorkItemByID(db, newIDs[i])
-		if err != nil {
-			log.Printf("report overwrite read new item error id=%d: %v", newIDs[i], err)
-			continue
-		}
-		if err := UpdateWorkItemTextAndStatus(db, oldIDs[i], newItem.Description, newItem.Status); err != nil {
-			log.Printf("report overwrite update error id=%d: %v", oldIDs[i], err)
-			continue
-		}
-		updated++
-	}
-	for _, id := range newIDs {
-		if err := DeleteWorkItemByID(db, id); err != nil {
-			log.Printf("report overwrite cleanup error id=%d: %v", id, err)
-		}
-	}
-
-	postEphemeralTo(api, channelID, userID, fmt.Sprintf("Updated %d duplicate item(s).", updated))
-	log.Printf("report overwrite user=%s updated=%v deleted_new=%v", userID, oldIDs, newIDs)
-
-	// Notify managers about the updated items.
-	if !cfg.IsManagerID(userID) && len(cfg.ManagerSlackIDs) > 0 {
-		var items []WorkItem
-		for _, id := range oldIDs {
-			if item, err := GetWorkItemByID(db, id); err == nil {
-				items = append(items, item)
-			}
-		}
-		if len(items) > 0 {
-			msg := buildManagerReportNotificationMessage(channelID, items[0].Author, items)
-			seen := make(map[string]bool)
-			for _, managerID := range cfg.ManagerSlackIDs {
-				managerID = strings.TrimSpace(managerID)
-				if managerID == "" || managerID == userID || seen[managerID] {
-					continue
-				}
-				seen[managerID] = true
-				ch, _, _, err := api.OpenConversation(&slack.OpenConversationParameters{Users: []string{managerID}})
-				if err != nil {
-					continue
-				}
-				api.PostMessage(ch.ID, slack.MsgOptionText(msg, false))
-			}
-		}
-	}
-}
-
-func handleReportCancel(api *slack.Client, db *sql.DB, channelID, userID, value string) {
-	_, newIDs, ok := parseReportDupButtonValue(value)
-	if !ok {
-		postEphemeralTo(api, channelID, userID, "Invalid action data.")
-		return
-	}
-	for _, id := range newIDs {
-		if err := DeleteWorkItemByID(db, id); err != nil {
-			log.Printf("report cancel delete error id=%d: %v", id, err)
-		}
-	}
-	postEphemeralTo(api, channelID, userID, "Report cancelled — duplicate items not overwritten.")
-	log.Printf("report cancel user=%s deleted=%v", userID, newIDs)
 }
 
 func notifyManagersOnMemberReport(api *slack.Client, cfg Config, cmd slack.SlashCommand, author string, items []WorkItem) {
@@ -490,7 +285,7 @@ func buildManagerReportNotificationMessage(channelID, author string, items []Wor
 			msg += fmt.Sprintf("\n• ... and %d more", len(items)-limit)
 			break
 		}
-		msg += fmt.Sprintf("\n• %s (%s)", item.Description, normalizeStatus(item.Status))
+		msg += fmt.Sprintf("\n• %s (%s)", item.Description, report.StatusText(item))
 	}
 	return msg
 }
@@ -526,26 +321,31 @@ func parseReportItems(reportText, author string, loc *time.Location) ([]WorkItem
 	now := time.Now().In(loc)
 	items := make([]WorkItem, 0, len(trimmed))
 	for _, line := range trimmed {
-		status := "done"
-		description := line
-		if match := statusRegex.FindStringSubmatch(line); len(match) > 1 {
-			status = strings.TrimSpace(match[1])
-			description = strings.TrimSpace(line[:len(line)-len(match[0])])
-		} else if sharedStatus != "" {
-			status = sharedStatus
+		description, statusText := filing.SplitStatus(line)
+		if statusText == "" {
+			statusText = sharedStatus
 		}
 		if description == "" {
 			return nil, fmt.Errorf("Error: empty report item line.")
 		}
-		items = append(items, WorkItem{
-			Description: description,
-			Author:      author,
-			Source:      "slack",
-			Status:      status,
-			ReportedAt:  now,
-		})
+		items = append(items, newReportedItem(description, statusText, author, now))
 	}
 	return items, nil
+}
+
+// newReportedItem maps what code can decide; an empty Status leaves it to the decision model,
+// with the reporter's wording kept as the Status Note.
+func newReportedItem(description, statusText, author string, at time.Time) WorkItem {
+	item := WorkItem{Description: description, Author: author, Source: "slack", ReportedAt: at}
+	if status, ok := filing.MapStatus(statusText); ok {
+		item.Status = status
+	} else {
+		item.StatusNote = statusText
+	}
+	if certain, _ := filing.FindTickets(description); len(certain) > 0 {
+		item.TicketIDs = strings.Join(certain, ",")
+	}
+	return item
 }
 
 func handleFetchMRs(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashCommand) {
@@ -579,7 +379,7 @@ func handleFetchMRs(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashCo
 		strings.Join(sources, " + "),
 		monday.Format("Jan 2"), nextMonday.AddDate(0, 0, -1).Format("Jan 2")))
 
-	result, err := FetchAndImportMRs(cfg, db)
+	result, err := FetchAndImportMRs(cfg, db, FetchHooks(api))
 	if err != nil {
 		postEphemeral(api, cmd, fmt.Sprintf("Error: %v", err))
 		log.Printf("fetch error: %v", err)
@@ -628,57 +428,6 @@ func handleTestNudge(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashC
 	log.Printf("test nudge sent user=%s target=%s", cmd.UserID, targetID)
 }
 
-// deriveBossReportFromTeamReport attempts to derive a boss report from an existing team report file.
-// It returns:
-// - (filePath, bossReport, nil) if the team report exists and was successfully processed
-// - (empty, empty, nil) if the team report file doesn't exist (caller should fall through)
-// - (empty, empty, error) if there was an error (invalid config, file read error, etc.)
-func deriveBossReportFromTeamReport(reportOutputDir, teamName string, friday time.Time) (string, string, error) {
-	// Validate team name to prevent path traversal
-	if strings.ContainsAny(teamName, `/\`) {
-		return "", "", fmt.Errorf("invalid team name with path separators: %q", teamName)
-	}
-
-	teamReportFile := fmt.Sprintf("%s_%s.md", teamName, friday.Format("20060102"))
-	teamReportPath := filepath.Join(reportOutputDir, teamReportFile)
-
-	// Validate that the computed path stays within ReportOutputDir
-	baseDir := filepath.Clean(reportOutputDir)
-	cleanPath := filepath.Clean(teamReportPath)
-	rel, relErr := filepath.Rel(baseDir, cleanPath)
-	if relErr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
-		return "", "", fmt.Errorf("computed team report path escapes base dir (base=%q, path=%q, rel=%q): %w", baseDir, cleanPath, rel, relErr)
-	}
-
-	content, readErr := os.ReadFile(teamReportPath)
-	if readErr != nil {
-		if os.IsNotExist(readErr) {
-			// File doesn't exist - caller should fall through to full pipeline
-			return "", "", nil
-		}
-		// Unexpected error (permission, I/O, etc.)
-		return "", "", fmt.Errorf("error reading team report file %s: %w", teamReportPath, readErr)
-	}
-
-	if len(content) == 0 {
-		// Empty file - treat as not found
-		return "", "", nil
-	}
-
-	// Parse and transform the team report into a boss report
-	template := parseTemplate(string(content))
-	stripCurrentTeamTitleFromPrefix(template, teamName)
-	bossReport := renderBossMarkdown(template)
-
-	// Write the boss report file
-	filePath, err := WriteEmailDraftFile(bossReport, reportOutputDir, friday, teamName)
-	if err != nil {
-		return "", "", fmt.Errorf("error writing boss report file: %w", err)
-	}
-
-	return filePath, bossReport, nil
-}
-
 func parseGenerateReportArgs(text string) (mode string, sendPrivate bool, err error) {
 	mode = "team"
 	sendPrivate = false
@@ -705,240 +454,98 @@ func parseGenerateReportArgs(text string) (mode string, sendPrivate bool, err er
 }
 
 func handleGenerateReport(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashCommand) {
-	isManager, err := isManagerUser(api, cfg, cmd.UserID)
-	if err != nil {
-		postEphemeral(api, cmd, fmt.Sprintf("Error checking permissions: %v", err))
-		log.Printf("generate-report auth error user=%s: %v", cmd.UserID, err)
-		return
-	}
-	if !isManager {
+	if !cfg.IsManagerID(cmd.UserID) {
 		postEphemeral(api, cmd, "Sorry, only managers can use this command.")
 		log.Printf("generate-report denied user=%s", cmd.UserID)
 		return
 	}
-
 	mode, sendPrivate, parseErr := parseGenerateReportArgs(cmd.Text)
 	if parseErr != nil {
 		postEphemeral(api, cmd, parseErr.Error())
 		return
 	}
-
-	visibility := "channel"
-	if sendPrivate {
-		visibility = "private"
-	}
-	postEphemeral(api, cmd, fmt.Sprintf("Generating report (mode: %s, delivery: %s)...", mode, visibility))
-	log.Printf("generate-report mode=%s private=%t", mode, sendPrivate)
-
-	monday, nextMonday := ReportWeekRange(cfg, time.Now().In(cfg.Location))
-	friday := FridayOfWeek(monday)
-
 	if mode == "post" {
 		postLatestTeamReport(api, cfg, cmd, sendPrivate)
 		return
 	}
+	publishReport(api, db, cfg, cmd.ChannelID, cmd.UserID, mode, sendPrivate, false)
+}
 
-	// Boss mode shortcut: derive from existing team report if available.
-	if mode == "boss" {
-		filePath, bossReport, err := deriveBossReportFromTeamReport(cfg.ReportOutputDir, cfg.TeamName, friday)
-		if err != nil {
-			log.Printf("generate-report boss: error deriving from team report: %v", err)
-			postEphemeral(api, cmd, fmt.Sprintf("Error deriving boss report: %v", err))
-			return
-		}
-		if filePath != "" {
-			// Successfully derived boss report from team report
-			log.Printf("generate-report boss: deriving from existing team report, file=%s length=%d", filePath, len(bossReport))
+// publishReport stores the week's Published Report and uploads the requested version.
+// With Undetermined items and no confirmation, it warns instead.
+func publishReport(api *slack.Client, db *sql.DB, cfg Config, channelID, userID, mode string, sendPrivate, confirmed bool) {
+	report.GenerationMu.Lock()
+	defer report.GenerationMu.Unlock()
 
-			uploadGeneratedReport := func(filePath, fileTitle, initialComment, successMsg string) error {
-				fi, err := os.Stat(filePath)
-				if err != nil || fi.Size() <= 0 {
-					log.Printf("Error with boss report file: %v", err)
-					postEphemeral(api, cmd, "Error: generated boss report file is empty.")
-					return fmt.Errorf("generated boss report file is empty or inaccessible: %w", err)
-				}
-
-				uploadChannel := cmd.ChannelID
-				if sendPrivate {
-					ch, _, _, err := api.OpenConversation(&slack.OpenConversationParameters{Users: []string{cmd.UserID}})
-					if err != nil {
-						log.Printf("Error opening DM for private report: %v", err)
-						postEphemeral(api, cmd, "Error opening DM to send private report. Check bot permissions.")
-						return fmt.Errorf("failed to open DM for private report: %w", err)
-					}
-					uploadChannel = ch.ID
-				}
-
-				_, err = api.UploadFileV2(slack.UploadFileV2Parameters{
-					File:           filePath,
-					FileSize:       int(fi.Size()),
-					Filename:       filepath.Base(filePath),
-					Channel:        uploadChannel,
-					Title:          fileTitle,
-					InitialComment: initialComment,
-				})
-				if err != nil {
-					log.Printf("Error uploading report file: %v", err)
-					postEphemeral(api, cmd, "Error uploading report file to channel. Check bot permissions.")
-					return fmt.Errorf("failed to upload report file: %w", err)
-				}
-
-				postEphemeral(api, cmd, successMsg)
-				return nil
-			}
-
-			fileTitle := fmt.Sprintf("%s report email draft", cfg.TeamName)
-			initialComment := fmt.Sprintf(
-				"Generated boss report (week reference date: %s, derived from team report, tokens used: 0)",
-				friday.Format("2006-01-02"),
-			)
-			successMsg := fmt.Sprintf(
-				"Boss report derived from existing team report (no LLM tokens used)\nSaved to: %s",
-				filePath,
-			)
-
-			if err := uploadGeneratedReport(filePath, fileTitle, initialComment, successMsg); err != nil {
-				return
-			}
-			log.Printf("generate-report done mode=boss derived-from-team")
-			return
-		}
-		// File doesn't exist - fall through to full pipeline below
-		log.Printf("generate-report boss: no existing team report found, running full pipeline")
-	}
-
-	items, err := GetItemsByDateRange(db, monday, nextMonday)
+	live, err := publish.LoadWeek(db, cfg, time.Now())
 	if err != nil {
-		postEphemeral(api, cmd, fmt.Sprintf("Error loading items: %v", err))
+		postEphemeralTo(api, channelID, userID, fmt.Sprintf("Error loading the report: %v", err))
 		log.Printf("generate-report load error: %v", err)
 		return
 	}
-	log.Printf("generate-report items=%d", len(items))
-
-	if len(items) == 0 {
-		postEphemeral(api, cmd, "No work items found for this week.")
+	if live.View.ItemCount() == 0 {
+		postEphemeralTo(api, channelID, userID, "No work items found for this week.")
+		return
+	}
+	if n := len(live.View.Undetermined); n > 0 && !confirmed {
+		text := fmt.Sprintf("%d item(s) are still in Undetermined.", n)
+		if link := liveReportLink(cfg); link != "" {
+			text += " " + link
+		}
+		btn := slack.NewButtonBlockElement(actionPublishAnyway, fmt.Sprintf("%s|%t", mode, sendPrivate),
+			slack.NewTextBlockObject(slack.PlainTextType, "Publish anyway", false, false))
+		blocks := []slack.Block{
+			slack.NewSectionBlock(slack.NewTextBlockObject(slack.MarkdownType, text, false, false), nil, nil),
+			slack.NewActionBlock("publish_actions", btn),
+		}
+		if _, err := api.PostEphemeral(channelID, userID, slack.MsgOptionBlocks(blocks...), slack.MsgOptionText(text, false)); err != nil {
+			log.Printf("generate-report warning error: %v", err)
+		}
 		return
 	}
 
-	// Load recent corrections for LLM feedback loop.
-	fourWeeksAgo := monday.AddDate(0, 0, -28)
-	corrections, corrErr := GetRecentCorrections(db, fourWeeksAgo, 50)
-	if corrErr != nil {
-		log.Printf("generate-report corrections load error (non-fatal): %v", corrErr)
-	}
-
-	// Load historical classified items for TF-IDF example selection.
-	twelveWeeksAgo := monday.AddDate(0, 0, -84)
-	historicalItems, histErr := GetClassifiedItemsWithSections(db, twelveWeeksAgo, 500)
-	if histErr != nil {
-		log.Printf("generate-report historical items load error (non-fatal): %v", histErr)
-	}
-
-	result, err := BuildReportsFromLast(cfg, items, monday, corrections, historicalItems)
+	res, err := publish.Publish(db, cfg, live, userID)
 	if err != nil {
-		postEphemeral(api, cmd, fmt.Sprintf("Error building report: %v", err))
-		log.Printf("report build error: %v", err)
+		postEphemeralTo(api, channelID, userID, fmt.Sprintf("Error publishing the report: %v", err))
+		log.Printf("generate-report publish error: %v", err)
 		return
 	}
-	merged := result.Template
-	llmUsage := result.Usage
-
-	// Persist classification history (non-fatal on error).
-	if len(result.Decisions) > 0 {
-		optionLabels := make(map[string]string, len(result.Options))
-		for _, opt := range result.Options {
-			optionLabels[opt.ID] = opt.Label
-		}
-		var records []ClassificationRecord
-		for itemID, dec := range result.Decisions {
-			records = append(records, ClassificationRecord{
-				WorkItemID:       itemID,
-				SectionID:        dec.SectionID,
-				SectionLabel:     optionLabels[dec.SectionID],
-				Confidence:       dec.Confidence,
-				NormalizedStatus: dec.NormalizedStatus,
-				TicketIDs:        dec.TicketIDs,
-				DuplicateOf:      dec.DuplicateOf,
-				LLMProvider:      cfg.LLMProvider,
-				LLMModel:         cfg.LLMModel,
-			})
-		}
-		if err := InsertClassificationHistory(db, records); err != nil {
-			log.Printf("generate-report history persist error (non-fatal): %v", err)
-		} else {
-			log.Printf("generate-report persisted %d classification records", len(records))
-		}
-	}
-
-	var filePath string
-	var fileTitle string
+	filePath, title := res.TeamPath, fmt.Sprintf("%s team report", cfg.TeamName)
 	if mode == "boss" {
-		bossReport := renderBossMarkdown(merged)
-		filePath, err = WriteEmailDraftFile(bossReport, cfg.ReportOutputDir, friday, cfg.TeamName)
-		fileTitle = fmt.Sprintf("%s report email draft", cfg.TeamName)
-		log.Printf("generate-report boss-report-length=%d file=%s", len(bossReport), filePath)
-	} else {
-		teamReport := renderTeamMarkdown(merged)
-		filePath, err = WriteReportFile(teamReport, cfg.ReportOutputDir, friday, cfg.TeamName)
-		fileTitle = fmt.Sprintf("%s team report", cfg.TeamName)
-		log.Printf("generate-report team-report-length=%d file=%s", len(teamReport), filePath)
+		filePath, title = res.BossPath, fmt.Sprintf("%s report email draft", cfg.TeamName)
 	}
-	if err != nil {
-		log.Printf("Error writing report file: %v", err)
-		postEphemeral(api, cmd, fmt.Sprintf("Error writing report file: %v", err))
+	if err := uploadReportFile(api, channelID, userID, sendPrivate, filePath, title,
+		fmt.Sprintf("Published report for the week of %s (mode: %s)", live.Monday.Format("2006-01-02"), mode)); err != nil {
+		postEphemeralTo(api, channelID, userID, err.Error())
 		return
 	}
-	log.Printf("generate-report file=%s mode=%s", filePath, mode)
+	postEphemeralTo(api, channelID, userID, fmt.Sprintf("Published %d items (mode: %s). Saved to: %s", live.View.ItemCount(), mode, filePath))
+	log.Printf("generate-report done items=%d mode=%s", live.View.ItemCount(), mode)
+}
 
+func uploadReportFile(api *slack.Client, channelID, userID string, sendPrivate bool, filePath, title, comment string) error {
 	fi, err := os.Stat(filePath)
-	if err != nil {
-		log.Printf("Error stating report file: %v", err)
-		postEphemeral(api, cmd, fmt.Sprintf("Error reading generated file: %v", err))
-		return
+	if err != nil || fi.Size() <= 0 {
+		return fmt.Errorf("error: generated report file is empty or unreadable")
 	}
-	if fi.Size() <= 0 {
-		log.Printf("Error uploading report file: generated file is empty path=%s", filePath)
-		postEphemeral(api, cmd, "Error uploading report file: generated file is empty.")
-		return
-	}
-
-	tokenUsedText := formatTokenCount(llmUsage.TotalTokens())
-
-	uploadChannel := cmd.ChannelID
+	uploadChannel := channelID
 	if sendPrivate {
-		// Send report as a DM to the caller instead of the channel.
-		ch, _, _, err := api.OpenConversation(&slack.OpenConversationParameters{Users: []string{cmd.UserID}})
+		ch, _, _, err := api.OpenConversation(&slack.OpenConversationParameters{Users: []string{userID}})
 		if err != nil {
 			log.Printf("Error opening DM for private report: %v", err)
-			postEphemeral(api, cmd, "Error opening DM to send private report. Check bot permissions.")
-			return
+			return fmt.Errorf("error opening DM to send private report. Check bot permissions")
 		}
 		uploadChannel = ch.ID
 	}
-
 	_, err = api.UploadFileV2(slack.UploadFileV2Parameters{
-		File:           filePath,
-		FileSize:       int(fi.Size()),
-		Filename:       filepath.Base(filePath),
-		Channel:        uploadChannel,
-		Title:          fileTitle,
-		InitialComment: fmt.Sprintf("Generated report for reporting week containing %s (mode: %s, tokens used: %s)", friday.Format("2006-01-02"), mode, tokenUsedText),
+		File: filePath, FileSize: int(fi.Size()), Filename: filepath.Base(filePath),
+		Channel: uploadChannel, Title: title, InitialComment: comment,
 	})
 	if err != nil {
 		log.Printf("Error uploading report file: %v", err)
-		postEphemeral(api, cmd, "Error uploading report file to channel. Check bot permissions.")
-		return
+		return fmt.Errorf("error uploading report file to channel. Check bot permissions")
 	}
-
-	msg := fmt.Sprintf("Report generated with %d items (mode: %s, tokens used: %s)", len(items), mode, tokenUsedText)
-	if filePath != "" {
-		msg += fmt.Sprintf("\nSaved to: %s", filePath)
-	}
-	postEphemeral(api, cmd, msg)
-	log.Printf("generate-report done items=%d", len(items))
-
-	// Uncertainty sampling: send messages for low-confidence items.
-	sendUncertaintyMessages(api, cfg, cmd, result, items)
+	return nil
 }
 
 func postLatestTeamReport(api *slack.Client, cfg Config, cmd slack.SlashCommand, sendPrivate bool) {
@@ -1074,7 +681,13 @@ func handleListItems(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashC
 func renderListItems(api *slack.Client, db *sql.DB, cfg Config, channelID, userID string, page int, scope string) {
 	scope = normalizeListScope(scope)
 	monday, nextMonday := ReportWeekRange(cfg, time.Now().In(cfg.Location))
-	items, err := GetItemsByDateRange(db, monday, nextMonday)
+	// The Weekly Report's items: open ones from any week plus those done this week.
+	items, err := GetWeekItems(db, monday, nextMonday)
+	if err != nil {
+		postEphemeralTo(api, channelID, userID, fmt.Sprintf("Error: %v", err))
+		return
+	}
+	tax, err := LoadTaxonomy(db)
 	if err != nil {
 		postEphemeralTo(api, channelID, userID, fmt.Sprintf("Error: %v", err))
 		return
@@ -1092,51 +705,7 @@ func renderListItems(api *slack.Client, db *sql.DB, cfg Config, channelID, userI
 		items = filtered
 	}
 
-	// Fetch carry-over in-progress items from previous weeks.
-	// Exclude items that already have a newer version in the current week
-	// (e.g., user reported "in progress" last week and "done" this week).
-	const maxCarryOver = 15
-	var carryOver []WorkItem
-	if ipItems, ipErr := GetInProgressItems(db); ipErr == nil {
-		// Build set of current-week item IDs and a set of ticket/description
-		// keys from current-week items to suppress stale carry-overs.
-		seen := make(map[int64]bool, len(items))
-		currentKeys := make(map[string]bool, len(items))
-		for _, it := range items {
-			seen[it.ID] = true
-			key := strings.ToLower(strings.TrimSpace(it.Description))
-			if key != "" {
-				currentKeys[key] = true
-			}
-			if ticket, ok := leadingTicketPrefix(it.Description); ok {
-				currentKeys[ticket] = true
-			}
-		}
-		for _, it := range ipItems {
-			if seen[it.ID] {
-				continue
-			}
-			if scope == listScopeMine && !itemBelongsToViewer(it, userID, user) {
-				continue
-			}
-			// Skip if a current-week item supersedes this (same ticket or description).
-			if ticket, ok := leadingTicketPrefix(it.Description); ok && currentKeys[ticket] {
-				continue
-			}
-			desc := strings.ToLower(strings.TrimSpace(it.Description))
-			if desc != "" && currentKeys[desc] {
-				continue
-			}
-			carryOver = append(carryOver, it)
-			if len(carryOver) >= maxCarryOver {
-				break
-			}
-		}
-	} else {
-		log.Printf("list-items carry-over query error: %v", ipErr)
-	}
-
-	if len(items) == 0 && len(carryOver) == 0 {
+	if len(items) == 0 {
 		msg := fmt.Sprintf("No items for this week (%s - %s)",
 			monday.Format("Jan 2"), nextMonday.AddDate(0, 0, -1).Format("Jan 2"))
 		if scope == listScopeMine {
@@ -1148,99 +717,61 @@ func renderListItems(api *slack.Client, db *sql.DB, cfg Config, channelID, userI
 		return
 	}
 
-	var blocks []slack.Block
-
-	if len(items) > 0 {
-		// Precompute sort keys: lowercase first name from synthesized display name.
-		sortKeys := make([]string, len(items))
-		for idx := range items {
-			if fields := strings.Fields(synthesizeName(items[idx].Author)); len(fields) > 0 {
-				sortKeys[idx] = strings.ToLower(fields[0])
-			}
+	// Group by author (first name alphabetically), then by reported_at ascending.
+	sortKeys := make(map[int64]string, len(items))
+	for _, it := range items {
+		if fields := strings.Fields(synthesizeName(it.Author)); len(fields) > 0 {
+			sortKeys[it.ID] = strings.ToLower(fields[0])
 		}
-		// Sort: group by author (first name alphabetically), then by reported_at ascending.
-		sort.SliceStable(items, func(i, j int) bool {
-			if sortKeys[i] != sortKeys[j] {
-				return sortKeys[i] < sortKeys[j]
-			}
-			return items[i].ReportedAt.Before(items[j].ReportedAt)
-		})
-
-		if page < 0 {
-			page = 0
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		if sortKeys[items[i].ID] != sortKeys[items[j].ID] {
+			return sortKeys[items[i].ID] < sortKeys[items[j].ID]
 		}
-		start := page * listItemsPageSize
-		if start >= len(items) {
-			page = (len(items) - 1) / listItemsPageSize
-			start = page * listItemsPageSize
-		}
-		end := start + listItemsPageSize
-		if end > len(items) {
-			end = len(items)
-		}
+		return items[i].ReportedAt.Before(items[j].ReportedAt)
+	})
 
-		titlePrefix := "Items"
-		if scope == listScopeMine {
-			titlePrefix = "Your items"
-		} else if scope == listScopeAll {
-			titlePrefix = "Team items"
+	if page < 0 {
+		page = 0
+	}
+	start := page * listItemsPageSize
+	if start >= len(items) {
+		page = (len(items) - 1) / listItemsPageSize
+		start = page * listItemsPageSize
+	}
+	end := min(start+listItemsPageSize, len(items))
+
+	titlePrefix := "Your items"
+	if scope == listScopeAll {
+		titlePrefix = "Team items"
+	}
+	blocks := []slack.Block{slack.NewHeaderBlock(
+		slack.NewTextBlockObject(slack.PlainTextType,
+			fmt.Sprintf("%s for %s - %s (%d total)", titlePrefix, monday.Format("Jan 2"),
+				nextMonday.AddDate(0, 0, -1).Format("Jan 2"), len(items)),
+			false, false,
+		),
+	)}
+	for idx, item := range items[start:end] {
+		blocks = appendListItemBlock(blocks, start+idx+1, item, sectionLabel(tax, item), scope, isManager, userID, user)
+	}
+
+	if len(items) > listItemsPageSize {
+		var nav []slack.BlockElement
+		if page > 0 {
+			nav = append(nav, slack.NewButtonBlockElement(actionPagePrev, fmt.Sprintf("%s|%d", scope, page-1),
+				slack.NewTextBlockObject(slack.PlainTextType, "Prev", false, false)))
 		}
-
-		blocks = append(blocks, slack.NewHeaderBlock(
-			slack.NewTextBlockObject(slack.PlainTextType,
-				fmt.Sprintf("%s for %s - %s (%d total)",
-					titlePrefix,
-					monday.Format("Jan 2"),
-					nextMonday.AddDate(0, 0, -1).Format("Jan 2"),
-					len(items)),
-				false, false,
-			),
-		))
-
-		for idx, item := range items[start:end] {
-			lineNumber := start + idx + 1
-			blocks = appendListItemBlock(blocks, lineNumber, item, scope, isManager, userID, user)
+		if end < len(items) {
+			nav = append(nav, slack.NewButtonBlockElement(actionPageNext, fmt.Sprintf("%s|%d", scope, page+1),
+				slack.NewTextBlockObject(slack.PlainTextType, "Next", false, false)))
 		}
-
-		if len(items) > listItemsPageSize {
-			var nav []slack.BlockElement
-			if page > 0 {
-				nav = append(nav, slack.NewButtonBlockElement(
-					actionPagePrev,
-					fmt.Sprintf("%s|%d", scope, page-1),
-					slack.NewTextBlockObject(slack.PlainTextType, "Prev", false, false),
-				))
-			}
-			if end < len(items) {
-				nav = append(nav, slack.NewButtonBlockElement(
-					actionPageNext,
-					fmt.Sprintf("%s|%d", scope, page+1),
-					slack.NewTextBlockObject(slack.PlainTextType, "Next", false, false),
-				))
-			}
-			if len(nav) > 0 {
-				blocks = append(blocks, slack.NewActionBlock("list_items_nav", nav...))
-			}
+		if len(nav) > 0 {
+			blocks = append(blocks, slack.NewActionBlock("list_items_nav", nav...))
 		}
 	}
 
-	// Carry-over in-progress items from previous weeks.
-	if len(carryOver) > 0 {
-		if len(blocks) > 0 {
-			blocks = append(blocks, slack.NewDividerBlock())
-		}
-		blocks = append(blocks, slack.NewHeaderBlock(
-			slack.NewTextBlockObject(slack.PlainTextType,
-				fmt.Sprintf("In progress from previous weeks (%d)", len(carryOver)),
-				false, false),
-		))
-		for idx, item := range carryOver {
-			blocks = appendListItemBlock(blocks, idx+1, item, scope, isManager, userID, user)
-		}
-	}
-
-	_, err = api.PostEphemeral(channelID, userID, slack.MsgOptionBlocks(blocks...))
-	if err != nil {
+	if _, err = api.PostEphemeral(channelID, userID, slack.MsgOptionBlocks(blocks...)); err != nil {
 		log.Printf("Error posting list-items blocks: %v", err)
 		postEphemeralTo(api, channelID, userID, "Error rendering list items.")
 		return
@@ -1248,7 +779,18 @@ func renderListItems(api *slack.Client, db *sql.DB, cfg Config, channelID, userI
 	log.Printf("list-items count=%d page=%d", len(items), page)
 }
 
-func appendListItemBlock(blocks []slack.Block, lineNumber int, item WorkItem, scope string, isManager bool, userID string, user *slack.User) []slack.Block {
+// sectionLabel names an item's Section for lists, or "Undetermined".
+func sectionLabel(tax domain.Taxonomy, item WorkItem) string {
+	if s, ok := tax.Section(item.SectionID); ok {
+		return s.Label()
+	}
+	if item.FilingState == domain.FilingPending {
+		return "filing…"
+	}
+	return report.UndeterminedHeading
+}
+
+func appendListItemBlock(blocks []slack.Block, lineNumber int, item WorkItem, section, scope string, isManager bool, userID string, user *slack.User) []slack.Block {
 	source := ""
 	switch item.Source {
 	case "gitlab":
@@ -1256,11 +798,7 @@ func appendListItemBlock(blocks []slack.Block, lineNumber int, item WorkItem, sc
 	case "github":
 		source = " [GitHub]"
 	}
-	category := ""
-	if item.Category != "" {
-		category = fmt.Sprintf(" _%s_", item.Category)
-	}
-	text := formatListItemText(lineNumber, item, source, category)
+	text := formatListItemText(lineNumber, item, source, fmt.Sprintf(" _%s_", section))
 	if canManageItem(item, isManager, userID, user) {
 		editOpt := slack.NewOptionBlockObject(
 			fmt.Sprintf("edit:%s:%d", scope, item.ID),
@@ -1378,22 +916,20 @@ func handleListMissing(api *slack.Client, db *sql.DB, cfg Config, cmd slack.Slas
 		missingIDs = append(missingIDs, uid)
 	}
 
+	var blocks []slack.Block
 	if len(missing) == 0 && len(unresolved) == 0 {
-		postEphemeral(api, cmd, fmt.Sprintf("Everyone has reported this week (%s - %s).",
-			monday.Format("Jan 2"), nextMonday.AddDate(0, 0, -1).Format("Jan 2")))
-		log.Printf("list-missing none")
-		return
-	}
-
-	blocks := []slack.Block{
-		slack.NewHeaderBlock(
+		blocks = append(blocks, slack.NewSectionBlock(slack.NewTextBlockObject(slack.MarkdownType,
+			fmt.Sprintf("Everyone has reported this week (%s - %s).", monday.Format("Jan 2"), nextMonday.AddDate(0, 0, -1).Format("Jan 2")),
+			false, false), nil, nil))
+	} else {
+		blocks = append(blocks, slack.NewHeaderBlock(
 			slack.NewTextBlockObject(slack.PlainTextType,
 				fmt.Sprintf("Missing reports for %s - %s (%d)",
 					monday.Format("Jan 2"),
 					nextMonday.AddDate(0, 0, -1).Format("Jan 2"),
 					len(missing)+len(unresolved)),
 				false, false),
-		),
+		))
 	}
 
 	for _, m := range missing {
@@ -1425,6 +961,7 @@ func handleListMissing(api *slack.Client, db *sql.DB, cfg Config, cmd slack.Slas
 		)
 		blocks = append(blocks, slack.NewDividerBlock(), slack.NewActionBlock("", nudgeAllBtn))
 	}
+	blocks = append(blocks, mergedInTestingBlocks(db)...)
 
 	_, err = api.PostEphemeral(cmd.ChannelID, cmd.UserID, slack.MsgOptionBlocks(blocks...))
 	if err != nil {
@@ -1499,11 +1036,41 @@ func handleBlockActions(api *slack.Client, db *sql.DB, cfg Config, cb slack.Inte
 	userID := cb.User.ID
 
 	switch act.ActionID {
-	case actionReportOverwrite:
-		handleReportOverwrite(api, db, cfg, channelID, userID, act.Value)
+	case actionPlacePick:
+		handlePlacePick(api, db, cfg, cb, act.Value)
 		return
-	case actionReportCancel:
-		handleReportCancel(api, db, channelID, userID, act.Value)
+	case actionPlaceOther:
+		itemID, err := strconv.ParseInt(strings.TrimSpace(act.Value), 10, 64)
+		if err != nil {
+			postEphemeralTo(api, channelID, userID, "Invalid item id.")
+			return
+		}
+		openEditModal(api, db, cfg, cb.TriggerID, channelID, userID, itemID, listScopeMine)
+		return
+	case actionUpdateConfirm:
+		handleUpdateConfirm(api, db, cfg, cb, act.Value)
+		return
+	case actionUpdateReject:
+		handleUpdateReject(api, db, cfg, cb, act.Value)
+		return
+	case actionLinkConfirm:
+		handleLinkConfirm(api, db, cfg, cb, act.Value)
+		return
+	case actionLinkReject:
+		handleLinkReject(api, db, cfg, cb, act.Value)
+		return
+	case actionPlacementUndo:
+		handlePlacementUndo(api, db, cfg, cb, act.Value)
+		return
+	case actionCheckDone:
+		handleCheckDone(api, db, cfg, cb, act.Value)
+		return
+	case actionPublishAnyway:
+		mode, private, _ := strings.Cut(act.Value, "|")
+		if !cfg.IsManagerID(userID) {
+			return
+		}
+		publishReport(api, db, cfg, channelID, userID, mode, private == "true", true)
 		return
 	case actionPagePrev, actionPageNext:
 		scope, page := parseListPageValue(act.Value)
@@ -1522,17 +1089,6 @@ func handleBlockActions(api *slack.Client, db *sql.DB, cfg Config, cb slack.Inte
 			return
 		}
 		openEditModal(api, db, cfg, cb.TriggerID, channelID, userID, itemID, listScopeMine)
-	case actionUncertaintySelect:
-		handleUncertaintySelect(api, db, cfg, cb, act)
-		return
-	case actionUncertaintyOther:
-		itemID, err := strconv.ParseInt(strings.TrimSpace(act.Value), 10, 64)
-		if err != nil {
-			postEphemeralTo(api, channelID, userID, "Invalid item id.")
-			return
-		}
-		openEditModal(api, db, cfg, cb.TriggerID, channelID, userID, itemID, listScopeMine)
-		return
 	case actionNudgeMember:
 		openNudgeConfirmModal(api, cfg, cb.TriggerID, channelID, act.Value)
 		return
@@ -1581,21 +1137,6 @@ func handleBlockActions(api *slack.Client, db *sql.DB, cfg Config, cb slack.Inte
 			openDeleteModal(api, db, cfg, cb.TriggerID, channelID, userID, itemID, scope)
 			return
 		}
-	}
-
-	// Support dynamically suffixed uncertainty action IDs.
-	if strings.HasPrefix(act.ActionID, actionUncertaintySelect+"_") {
-		handleUncertaintySelect(api, db, cfg, cb, act)
-		return
-	}
-	if strings.HasPrefix(act.ActionID, actionUncertaintyOther+"_") {
-		itemID, err := strconv.ParseInt(strings.TrimSpace(act.Value), 10, 64)
-		if err != nil {
-			postEphemeralTo(api, channelID, userID, "Invalid item id.")
-			return
-		}
-		openEditModal(api, db, cfg, cb.TriggerID, channelID, userID, itemID, listScopeMine)
-		return
 	}
 }
 
@@ -1648,22 +1189,17 @@ func handleViewSubmission(api *slack.Client, db *sql.DB, cfg Config, cb slack.In
 	if values == nil {
 		return
 	}
-	descAction := values[editBlockDescription][editActionDescription]
-	statusAction := values[editBlockStatus][editActionStatus]
-	description := strings.TrimSpace(descAction.Value)
-	status := strings.TrimSpace(statusAction.SelectedOption.Value)
-	if status == "" {
-		status = "done"
-	}
+	description := strings.TrimSpace(values[editBlockDescription][editActionDescription].Value)
+	status := strings.TrimSpace(values[editBlockStatus][editActionStatus].SelectedOption.Value)
+	statusNote := strings.TrimSpace(values[editBlockStatusNote][editActionStatusNote].Value)
+	sectionValue := strings.TrimSpace(values[editBlockSection][editActionSection].SelectedOption.Value)
 
 	item, err := GetWorkItemByID(db, itemID)
 	if err != nil {
 		log.Printf("edit modal load item error id=%d: %v", itemID, err)
 		return
 	}
-
-	// Preserve original free-text status when "other" is selected.
-	if status == "other" {
+	if !domain.IsStatus(status) {
 		status = item.Status
 	}
 	monday, nextMonday := ReportWeekRange(cfg, time.Now().In(cfg.Location))
@@ -1672,36 +1208,35 @@ func handleViewSubmission(api *slack.Client, db *sql.DB, cfg Config, cb slack.In
 	}
 	isManager, _ := isManagerUser(api, cfg, userID)
 	user, _ := api.GetUserInfo(userID)
-	if !canManageItem(item, isManager, userID, user) {
+	if !canManageItem(item, isManager, userID, user) || description == "" {
 		return
 	}
-	if description == "" {
-		return
-	}
-
-	if err := UpdateWorkItemTextAndStatus(db, itemID, description, status); err != nil {
-		log.Printf("edit modal update error id=%d: %v", itemID, err)
-		return
-	}
-
-	// Check for category change and record correction.
-	if catBlock, ok := values[editBlockCategory]; ok {
-		if catAction, ok2 := catBlock[editActionCategory]; ok2 {
-			newCategoryID := strings.TrimSpace(catAction.SelectedOption.Value)
-			if newCategoryID != "" && newCategoryID != noCategoryChangeValue && newCategoryID != item.Category {
-				recordCategoryCorrection(db, cfg, item, newCategoryID, userID)
-				if err := UpdateWorkItemCategory(db, itemID, newCategoryID); err != nil {
-					log.Printf("edit modal category update error id=%d: %v", itemID, err)
-				}
-			}
-		}
-	}
-
 	if channelID == "" {
 		channelID = cb.Container.ChannelID
 	}
 	if channelID == "" {
 		channelID = cb.Channel.ID
+	}
+
+	if err := sqlite.UpdateWorkItemFields(db, itemID, description, status, statusNote, item.TicketIDs); err != nil {
+		log.Printf("edit modal update error id=%d: %v", itemID, err)
+		return
+	}
+	newSection, _ := strconv.ParseInt(sectionValue, 10, 64)
+	switch {
+	case sectionValue != "" && newSection != item.SectionID:
+		// A Section the person chose is final for this edit; no re-filing.
+		if err := sqlite.SetPlacement(db, itemID, sqlite.Placement{SectionID: newSection, PlacedBy: domain.PlacedByPerson,
+			HistoryNote: sqlite.ReasonEdit, ActorID: userID}); err != nil {
+			log.Printf("edit modal placement error id=%d: %v", itemID, err)
+		}
+	case description != item.Description:
+		// New text may belong elsewhere: file it again.
+		payload := filing.Payload{Kind: "edit", ChannelID: channelID, UserID: userID}
+		if err := sqlite.SetFilingPending(db, itemID, payload.JSON()); err != nil {
+			log.Printf("edit modal refile error id=%d: %v", itemID, err)
+		}
+		wakeFiling()
 	}
 	renderListItems(api, db, cfg, channelID, userID, 0, scope)
 }
@@ -1751,118 +1286,12 @@ func openEditModal(api *slack.Client, db *sql.DB, cfg Config, triggerID, channel
 		return
 	}
 
-	descInput := slack.NewPlainTextInputBlockElement(
-		slack.NewTextBlockObject(slack.PlainTextType, "Description", false, false),
-		editActionDescription,
-	).WithInitialValue(item.Description)
-	statusOptions := []*slack.OptionBlockObject{
-		slack.NewOptionBlockObject("done", slack.NewTextBlockObject(slack.PlainTextType, "done", false, false), nil),
-		slack.NewOptionBlockObject("in testing", slack.NewTextBlockObject(slack.PlainTextType, "in testing", false, false), nil),
-		slack.NewOptionBlockObject("in progress", slack.NewTextBlockObject(slack.PlainTextType, "in progress", false, false), nil),
+	tax, err := LoadTaxonomy(db)
+	if err != nil {
+		postEphemeralTo(api, channelID, userID, fmt.Sprintf("Error: %v", err))
+		return
 	}
-	cur := normalizeStatus(item.Status)
-	if cur == "" {
-		cur = "done"
-	}
-	// If the current status is a free-text value, add it as a custom option.
-	if cur != "done" && cur != "in testing" && cur != "in progress" {
-		displayStatus := item.Status
-		runes := []rune(displayStatus)
-		if len(runes) > 70 {
-			displayStatus = string(runes[:70]) + "..."
-		}
-		statusOptions = append(statusOptions,
-			slack.NewOptionBlockObject("other", slack.NewTextBlockObject(slack.PlainTextType, displayStatus, false, false), nil),
-		)
-	}
-	statusSelect := slack.NewOptionsSelectBlockElement(
-		slack.OptTypeStatic,
-		slack.NewTextBlockObject(slack.PlainTextType, "Status", false, false),
-		editActionStatus,
-		statusOptions...,
-	)
-	found := false
-	for _, o := range statusOptions {
-		if o.Value == cur {
-			statusSelect.InitialOption = o
-			found = true
-			break
-		}
-	}
-	if !found && len(statusOptions) == 4 {
-		// Pre-select the custom status option.
-		statusSelect.InitialOption = statusOptions[3]
-	} else if !found {
-		statusSelect.InitialOption = statusOptions[0]
-	}
-
-	// Build category dropdown from template sections.
-	var categoryBlock slack.Block
-	sectionOpts := loadSectionOptionsForModal(cfg)
-	if len(sectionOpts) > 0 {
-		// Slack static_select supports up to 100 options.
-		if len(sectionOpts) > 99 {
-			log.Printf("openEditModal truncating category options from %d to 99 due to Slack limit", len(sectionOpts))
-			sectionOpts = sectionOpts[:99]
-		}
-		noChangeOpt := slack.NewOptionBlockObject(
-			noCategoryChangeValue,
-			slack.NewTextBlockObject(slack.PlainTextType, "Auto", false, false),
-			nil,
-		)
-		catOptions := []*slack.OptionBlockObject{noChangeOpt}
-		var initialCatOpt *slack.OptionBlockObject
-		for _, so := range sectionOpts {
-			label := so.Label
-			if len(label) > 75 {
-				label = label[:72] + "..."
-			}
-			opt := slack.NewOptionBlockObject(
-				so.ID,
-				slack.NewTextBlockObject(slack.PlainTextType, label, false, false),
-				nil,
-			)
-			catOptions = append(catOptions, opt)
-			if so.ID == item.Category {
-				initialCatOpt = opt
-			}
-		}
-		catSelect := slack.NewOptionsSelectBlockElement(
-			slack.OptTypeStatic,
-			slack.NewTextBlockObject(slack.PlainTextType, "Category", false, false),
-			editActionCategory,
-			catOptions...,
-		)
-		if initialCatOpt != nil {
-			catSelect.InitialOption = initialCatOpt
-		} else {
-			catSelect.InitialOption = noChangeOpt
-		}
-		categoryBlock = slack.NewInputBlock(
-			editBlockCategory,
-			slack.NewTextBlockObject(slack.PlainTextType, "Category", false, false),
-			nil,
-			catSelect,
-		)
-	}
-
-	blocks := []slack.Block{
-		slack.NewInputBlock(
-			editBlockDescription,
-			slack.NewTextBlockObject(slack.PlainTextType, "Description", false, false),
-			nil,
-			descInput,
-		),
-		slack.NewInputBlock(
-			editBlockStatus,
-			slack.NewTextBlockObject(slack.PlainTextType, "Status", false, false),
-			nil,
-			statusSelect,
-		),
-	}
-	if categoryBlock != nil {
-		blocks = append(blocks, categoryBlock)
-	}
+	blocks := editModalBlocks(item, tax)
 
 	view := slack.ModalViewRequest{
 		Type:            slack.VTModal,
@@ -1924,18 +1353,14 @@ func openDeleteModal(api *slack.Client, db *sql.DB, cfg Config, triggerID, chann
 	}
 }
 
-func itemInRange(item WorkItem, from, to time.Time) bool {
-	return !item.ReportedAt.Before(from) && item.ReportedAt.Before(to)
-}
-
-// itemEditable returns true if the item is in the current week range OR is
-// still marked in-progress (carry-over items should be editable so users
-// can update their status).
+// itemEditable allows changes to items on this week's report: open ones, and
+// ones reported or done this week.
 func itemEditable(item WorkItem, from, to time.Time) bool {
-	if itemInRange(item, from, to) {
+	if item.IsOpen() {
 		return true
 	}
-	return strings.Contains(strings.ToLower(strings.TrimSpace(item.Status)), "in progress")
+	inWeek := func(t time.Time) bool { return !t.IsZero() && !t.Before(from) && t.Before(to) }
+	return inWeek(item.ReportedAt) || inWeek(item.DoneAt)
 }
 
 func formatItemDescriptionForList(item WorkItem) string {
@@ -1950,9 +1375,9 @@ func formatItemDescriptionForList(item WorkItem) string {
 	return fmt.Sprintf("[%s] %s", tickets, description)
 }
 
-func formatListItemText(lineNumber int, item WorkItem, source, category string) string {
+func formatListItemText(lineNumber int, item WorkItem, source, section string) string {
 	return fmt.Sprintf("%d. *%s*: %s (%s)%s%s",
-		lineNumber, item.Author, formatItemDescriptionForList(item), item.Status, source, category)
+		lineNumber, item.Author, formatItemDescriptionForList(item), report.StatusText(item), source, section)
 }
 
 func parseListScope(raw string) (string, error) {
@@ -2189,7 +1614,7 @@ func handleNudgeDoneAction(api *slack.Client, db *sql.DB, cfg Config, cb slack.I
 		log.Printf("nudge done denied item=%d target=%s", itemID, targetUserID)
 		return
 	}
-	if err := UpdateWorkItemStatus(db, itemID, "done"); err != nil {
+	if err := SetWorkItemStatus(db, itemID, domain.StatusDone); err != nil {
 		log.Printf("nudge done update error item=%d: %v", itemID, err)
 		return
 	}
@@ -2213,7 +1638,7 @@ func handleNudgeMoreAction(api *slack.Client, db *sql.DB, cfg Config, cb slack.I
 		log.Printf("nudge status denied item=%d target=%s", itemID, targetUserID)
 		return
 	}
-	if err := UpdateWorkItemStatus(db, itemID, status); err != nil {
+	if err := SetWorkItemStatus(db, itemID, status); err != nil {
 		log.Printf("nudge status update error item=%d status=%q: %v", itemID, status, err)
 		return
 	}
@@ -2356,108 +1781,6 @@ func parseNudgePagePayload(raw string) (targetUserID string, page int, ok bool) 
 	return strings.TrimSpace(parts[1]), page, true
 }
 
-func handleReportStats(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashCommand) {
-	isManager, err := isManagerUser(api, cfg, cmd.UserID)
-	if err != nil {
-		postEphemeral(api, cmd, fmt.Sprintf("Error checking permissions: %v", err))
-		log.Printf("stats auth error user=%s: %v", cmd.UserID, err)
-		return
-	}
-	if !isManager {
-		postEphemeral(api, cmd, "Sorry, only managers can use this command.")
-		log.Printf("stats denied user=%s", cmd.UserID)
-		return
-	}
-
-	// Load all-time stats.
-	allTimeStats, err := GetClassificationStats(db, time.Time{})
-	if err != nil {
-		postEphemeral(api, cmd, fmt.Sprintf("Error loading stats: %v", err))
-		log.Printf("stats all-time error: %v", err)
-		return
-	}
-
-	// Load last 4 weeks stats.
-	fourWeeksAgo := time.Now().In(cfg.Location).AddDate(0, 0, -28)
-	recentStats, err := GetClassificationStats(db, fourWeeksAgo)
-	if err != nil {
-		log.Printf("stats recent error (non-fatal): %v", err)
-		recentStats = ClassificationStats{}
-	}
-
-	// Load per-section corrections.
-	sectionCorr, err := GetCorrectionsBySection(db, fourWeeksAgo)
-	if err != nil {
-		log.Printf("stats section corrections error (non-fatal): %v", err)
-	}
-
-	// Load 8-week trend.
-	eightWeeksAgo := time.Now().In(cfg.Location).AddDate(0, 0, -56)
-	trends, err := GetWeeklyClassificationTrend(db, eightWeeksAgo)
-	if err != nil {
-		log.Printf("stats trend error (non-fatal): %v", err)
-	}
-
-	var sb strings.Builder
-	sb.WriteString("*Classification Accuracy Dashboard*\n\n")
-
-	// Overview.
-	sb.WriteString("*All-time Overview*\n")
-	sb.WriteString(fmt.Sprintf("- Classifications: %d\n", allTimeStats.TotalClassifications))
-	sb.WriteString(fmt.Sprintf("- Corrections: %d\n", allTimeStats.TotalCorrections))
-	if allTimeStats.TotalClassifications > 0 {
-		accuracy := 100.0 * float64(allTimeStats.TotalClassifications-allTimeStats.TotalCorrections) / float64(allTimeStats.TotalClassifications)
-		if accuracy < 0 {
-			accuracy = 0
-		}
-		sb.WriteString(fmt.Sprintf("- Accuracy: %.1f%%\n", accuracy))
-		sb.WriteString(fmt.Sprintf("- Avg confidence: %.2f\n", allTimeStats.AvgConfidence))
-	}
-
-	sb.WriteString(fmt.Sprintf("\n*Last 4 Weeks*\n"))
-	sb.WriteString(fmt.Sprintf("- Classifications: %d\n", recentStats.TotalClassifications))
-	sb.WriteString(fmt.Sprintf("- Corrections: %d\n", recentStats.TotalCorrections))
-	if recentStats.TotalClassifications > 0 {
-		accuracy := 100.0 * float64(recentStats.TotalClassifications-recentStats.TotalCorrections) / float64(recentStats.TotalClassifications)
-		if accuracy < 0 {
-			accuracy = 0
-		}
-		sb.WriteString(fmt.Sprintf("- Accuracy: %.1f%%\n", accuracy))
-		sb.WriteString(fmt.Sprintf("- Avg confidence: %.2f\n", recentStats.AvgConfidence))
-	}
-
-	// Confidence distribution.
-	sb.WriteString(fmt.Sprintf("\n*Confidence Distribution (last 4 weeks)*\n"))
-	sb.WriteString(fmt.Sprintf("- <50%%: %d\n", recentStats.BucketBelow50))
-	sb.WriteString(fmt.Sprintf("- 50-70%%: %d\n", recentStats.Bucket50to70))
-	sb.WriteString(fmt.Sprintf("- 70-90%%: %d\n", recentStats.Bucket70to90))
-	sb.WriteString(fmt.Sprintf("- 90%%+: %d\n", recentStats.Bucket90Plus))
-
-	// Most corrected sections.
-	if len(sectionCorr) > 0 {
-		sb.WriteString(fmt.Sprintf("\n*Most Corrected Sections (last 4 weeks)*\n"))
-		for _, sc := range sectionCorr {
-			label := sc.OriginalSectionID
-			if sc.OriginalLabel != "" {
-				label = fmt.Sprintf("%s (%s)", sc.OriginalSectionID, sc.OriginalLabel)
-			}
-			sb.WriteString(fmt.Sprintf("- %s: %d corrections\n", label, sc.CorrectionCount))
-		}
-	}
-
-	// Weekly trend.
-	if len(trends) > 0 {
-		sb.WriteString(fmt.Sprintf("\n*Weekly Trend (last 8 weeks)*\n"))
-		for _, t := range trends {
-			sb.WriteString(fmt.Sprintf("- %s: %d classified, %d corrected, avg conf %.2f\n",
-				t.WeekStart, t.Classifications, t.Corrections, t.AvgConfidence))
-		}
-	}
-
-	postEphemeral(api, cmd, sb.String())
-	log.Printf("stats sent user=%s", cmd.UserID)
-}
-
 func handleHelp(api *slack.Client, cfg Config, cmd slack.SlashCommand) {
 	isManager, err := isManagerUser(api, cfg, cmd.UserID)
 	if err != nil {
@@ -2480,7 +1803,9 @@ func handleHelp(api *slack.Client, cfg Config, cmd slack.SlashCommand) {
 		">Item B",
 		">(in progress)```",
 		"",
-		"`/list` — List your items for this week (`/list all` for the team).",
+		"Each item is filed into the report as it arrives; you get a reply showing where it went.",
+		"",
+		"`/list` — List your items on this week's report (`/list all` for the team).",
 		"`/nudge` — Send yourself a test nudge DM.",
 		"`/help` — Show this help.",
 	}
@@ -2491,12 +1816,12 @@ func handleHelp(api *slack.Client, cfg Config, cmd slack.SlashCommand) {
 			"*Manager Commands*",
 			"",
 			"`/fetch` — Fetch *merged + open* GitLab MRs and/or GitHub PRs for this week.",
-			"`/generate-report [team|boss|post] [private]` — Generate weekly report, or post latest team report.",
+			"`/generate-report [team|boss|post] [private]` — Publish this week's report, or post the latest team report.",
 			"`/gen` — Alias of `/generate-report`.",
-			"`/check` — List missing members with inline nudge buttons.",
+			"`/check` — List missing members with nudge buttons, and merged code changes waiting in testing.",
 			"`/nudge <member>` — Send a test nudge DM to one member.",
-			"`/retrospect` — Analyze recent corrections and suggest improvements.",
-			"`/stats` — Show classification accuracy dashboard.",
+			"`/retrospect` — Suggest Section descriptions from recent corrections.",
+			"`/stats` — Show this week's filing stats.",
 		)
 	}
 
@@ -2556,11 +1881,9 @@ func resolveDelegatedAuthorName(input string, teamMembers []string) (string, boo
 		return "", false
 	}
 
-	normalizedInput := normalizeTextToken(input)
-
 	// 1) Exact match first.
 	for _, member := range teamMembers {
-		if normalizeTextToken(member) == normalizedInput {
+		if strings.EqualFold(strings.TrimSpace(member), input) {
 			return member, true
 		}
 	}
@@ -2579,427 +1902,4 @@ func resolveDelegatedAuthorName(input string, teamMembers []string) (string, boo
 
 	// Ambiguous/no match: reject unresolved delegated names.
 	return "", false
-}
-
-func mapMRStatus(mr GitLabMR) string {
-	if mr.State == "opened" {
-		return "in progress"
-	}
-	return "done"
-}
-
-func mrReportedAt(mr GitLabMR, loc *time.Location) time.Time {
-	if mr.State == "opened" && !mr.UpdatedAt.IsZero() {
-		return mr.UpdatedAt
-	}
-	if !mr.MergedAt.IsZero() {
-		return mr.MergedAt
-	}
-	if !mr.CreatedAt.IsZero() {
-		return mr.CreatedAt
-	}
-	return time.Now().In(loc)
-}
-
-func mapPRStatus(pr GitHubPR) string {
-	if pr.State == "open" {
-		return "in progress"
-	}
-	return "done"
-}
-
-func prReportedAt(pr GitHubPR, loc *time.Location) time.Time {
-	if pr.State == "open" && !pr.UpdatedAt.IsZero() {
-		return pr.UpdatedAt
-	}
-	if !pr.MergedAt.IsZero() {
-		return pr.MergedAt
-	}
-	if !pr.CreatedAt.IsZero() {
-		return pr.CreatedAt
-	}
-	return time.Now().In(loc)
-}
-
-// --- Correction helpers ---
-
-func loadSectionOptionsForModal(cfg Config) []sectionOption {
-	monday, _ := ReportWeekRange(cfg, time.Now().In(cfg.Location))
-	template, _, err := loadTemplateForGeneration(cfg.ReportOutputDir, cfg.TeamName, monday)
-	if err != nil {
-		log.Printf("edit modal load template error (non-fatal): %v", err)
-		return nil
-	}
-	return templateOptions(template)
-}
-
-func recordCategoryCorrection(db *sql.DB, cfg Config, item WorkItem, newCategoryID, userID string) {
-	originalSectionID := item.Category
-	originalLabel := ""
-
-	// Try to get the LLM's original classification.
-	if hist, err := GetLatestClassification(db, item.ID); err == nil {
-		originalSectionID = hist.SectionID
-		originalLabel = hist.SectionLabel
-	}
-
-	// Resolve new section label.
-	correctedLabel := ""
-	sectionOpts := loadSectionOptionsForModal(cfg)
-	for _, so := range sectionOpts {
-		if so.ID == newCategoryID {
-			correctedLabel = so.Label
-			break
-		}
-	}
-
-	correction := ClassificationCorrection{
-		WorkItemID:         item.ID,
-		OriginalSectionID:  originalSectionID,
-		OriginalLabel:      originalLabel,
-		CorrectedSectionID: newCategoryID,
-		CorrectedLabel:     correctedLabel,
-		Description:        item.Description,
-		CorrectedBy:        userID,
-	}
-	if err := InsertClassificationCorrection(db, correction); err != nil {
-		log.Printf("correction insert error id=%d: %v", item.ID, err)
-		return
-	}
-	log.Printf("correction recorded item=%d from=%s to=%s by=%s", item.ID, originalSectionID, newCategoryID, userID)
-
-	// Auto-grow glossary if configured.
-	tryAutoGrowGlossary(db, cfg, item.Description, newCategoryID, correctedLabel)
-}
-
-func tryAutoGrowGlossary(db *sql.DB, cfg Config, description, sectionID, sectionLabel string) {
-	if strings.TrimSpace(cfg.LLMGlossaryPath) == "" {
-		return
-	}
-	count, err := CountCorrectionsByPhrase(db, description, sectionID)
-	if err != nil {
-		log.Printf("glossary auto-grow count error: %v", err)
-		return
-	}
-	if count < 2 {
-		return
-	}
-	phrase := extractGlossaryPhrase(description)
-	if phrase == "" {
-		return
-	}
-	section := sectionLabel
-	if section == "" {
-		section = sectionID
-	}
-	if err := AppendGlossaryTerm(cfg.LLMGlossaryPath, phrase, section); err != nil {
-		log.Printf("glossary auto-grow error: %v", err)
-		return
-	}
-	log.Printf("glossary auto-grown phrase=%q section=%s", phrase, section)
-}
-
-// --- Uncertainty sampling ---
-
-func sendUncertaintyMessages(api *slack.Client, cfg Config, cmd slack.SlashCommand, result BuildResult, items []WorkItem) {
-	if len(result.Decisions) == 0 || len(result.Options) == 0 {
-		return
-	}
-
-	threshold := cfg.LLMConfidence
-	if threshold <= 0 || threshold > 1 {
-		threshold = 0.70
-	}
-
-	type uncertainItem struct {
-		itemID     int64
-		decision   LLMSectionDecision
-		confidence float64
-	}
-	var uncertain []uncertainItem
-	for itemID, dec := range result.Decisions {
-		if dec.Confidence > 0 && dec.Confidence < threshold {
-			uncertain = append(uncertain, uncertainItem{itemID: itemID, decision: dec, confidence: dec.Confidence})
-		}
-	}
-
-	if len(uncertain) == 0 || len(uncertain) > 10 {
-		return
-	}
-
-	optionLabels := make(map[string]string, len(result.Options))
-	for _, opt := range result.Options {
-		optionLabels[opt.ID] = opt.Label
-	}
-
-	itemDescriptions := make(map[int64]string, len(items))
-	for _, item := range items {
-		itemDescriptions[item.ID] = item.Description
-	}
-
-	sent := 0
-	for _, u := range uncertain {
-		bestGuess := u.decision.SectionID
-		if label, ok := optionLabels[bestGuess]; ok {
-			bestGuess = label
-		}
-
-		desc := itemDescriptions[u.itemID]
-		if desc == "" {
-			desc = fmt.Sprintf("#%d", u.itemID)
-		}
-		headerText := fmt.Sprintf("Uncertain classification (%.0f%% confidence)\n_%s_\nBest guess: %s", u.confidence*100, desc, bestGuess)
-
-		// Build section buttons (up to 4 most common sections).
-		var buttons []slack.BlockElement
-		limit := 4
-		if len(result.Options) < limit {
-			limit = len(result.Options)
-		}
-		for i := 0; i < limit; i++ {
-			opt := result.Options[i]
-			label := opt.Label
-			if strings.TrimSpace(label) == "" {
-				continue
-			}
-			if len(label) > 30 {
-				label = label[:27] + "..."
-			}
-			buttons = append(buttons, slack.NewButtonBlockElement(
-				fmt.Sprintf("%s_%d", actionUncertaintySelect, i),
-				fmt.Sprintf("%d:%s", u.itemID, opt.ID),
-				slack.NewTextBlockObject(slack.PlainTextType, label, false, false),
-			))
-		}
-		if len(buttons) == 0 {
-			continue
-		}
-		buttons = append(buttons, slack.NewButtonBlockElement(
-			fmt.Sprintf("%s_%d", actionUncertaintyOther, u.itemID),
-			fmt.Sprintf("%d", u.itemID),
-			slack.NewTextBlockObject(slack.PlainTextType, "Other...", false, false),
-		))
-
-		blocks := []slack.Block{
-			slack.NewSectionBlock(
-				slack.NewTextBlockObject(slack.MarkdownType, headerText, false, false),
-				nil, nil,
-			),
-			slack.NewActionBlock("", buttons...),
-		}
-
-		_, err := api.PostEphemeral(cmd.ChannelID, cmd.UserID, slack.MsgOptionBlocks(blocks...))
-		if err != nil {
-			if apiErr, ok := err.(*slack.SlackErrorResponse); ok {
-				log.Printf("uncertainty message error item=%d err=%s messages=%v", u.itemID, apiErr.Err, apiErr.ResponseMetadata.Messages)
-			}
-			log.Printf("uncertainty message error item=%d: %v", u.itemID, err)
-			continue
-		}
-		sent++
-	}
-	log.Printf("uncertainty messages sent count=%d attempted=%d", sent, len(uncertain))
-}
-
-func handleUncertaintySelect(api *slack.Client, db *sql.DB, cfg Config, cb slack.InteractionCallback, act *slack.BlockAction) {
-	channelID := cb.Channel.ID
-	if channelID == "" {
-		channelID = cb.Container.ChannelID
-	}
-	userID := cb.User.ID
-
-	// Parse "itemID:sectionID" from button value.
-	parts := strings.SplitN(strings.TrimSpace(act.Value), ":", 2)
-	if len(parts) != 2 {
-		postEphemeralTo(api, channelID, userID, "Invalid selection.")
-		return
-	}
-	itemID, err := strconv.ParseInt(parts[0], 10, 64)
-	if err != nil {
-		postEphemeralTo(api, channelID, userID, "Invalid item id.")
-		return
-	}
-	sectionID := parts[1]
-
-	item, err := GetWorkItemByID(db, itemID)
-	if err != nil {
-		postEphemeralTo(api, channelID, userID, "Item not found.")
-		return
-	}
-
-	recordCategoryCorrection(db, cfg, item, sectionID, userID)
-	if err := UpdateWorkItemCategory(db, itemID, sectionID); err != nil {
-		log.Printf("uncertainty category update error id=%d: %v", itemID, err)
-	}
-
-	postEphemeralTo(api, channelID, userID, fmt.Sprintf("Item %d reclassified to %s.", itemID, sectionID))
-}
-
-// --- Retrospective ---
-
-func handleRetrospective(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashCommand) {
-	isManager, err := isManagerUser(api, cfg, cmd.UserID)
-	if err != nil {
-		postEphemeral(api, cmd, fmt.Sprintf("Error checking permissions: %v", err))
-		log.Printf("retrospective auth error user=%s: %v", cmd.UserID, err)
-		return
-	}
-	if !isManager {
-		postEphemeral(api, cmd, "Sorry, only managers can use this command.")
-		log.Printf("retrospective denied user=%s", cmd.UserID)
-		return
-	}
-
-	fourWeeksAgo := time.Now().In(cfg.Location).AddDate(0, 0, -28)
-	corrections, err := GetRecentCorrections(db, fourWeeksAgo, 200)
-	if err != nil {
-		postEphemeral(api, cmd, fmt.Sprintf("Error loading corrections: %v", err))
-		log.Printf("retrospective load error: %v", err)
-		return
-	}
-
-	if len(corrections) == 0 {
-		postEphemeral(api, cmd, "No corrections found in the last 4 weeks.")
-		return
-	}
-
-	postEphemeral(api, cmd, fmt.Sprintf("Analyzing %d corrections from the last 4 weeks...", len(corrections)))
-
-	sectionOpts := loadSectionOptionsForModal(cfg)
-	suggestions, usage, err := analyzeCorrections(cfg, corrections, sectionOpts)
-	if err != nil {
-		postEphemeral(api, cmd, fmt.Sprintf("Error analyzing corrections: %v", err))
-		log.Printf("retrospective analysis error: %v", err)
-		return
-	}
-
-	if len(suggestions) == 0 {
-		postEphemeral(api, cmd, fmt.Sprintf("No actionable patterns found (tokens used: %s).", formatTokenCount(usage.TotalTokens())))
-		return
-	}
-
-	for i, suggestion := range suggestions {
-		var actionDesc string
-		switch suggestion.Action {
-		case "glossary_term":
-			actionDesc = fmt.Sprintf("Add glossary term: \"%s\" -> %s", suggestion.Phrase, suggestion.Section)
-		case "guide_update":
-			actionDesc = fmt.Sprintf("Add guide rule: %s", suggestion.GuideText)
-		default:
-			actionDesc = suggestion.Action
-		}
-
-		text := fmt.Sprintf("*Suggestion %d: %s*\n%s\n_%s_", i+1, suggestion.Title, suggestion.Reasoning, actionDesc)
-
-		// Encode suggestion data in button value since ephemeral message
-		// blocks are not returned in interaction callbacks.
-		// Slack button values have a 2000 char limit.
-		applyValue := fmt.Sprintf("%s|%s|%s|%s", suggestion.Action, suggestion.Phrase, suggestion.Section, suggestion.GuideText)
-		applyable := len(applyValue) <= 2000
-		if !applyable {
-			applyValue = fmt.Sprintf("%s|||", suggestion.Action)
-		}
-
-		var actionButtons []slack.BlockElement
-		if applyable {
-			actionButtons = append(actionButtons, slack.NewButtonBlockElement(
-				actionRetroApply,
-				applyValue,
-				slack.NewTextBlockObject(slack.PlainTextType, "Apply", false, false),
-			))
-		}
-		actionButtons = append(actionButtons, slack.NewButtonBlockElement(
-			actionRetroDismiss,
-			fmt.Sprintf("%d", i),
-			slack.NewTextBlockObject(slack.PlainTextType, "Dismiss", false, false),
-		))
-
-		blocks := []slack.Block{
-			slack.NewSectionBlock(
-				slack.NewTextBlockObject(slack.MarkdownType, text, false, false),
-				nil, nil,
-			),
-			slack.NewActionBlock("", actionButtons...),
-		}
-
-		_, postErr := api.PostEphemeral(cmd.ChannelID, cmd.UserID, slack.MsgOptionBlocks(blocks...))
-		if postErr != nil {
-			log.Printf("retrospective message error suggestion=%d: %v", i, postErr)
-		}
-	}
-
-	postEphemeral(api, cmd, fmt.Sprintf("Found %d suggestions (tokens used: %s).", len(suggestions), formatTokenCount(usage.TotalTokens())))
-	log.Printf("retrospective done suggestions=%d tokens=%d", len(suggestions), usage.TotalTokens())
-}
-
-func handleRetroApply(api *slack.Client, db *sql.DB, cfg Config, cb slack.InteractionCallback, act *slack.BlockAction) {
-	channelID := cb.Channel.ID
-	if channelID == "" {
-		channelID = cb.Container.ChannelID
-	}
-	userID := cb.User.ID
-
-	// Button value format: "action|phrase|section|guide_text"
-	parts := strings.SplitN(act.Value, "|", 4)
-	if len(parts) < 4 {
-		postEphemeralTo(api, channelID, userID, "Invalid suggestion data.")
-		return
-	}
-	action, phrase, section, guideText := parts[0], parts[1], parts[2], parts[3]
-
-	switch action {
-	case "glossary_term":
-		if cfg.LLMGlossaryPath == "" {
-			postEphemeralTo(api, channelID, userID, "Glossary path not configured.")
-			return
-		}
-		if phrase == "" || section == "" {
-			postEphemeralTo(api, channelID, userID, "Missing phrase or section for glossary term.")
-			return
-		}
-		// Resolve section ID to label for consistency with auto-grow glossary.
-		sectionOpts := loadSectionOptionsForModal(cfg)
-		for _, opt := range sectionOpts {
-			if opt.ID == section {
-				section = opt.Label
-				break
-			}
-		}
-		if err := AppendGlossaryTerm(cfg.LLMGlossaryPath, phrase, section); err != nil {
-			postEphemeralTo(api, channelID, userID, fmt.Sprintf("Error applying glossary term: %v", err))
-			return
-		}
-		postEphemeralTo(api, channelID, userID, fmt.Sprintf("Applied: glossary term \"%s\" -> %s", phrase, section))
-		log.Printf("retrospective applied glossary phrase=%q section=%s", phrase, section)
-
-	case "guide_update":
-		guidePath := cfg.LLMGuidePath
-		if guidePath == "" {
-			postEphemeralTo(api, channelID, userID, "Guide path not configured.")
-			return
-		}
-		if guideText == "" {
-			postEphemeralTo(api, channelID, userID, "Empty guide text.")
-			return
-		}
-		if err := appendToFile(guidePath, "\n"+guideText+"\n"); err != nil {
-			postEphemeralTo(api, channelID, userID, fmt.Sprintf("Error appending to guide: %v", err))
-			return
-		}
-		postEphemeralTo(api, channelID, userID, fmt.Sprintf("Applied: guide rule appended to %s", guidePath))
-		log.Printf("retrospective applied guide update path=%s", guidePath)
-
-	default:
-		postEphemeralTo(api, channelID, userID, fmt.Sprintf("Unknown suggestion action type: %s", action))
-	}
-}
-
-func appendToFile(path, text string) error {
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	_, err = f.WriteString(text)
-	return err
 }

@@ -1,347 +1,113 @@
 package report
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"reportbot/internal/domain"
 )
 
-func TestBuildReportsFromLast_FirstEverFallback(t *testing.T) {
-	dir := t.TempDir()
-	cfg := Config{
-		ReportOutputDir: dir,
-		TeamName:        "TEAMX",
-	}
+// testTaxonomy: Area "Product A" with Category "Release" (Sections 3 "7.6.3", 4 "7.4.7"),
+// Category "Infrastructure" (id 5, itself a Section) and a retired Section 6.
+func testTaxonomy() domain.Taxonomy {
+	return domain.Taxonomy{Nodes: []domain.TaxonomyNode{
+		{ID: 1, Level: domain.LevelArea, Name: "Product A", SortOrder: 10},
+		{ID: 2, ParentID: 1, Level: domain.LevelCategory, Name: "Release", SortOrder: 10},
+		{ID: 3, ParentID: 2, Level: domain.LevelSection, Name: "7.6.3", SortOrder: 10},
+		{ID: 4, ParentID: 2, Level: domain.LevelSection, Name: "7.4.7", SortOrder: 20},
+		{ID: 6, ParentID: 2, Level: domain.LevelSection, Name: "Old", SortOrder: 30, Retired: true},
+		{ID: 5, ParentID: 1, Level: domain.LevelCategory, Name: "Infrastructure", SortOrder: 20},
+	}}
+}
 
+func TestBuildViewPlacesItemsAndUndetermined(t *testing.T) {
+	base := time.Date(2026, 9, 1, 9, 0, 0, 0, time.UTC)
 	items := []WorkItem{
-		{ID: 1, Author: "Taylor Stone", Description: "Implement X", Status: "in progress"},
-		{ID: 2, Author: "Jordan Kim", Description: "Fix Y", Status: "done"},
+		{ID: 1, Author: "dev a", Description: "done thing", Status: domain.StatusDone, SectionID: 3, ReportedAt: base},
+		{ID: 2, Author: "dev b", Description: "ongoing thing", Status: domain.StatusInProgress, SectionID: 3, ReportedAt: base.Add(time.Hour)},
+		{ID: 3, Author: "dev a", Description: "rack power", Status: domain.StatusBlocked, SectionID: 5, ReportedAt: base},
+		{ID: 4, Author: "dev c", Description: "unsure", Status: domain.StatusInProgress, ReportedAt: base},
+		{ID: 5, Author: "dev c", Description: "retired home", Status: domain.StatusInTesting, SectionID: 6, ReportedAt: base},
+		{ID: 6, Author: "dev c", Description: "category with sections", Status: domain.StatusDone, SectionID: 2, ReportedAt: base},
 	}
-
-	result, err := BuildReportsFromLast(cfg, items, mustDate(t, "20260209"), nil, nil)
-	if err != nil {
-		t.Fatalf("BuildReportsFromLast failed: %v", err)
+	v := BuildView(testTaxonomy(), items)
+	if len(v.Areas) != 1 || len(v.Areas[0].Categories) != 2 {
+		t.Fatalf("unexpected structure: %+v", v)
 	}
-	merged := result.Template
-
-	team := renderTeamMarkdown(merged)
-
-	boss := renderBossMarkdown(merged)
-
-	if !strings.Contains(team, "#### Undetermined") {
-		t.Fatalf("team report should include Undetermined section:\n%s", team)
+	release := v.Areas[0].Categories[0]
+	if len(release.Sections) != 1 || release.Sections[0].Section.ID != 3 {
+		t.Fatalf("empty Sections must be omitted: %+v", release.Sections)
 	}
-	if !strings.Contains(team, "**Jordan Kim** - Fix Y (done)") {
-		t.Fatalf("team report should include author per item:\n%s", team)
+	if got := release.Sections[0].Items; got[0].ID != 2 || got[1].ID != 1 {
+		t.Fatalf("expected in progress before done, got %d,%d", got[0].ID, got[1].ID)
 	}
-	if !strings.Contains(boss, "Undetermined (") || !strings.Contains(boss, "Taylor Stone") || !strings.Contains(boss, "Jordan Kim") {
-		t.Fatalf("boss report should include authors at category heading:\n%s", boss)
+	if infra := v.Areas[0].Categories[1]; len(infra.Items) != 1 || infra.Items[0].ID != 3 {
+		t.Fatalf("expected Category-as-Section items: %+v", infra)
 	}
-	if strings.Contains(boss, "**Jordan Kim**") {
-		t.Fatalf("boss report should not include author prefixes in items:\n%s", boss)
+	if len(v.Undetermined) != 3 || v.ItemCount() != 6 {
+		t.Fatalf("expected unplaced, retired and non-fileable items in Undetermined: %+v", v.Undetermined)
 	}
 }
 
-func TestBuildReportsFromLast_LoadsPriorReportWhenTeamNameNeedsSanitization(t *testing.T) {
-	dir := t.TempDir()
-	prev := `### Team/A 20260202
-
-#### Top Focus
-
-- **Feature A**
-  - **Pat One** - Existing ongoing item (in progress)
-`
-	if err := os.WriteFile(filepath.Join(dir, "Team_A_20260202.md"), []byte(prev), 0644); err != nil {
-		t.Fatalf("write previous report: %v", err)
-	}
-
-	cfg := Config{
-		ReportOutputDir: dir,
-		TeamName:        "Team/A",
-	}
-
-	orig := classifySectionsFn
-	classifySectionsFn = func(_ Config, _ []WorkItem, _ []sectionOption, _ []existingItemContext, _ []ClassificationCorrection, _ []historicalItem) (map[int64]LLMSectionDecision, LLMUsage, error) {
-		return map[int64]LLMSectionDecision{}, LLMUsage{}, nil
-	}
-	defer func() { classifySectionsFn = orig }()
-
-	result, err := BuildReportsFromLast(cfg, nil, mustDate(t, "20260209"), nil, nil)
-	if err != nil {
-		t.Fatalf("BuildReportsFromLast failed: %v", err)
-	}
-	team := renderTeamMarkdown(result.Template)
-
-	if !strings.Contains(team, "#### Top Focus") {
-		t.Fatalf("expected prior report category to be loaded:\n%s", team)
-	}
-	if !strings.Contains(team, "**Pat One** - Existing ongoing item (in progress)") {
-		t.Fatalf("expected prior report item to be loaded:\n%s", team)
-	}
-	if strings.Contains(team, "#### Undetermined") {
-		t.Fatalf("should not fall back to first-ever template when sanitized prior report exists:\n%s", team)
-	}
-}
-
-func TestBuildReportsFromLast_MergeSortAndDoneRemoval(t *testing.T) {
-	dir := t.TempDir()
-	prev := `### TEAMX 20260202
-
-#### Top Focus
-
-- **Feature A**
-  - **Pat One** - Old done item (done)
-  - **Pat One** - Ongoing item (in progress)
-`
-	if err := os.WriteFile(filepath.Join(dir, "TEAMX_20260202.md"), []byte(prev), 0644); err != nil {
-		t.Fatalf("write previous report: %v", err)
-	}
-
-	cfg := Config{
-		ReportOutputDir: dir,
-		TeamName:        "TEAMX",
-	}
-
-	orig := classifySectionsFn
-	classifySectionsFn = func(_ Config, items []WorkItem, _ []sectionOption, _ []existingItemContext, _ []ClassificationCorrection, _ []historicalItem) (map[int64]LLMSectionDecision, LLMUsage, error) {
-		out := make(map[int64]LLMSectionDecision)
-		for _, item := range items {
-			out[item.ID] = LLMSectionDecision{
-				SectionID:        "S0_0",
-				NormalizedStatus: normalizeStatus(item.Status),
-				Confidence:       0.95,
-			}
-		}
-		return out, LLMUsage{}, nil
-	}
-	defer func() { classifySectionsFn = orig }()
-
+func TestRenderTeamAndBossMarkdown(t *testing.T) {
+	base := time.Date(2026, 9, 1, 9, 0, 0, 0, time.UTC)
 	items := []WorkItem{
-		{ID: 11, Author: "Pat Two", Description: "Old done item", Status: "done"},
-		{ID: 12, Author: "Pat Three", Description: "New testing item", Status: "in test"},
-		{ID: 13, Author: "Pat Four", Description: "New progress item", Status: "in progress"},
+		{ID: 1, Author: "dev a", Description: "ship build", Status: domain.StatusDone, SectionID: 3, ReportedAt: base, TicketIDs: "1234567"},
+		{ID: 2, Author: "dev b", Description: "rack power", Status: domain.StatusInProgress, StatusNote: "waiting on vendor", SectionID: 5, ReportedAt: base},
+		{ID: 3, Author: "dev c", Description: "unsure", Status: domain.StatusInProgress, ReportedAt: base},
 	}
+	v := BuildView(testTaxonomy(), items)
+	team := RenderTeamMarkdown(v)
+	want := `### Product A
 
-	result, err := BuildReportsFromLast(cfg, items, mustDate(t, "20260209"), nil, nil)
-	if err != nil {
-		t.Fatalf("BuildReportsFromLast failed: %v", err)
-	}
-	merged := result.Template
+#### Release
 
-	team := renderTeamMarkdown(merged)
+- **7.6.3**
+  - **Dev A** - [1234567] Ship build (done)
 
-	boss := renderBossMarkdown(merged)
+#### Infrastructure
 
-	idxDone := strings.Index(team, "Old done item (done)")
-	idxTesting := strings.Index(team, "New testing item (in testing)")
-	idxOldProgress := strings.Index(team, "Ongoing item (in progress)")
-	idxNewProgress := strings.Index(team, "New progress item (in progress)")
-	if !(idxDone >= 0 && idxTesting >= 0 && idxOldProgress >= 0 && idxNewProgress >= 0) {
-		t.Fatalf("missing expected items in team report:\n%s", team)
+- **Dev B** - Rack power (in progress: waiting on vendor)
+
+#### Undetermined
+
+- **Dev C** - Unsure (in progress)
+`
+	if team != want {
+		t.Fatalf("unexpected team report:\n%s\nwant:\n%s", team, want)
 	}
-	if !(idxDone < idxTesting && idxTesting < idxOldProgress && idxOldProgress < idxNewProgress) {
-		t.Fatalf("status ordering is incorrect in team report:\n%s", team)
+	boss := RenderBossMarkdown(v)
+	if !strings.Contains(boss, "#### Release (Dev A)") || !strings.Contains(boss, "  - [1234567] Ship build (done)") {
+		t.Fatalf("unexpected boss report:\n%s", boss)
 	}
-	if strings.Contains(team, "**Pat One** - Old done item (done)") {
-		t.Fatalf("old done item from previous report should have been removed before merge:\n%s", team)
-	}
-	if !strings.Contains(boss, "Top Focus (") || !strings.Contains(boss, "Pat One") || !strings.Contains(boss, "Pat Two") || !strings.Contains(boss, "Pat Three") || !strings.Contains(boss, "Pat Four") {
-		t.Fatalf("boss category heading should include authors:\n%s", boss)
-	}
-	if strings.Contains(boss, "**Pat Two** -") {
-		t.Fatalf("boss report should not include author prefixes in item lines:\n%s", boss)
+	if RenderMarkdownByMode(v, "boss") != boss || RenderMarkdownByMode(v, "team") != team {
+		t.Fatal("RenderMarkdownByMode must dispatch by mode")
 	}
 }
 
-func TestBuildReportsFromLast_LLMConfidenceAndDuplicate(t *testing.T) {
-	dir := t.TempDir()
-	prev := `### TEAMX 20260202
-
-#### Top Focus
-
-- **Feature A**
-  - **Pat One** - Existing ongoing item (in progress)
-`
-	if err := os.WriteFile(filepath.Join(dir, "TEAMX_20260202.md"), []byte(prev), 0644); err != nil {
-		t.Fatalf("write previous report: %v", err)
+func TestStatusTextPendingAndNote(t *testing.T) {
+	if got := StatusText(WorkItem{}); got != "filing…" {
+		t.Fatalf("unexpected pending status text %q", got)
 	}
-
-	cfg := Config{
-		ReportOutputDir: dir,
-		TeamName:        "TEAMX",
-	}
-
-	orig := classifySectionsFn
-	classifySectionsFn = func(_ Config, items []WorkItem, _ []sectionOption, existing []existingItemContext, _ []ClassificationCorrection, _ []historicalItem) (map[int64]LLMSectionDecision, LLMUsage, error) {
-		out := make(map[int64]LLMSectionDecision)
-		var dupKey string
-		for _, ex := range existing {
-			if strings.Contains(ex.Description, "Existing ongoing item") {
-				dupKey = ex.Key
-				break
-			}
-		}
-		for _, item := range items {
-			switch item.ID {
-			case 21:
-				out[item.ID] = LLMSectionDecision{
-					SectionID:        "S0_0",
-					NormalizedStatus: "in test",
-					DuplicateOf:      dupKey,
-					Confidence:       0.95,
-				}
-			case 22:
-				out[item.ID] = LLMSectionDecision{
-					SectionID:        "S0_0",
-					NormalizedStatus: "done",
-					Confidence:       0.40,
-				}
-			}
-		}
-		return out, LLMUsage{}, nil
-	}
-	defer func() { classifySectionsFn = orig }()
-
-	items := []WorkItem{
-		{ID: 21, Author: "Pat Two", Description: "Refined wording of existing ongoing item", Status: "in progress"},
-		{ID: 22, Author: "Pat Three", Description: "Low confidence placement", Status: "in progress"},
-	}
-
-	result, err := BuildReportsFromLast(cfg, items, mustDate(t, "20260209"), nil, nil)
-	if err != nil {
-		t.Fatalf("BuildReportsFromLast failed: %v", err)
-	}
-	merged := result.Template
-
-	team := renderTeamMarkdown(merged)
-
-	if !strings.Contains(team, "(in testing)") {
-		t.Fatalf("duplicate merge should update status via normalized_status:\n%s", team)
-	}
-	if strings.Count(team, "(in testing)") != 1 {
-		t.Fatalf("duplicate should not create a second testing item:\n%s", team)
-	}
-	if !strings.Contains(team, "#### Undetermined") || !strings.Contains(team, "Low confidence placement") {
-		t.Fatalf("low-confidence decision should route to Undetermined:\n%s", team)
-	}
-	if !strings.Contains(team, "Low confidence placement (in progress)") {
-		t.Fatalf("low-confidence decision should keep incoming status:\n%s", team)
-	}
-}
-
-func TestBuildReportsFromLast_PreservesFreeTextStatus(t *testing.T) {
-	dir := t.TempDir()
-	prev := `### TEAMX 20260202
-
-#### Top Focus
-
-- **Feature A**
-  - **Pat One** - Existing ongoing item (in progress)
-`
-	if err := os.WriteFile(filepath.Join(dir, "TEAMX_20260202.md"), []byte(prev), 0644); err != nil {
-		t.Fatalf("write previous report: %v", err)
-	}
-
-	cfg := Config{
-		ReportOutputDir: dir,
-		TeamName:        "TEAMX",
-	}
-
-	orig := classifySectionsFn
-	classifySectionsFn = func(_ Config, items []WorkItem, _ []sectionOption, _ []existingItemContext, _ []ClassificationCorrection, _ []historicalItem) (map[int64]LLMSectionDecision, LLMUsage, error) {
-		out := make(map[int64]LLMSectionDecision, len(items))
-		for _, item := range items {
-			out[item.ID] = LLMSectionDecision{
-				SectionID:        "S0_0",
-				NormalizedStatus: "in progress",
-				Confidence:       0.95,
-			}
-		}
-		return out, LLMUsage{}, nil
-	}
-	defer func() { classifySectionsFn = orig }()
-
-	freeTextStatus := "resolved in session; root cause analysis in progress"
-	items := []WorkItem{
-		{ID: 41, Author: "Pat Two", Description: "Investigate customer database startup issue", Status: freeTextStatus},
-	}
-
-	result, err := BuildReportsFromLast(cfg, items, mustDate(t, "20260209"), nil, nil)
-	if err != nil {
-		t.Fatalf("BuildReportsFromLast failed: %v", err)
-	}
-
-	team := renderTeamMarkdown(result.Template)
-	if !strings.Contains(team, "Investigate customer database startup issue ("+freeTextStatus+")") {
-		t.Fatalf("free-text status should be preserved in team report:\n%s", team)
-	}
-}
-
-func TestBuildReportsFromLast_PreservesPrefixBlocks(t *testing.T) {
-	dir := t.TempDir()
-	prev := `### Product Alpha - 20260130
-
-- **Observability stack design (in progress)**
-
-#### Top Focus
-
-- **Feature A**
-  - **Pat One** - Existing ongoing item (in progress)
-`
-	if err := os.WriteFile(filepath.Join(dir, "TEAMX_20260202.md"), []byte(prev), 0644); err != nil {
-		t.Fatalf("write previous report: %v", err)
-	}
-
-	cfg := Config{
-		ReportOutputDir: dir,
-		TeamName:        "TEAMX",
-	}
-
-	orig := classifySectionsFn
-	classifySectionsFn = func(_ Config, items []WorkItem, _ []sectionOption, _ []existingItemContext, _ []ClassificationCorrection, _ []historicalItem) (map[int64]LLMSectionDecision, LLMUsage, error) {
-		out := make(map[int64]LLMSectionDecision)
-		for _, item := range items {
-			out[item.ID] = LLMSectionDecision{
-				SectionID:        "S0_0",
-				NormalizedStatus: normalizeStatus(item.Status),
-				Confidence:       0.95,
-			}
-		}
-		return out, LLMUsage{}, nil
-	}
-	defer func() { classifySectionsFn = orig }()
-
-	result, err := BuildReportsFromLast(cfg, []WorkItem{{ID: 31, Author: "Pat Two", Description: "New item", Status: "in progress"}}, mustDate(t, "20260209"), nil, nil)
-	if err != nil {
-		t.Fatalf("BuildReportsFromLast failed: %v", err)
-	}
-	merged := result.Template
-
-	team := renderTeamMarkdown(merged)
-
-	if !strings.Contains(team, "### Product Alpha - 20260130") {
-		t.Fatalf("expected prefix block heading to be preserved:\n%s", team)
-	}
-	if !strings.Contains(team, "Observability stack design") {
-		t.Fatalf("expected prefix block body to be preserved:\n%s", team)
+	if got := StatusText(WorkItem{Status: "done", StatusNote: "Done"}); got != "done" {
+		t.Fatalf("a note equal to the status adds nothing, got %q", got)
 	}
 }
 
 func TestFormatItemDescriptionCapitalization(t *testing.T) {
-	itemWithAuthor := TemplateItem{
+	itemWithAuthor := WorkItem{
 		Author:      "taylor stone",
 		Description: `set heavyInfoLogDbTemplate to "not required"`,
 		Status:      "in progress",
 	}
-	gotTeam := formatTeamItem(itemWithAuthor)
+	gotTeam := FormatTeamItem(itemWithAuthor)
 	wantTeam := `**Taylor Stone** - Set heavyInfoLogDbTemplate to "not required" (in progress)`
 	if gotTeam != wantTeam {
 		t.Fatalf("unexpected team item:\nwant: %s\ngot:  %s", wantTeam, gotTeam)
 	}
 
-	itemWithTicket := TemplateItem{
+	itemWithTicket := WorkItem{
 		Description: "improve data balance check warning messages",
 		TicketIDs:   "1238836",
 		Status:      "in progress",
@@ -358,19 +124,19 @@ func TestFormatItemDescriptionCapitalization(t *testing.T) {
 }
 
 func TestFormatItemDedupesLeadingTicketPrefix(t *testing.T) {
-	teamItem := TemplateItem{
+	teamItem := WorkItem{
 		Author:      "Jordan Hart",
 		Description: "[7004001] [7004001] build cache index for snapshot restore",
 		TicketIDs:   "7004001",
 		Status:      "done",
 	}
-	gotTeam := formatTeamItem(teamItem)
+	gotTeam := FormatTeamItem(teamItem)
 	wantTeam := "**Jordan Hart** - [7004001] Build cache index for snapshot restore (done)"
 	if gotTeam != wantTeam {
 		t.Fatalf("unexpected deduped team item:\nwant: %s\ngot:  %s", wantTeam, gotTeam)
 	}
 
-	bossItem := TemplateItem{
+	bossItem := WorkItem{
 		Description: "[7004002] [7004002] replace worker queue retry policy",
 		TicketIDs:   "7004002",
 		Status:      "in progress",
@@ -381,25 +147,25 @@ func TestFormatItemDedupesLeadingTicketPrefix(t *testing.T) {
 		t.Fatalf("unexpected deduped boss item:\nwant: %s\ngot:  %s", wantBoss, gotBoss)
 	}
 
-	plainPrefix := TemplateItem{
+	plainPrefix := WorkItem{
 		Author:      "Marik Hsiao",
 		Description: "1259566 added consul gossip encryption support",
 		TicketIDs:   "1259566",
 		Status:      "done",
 	}
-	gotPlain := formatTeamItem(plainPrefix)
+	gotPlain := FormatTeamItem(plainPrefix)
 	wantPlain := "**Marik Hsiao** - [1259566] Added consul gossip encryption support (done)"
 	if gotPlain != wantPlain {
 		t.Fatalf("unexpected deduped plain-prefix item:\nwant: %s\ngot:  %s", wantPlain, gotPlain)
 	}
 
-	bracketedTicketIDs := TemplateItem{
+	bracketedTicketIDs := WorkItem{
 		Author:      "Howard Shen",
 		Description: "[1201950] make up siem MVs prepare test document and assist QA on testing",
 		TicketIDs:   "[1201950]",
 		Status:      "in progress",
 	}
-	gotBracketed := formatTeamItem(bracketedTicketIDs)
+	gotBracketed := FormatTeamItem(bracketedTicketIDs)
 	wantBracketed := "**Howard Shen** - [1201950] Make up siem MVs prepare test document and assist QA on testing (in progress)"
 	if gotBracketed != wantBracketed {
 		t.Fatalf("unexpected bracketed ticket normalization:\nwant: %s\ngot:  %s", wantBracketed, gotBracketed)
@@ -426,224 +192,4 @@ func TestMergeCategoryHeadingAuthors_StripsAliases(t *testing.T) {
 	if got != want {
 		t.Fatalf("unexpected merged heading with aliases:\nwant: %s\ngot:  %s", want, got)
 	}
-}
-
-func TestBuildReportsFromLast_PreservesMidTopHeading(t *testing.T) {
-	dir := t.TempDir()
-	prev := `### Product Alpha
-
-#### Top Focus
-
-- **Feature A**
-  - **Pat One** - Existing ongoing item (in progress)
-
-### Product Beta
-
-#### Release and Support
-
-- **Support Cases**
-  - **Pat Two** - Existing support item (in progress)
-`
-	if err := os.WriteFile(filepath.Join(dir, "TEAMX_20260202.md"), []byte(prev), 0644); err != nil {
-		t.Fatalf("write previous report: %v", err)
-	}
-
-	cfg := Config{
-		ReportOutputDir: dir,
-		TeamName:        "TEAMX",
-	}
-
-	orig := classifySectionsFn
-	classifySectionsFn = func(_ Config, items []WorkItem, _ []sectionOption, _ []existingItemContext, _ []ClassificationCorrection, _ []historicalItem) (map[int64]LLMSectionDecision, LLMUsage, error) {
-		out := make(map[int64]LLMSectionDecision)
-		for _, item := range items {
-			out[item.ID] = LLMSectionDecision{
-				SectionID:        "S0_0",
-				NormalizedStatus: normalizeStatus(item.Status),
-				Confidence:       0.95,
-			}
-		}
-		return out, LLMUsage{}, nil
-	}
-	defer func() { classifySectionsFn = orig }()
-
-	result, err := BuildReportsFromLast(cfg, []WorkItem{{ID: 99, Author: "Pat Five", Description: "New item", Status: "in progress"}}, mustDate(t, "20260209"), nil, nil)
-	if err != nil {
-		t.Fatalf("BuildReportsFromLast failed: %v", err)
-	}
-	merged := result.Template
-
-	team := renderTeamMarkdown(merged)
-
-	if !strings.Contains(team, "### Product Alpha") {
-		t.Fatalf("expected first top heading to be preserved:\n%s", team)
-	}
-	if !strings.Contains(team, "### Product Beta") {
-		t.Fatalf("expected mid top heading to be preserved:\n%s", team)
-	}
-}
-
-func TestReorderItems_StatusBucketPrecedence(t *testing.T) {
-	// Test that items are sorted by status bucket: done → in testing → in progress → other
-	items := []TemplateItem{
-		{Description: "Item A", Status: "in progress", ReportedAt: time.Date(2026, 2, 10, 10, 0, 0, 0, time.UTC)},
-		{Description: "Item B", Status: "done", ReportedAt: time.Date(2026, 2, 10, 11, 0, 0, 0, time.UTC)},
-		{Description: "Item C", Status: "blocked", ReportedAt: time.Date(2026, 2, 10, 12, 0, 0, 0, time.UTC)},
-		{Description: "Item D", Status: "in testing", ReportedAt: time.Date(2026, 2, 10, 13, 0, 0, 0, time.UTC)},
-	}
-
-	sorted := reorderItems(items)
-
-	// Verify bucket order: done (bucket 0), in testing (bucket 1), in progress (bucket 2), other (bucket 3)
-	if sorted[0].Status != "done" {
-		t.Errorf("Expected first item to be 'done', got '%s'", sorted[0].Status)
-	}
-	if sorted[1].Status != "in testing" {
-		t.Errorf("Expected second item to be 'in testing', got '%s'", sorted[1].Status)
-	}
-	if sorted[2].Status != "in progress" {
-		t.Errorf("Expected third item to be 'in progress', got '%s'", sorted[2].Status)
-	}
-	if sorted[3].Status != "blocked" {
-		t.Errorf("Expected fourth item to be 'blocked', got '%s'", sorted[3].Status)
-	}
-}
-
-func TestReorderItems_WithinBucketOrderByReportedAt(t *testing.T) {
-	// Test that within the same status bucket, items are ordered by ReportedAt ascending
-	items := []TemplateItem{
-		{Description: "Item C", Status: "in progress", ReportedAt: time.Date(2026, 2, 10, 15, 0, 0, 0, time.UTC)},
-		{Description: "Item A", Status: "in progress", ReportedAt: time.Date(2026, 2, 10, 10, 0, 0, 0, time.UTC)},
-		{Description: "Item B", Status: "in progress", ReportedAt: time.Date(2026, 2, 10, 12, 0, 0, 0, time.UTC)},
-	}
-
-	sorted := reorderItems(items)
-
-	// Verify items are ordered by ReportedAt ascending
-	if sorted[0].Description != "Item A" {
-		t.Errorf("Expected first item to be 'Item A', got '%s'", sorted[0].Description)
-	}
-	if sorted[1].Description != "Item B" {
-		t.Errorf("Expected second item to be 'Item B', got '%s'", sorted[1].Description)
-	}
-	if sorted[2].Description != "Item C" {
-		t.Errorf("Expected third item to be 'Item C', got '%s'", sorted[2].Description)
-	}
-}
-
-func TestReorderItems_ZeroTimestampCarriedOverFirst(t *testing.T) {
-	// Test that items with zero timestamp (carried over from previous report) appear first within the bucket
-	items := []TemplateItem{
-		{Description: "New item 1", Status: "in progress", ReportedAt: time.Date(2026, 2, 10, 10, 0, 0, 0, time.UTC)},
-		{Description: "Carried over", Status: "in progress", ReportedAt: time.Time{}}, // zero timestamp
-		{Description: "New item 2", Status: "in progress", ReportedAt: time.Date(2026, 2, 10, 12, 0, 0, 0, time.UTC)},
-	}
-
-	sorted := reorderItems(items)
-
-	// Verify carried-over item (zero timestamp) comes first
-	if sorted[0].Description != "Carried over" {
-		t.Errorf("Expected first item to be 'Carried over', got '%s'", sorted[0].Description)
-	}
-	if sorted[1].Description != "New item 1" {
-		t.Errorf("Expected second item to be 'New item 1', got '%s'", sorted[1].Description)
-	}
-	if sorted[2].Description != "New item 2" {
-		t.Errorf("Expected third item to be 'New item 2', got '%s'", sorted[2].Description)
-	}
-}
-
-func TestReorderItems_ComprehensiveSorting(t *testing.T) {
-	// Test comprehensive sorting: bucket precedence + within-bucket ordering
-	items := []TemplateItem{
-		{Description: "Done new", Status: "done", ReportedAt: time.Date(2026, 2, 10, 14, 0, 0, 0, time.UTC)},
-		{Description: "Progress carried", Status: "in progress", ReportedAt: time.Time{}},
-		{Description: "Testing new", Status: "in testing", ReportedAt: time.Date(2026, 2, 10, 13, 0, 0, 0, time.UTC)},
-		{Description: "Done carried", Status: "done", ReportedAt: time.Time{}},
-		{Description: "Progress new", Status: "in progress", ReportedAt: time.Date(2026, 2, 10, 15, 0, 0, 0, time.UTC)},
-		{Description: "Other carried", Status: "blocked", ReportedAt: time.Time{}},
-		{Description: "Testing carried", Status: "in testing", ReportedAt: time.Time{}},
-	}
-
-	sorted := reorderItems(items)
-
-	// Expected order:
-	// 1. Done carried (bucket 0, zero timestamp)
-	// 2. Done new (bucket 0, has timestamp)
-	// 3. Testing carried (bucket 1, zero timestamp)
-	// 4. Testing new (bucket 1, has timestamp)
-	// 5. Progress carried (bucket 2, zero timestamp)
-	// 6. Progress new (bucket 2, has timestamp)
-	// 7. Other carried (bucket 3, zero timestamp)
-
-	expected := []string{
-		"Done carried",
-		"Done new",
-		"Testing carried",
-		"Testing new",
-		"Progress carried",
-		"Progress new",
-		"Other carried",
-	}
-
-	for i, exp := range expected {
-		if sorted[i].Description != exp {
-			t.Errorf("Position %d: expected '%s', got '%s'", i, exp, sorted[i].Description)
-		}
-	}
-}
-
-func TestReorderTemplateItems_SupportCasesKeepsNewItemsAtBottom(t *testing.T) {
-	template := &ReportTemplate{
-		Categories: []TemplateCategory{
-			{
-				Name: "Release and Support",
-				Subsections: []TemplateSubsection{
-					{
-						Name: "Support Cases",
-						Items: []TemplateItem{
-							{
-								Description: "Existing case in progress",
-								Status:      "in progress",
-								IsNew:       false,
-							},
-							{
-								Description: "Newly reported resolved case",
-								Status:      "resolved in session; root cause analysis in progress",
-								IsNew:       true,
-								ReportedAt:  time.Date(2026, 2, 21, 9, 0, 0, 0, time.UTC),
-							},
-							{
-								Description: "Existing done case",
-								Status:      "done",
-								IsNew:       false,
-							},
-						},
-					},
-				},
-			},
-		},
-	}
-
-	reorderTemplateItems(template)
-	items := template.Categories[0].Subsections[0].Items
-
-	if items[0].Description != "Existing done case" {
-		t.Fatalf("expected existing done case first, got %q", items[0].Description)
-	}
-	if items[1].Description != "Existing case in progress" {
-		t.Fatalf("expected existing in-progress case second, got %q", items[1].Description)
-	}
-	if items[2].Description != "Newly reported resolved case" {
-		t.Fatalf("expected new support case at bottom, got %q", items[2].Description)
-	}
-}
-
-func mustDate(t *testing.T, ymd string) time.Time {
-	t.Helper()
-	d, err := time.Parse("20060102", ymd)
-	if err != nil {
-		t.Fatalf("invalid date %s: %v", ymd, err)
-	}
-	return d
 }

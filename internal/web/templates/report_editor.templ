@@ -2,147 +2,139 @@ package templates
 
 import "fmt"
 
-type EditorData struct {
-	TeamName          string
-	WeekLabel         string
-	WeekParam         string
-	PrevWeek          string
-	NextWeek          string
-	ItemCount         int
-	AuthorCount       int
-	AvgConf           float64
-	Sections          []SectionData
-	AllSections       []SectionData // all known sections (for reclassify dropdown, includes empty ones)
-	IsManager         bool
-	CSRFToken         string
-	Mode              string
-	HasClassifications bool
+type ReportPageData struct {
+	WeekLabel string
+	WeekParam string
+	PrevWeek  string
+	NextWeek  string
+	IsManager bool
+	CSRFToken string
+	Body      ReportBodyData
+}
+
+type ReportBodyData struct {
+	WeekParam    string
+	Version      string
+	ItemCount    int
+	Undetermined []ItemData
+	Areas        []AreaData
+}
+
+type AreaData struct {
+	Name       string
+	Categories []CategoryData
+}
+
+// CategoryData holds the Category's own Work Items (when it is itself a Section) and its Sections.
+type CategoryData struct {
+	Name     string
+	Path     string
+	Items    []ItemData
+	Sections []SectionData
 }
 
 type SectionData struct {
-	ID        string
-	Name      string
-	Items     []ItemData
-	NeedsReview bool
+	Name  string
+	Path  string
+	Items []ItemData
 }
 
 type ItemData struct {
-	ID          int64
-	Description string
-	Author      string
-	Status      string
-	Source      string
-	SourceRef   string
-	Confidence  float64
-	SectionID   string
-	TicketIDs   string
-	IsNew       bool
+	ID                 int64
+	Author             string
+	Description        string
+	Status             string
+	StatusNote         string
+	StatusText         string
+	TicketIDs          string
+	Source             string
+	SectionID          int64
+	PlacedBy           string
+	Confidence         string // "" when no check was made
+	UndeterminedReason string
+	Attention          string // why the Work Item needs attention; "" when it does not
+	CanEdit            bool
+	SectionGroups      []OptionGroup
 }
 
-templ ReportEditor(data EditorData) {
-	@Layout("Report Editor", data.CSRFToken, data.IsManager, "editor") {
+// OptionGroup is one "Area › Category" <optgroup> of the Section select.
+type OptionGroup struct {
+	Label   string
+	Options []Option
+}
+
+type Option struct {
+	ID   int64
+	Name string
+}
+
+templ ReportPage(data ReportPageData) {
+	@Layout("Live Weekly Report", data.CSRFToken, data.IsManager, "live") {
 		<div class="editor-header">
 			<h1>Weekly Report</h1>
 			<div class="week-nav">
-				<a href={ templ.SafeURL("/?week=" + data.PrevWeek) } class="btn btn-secondary" style="padding:4px 8px;">&larr;</a>
+				<a href={ templ.SafeURL("/?week=" + data.PrevWeek) }>&larr;</a>
 				<span>{ data.WeekLabel }</span>
-				<a href={ templ.SafeURL("/?week=" + data.NextWeek) } class="btn btn-secondary" style="padding:4px 8px;">&rarr;</a>
-			</div>
-			<div class="stats">
-				<span><span class="val">{ fmt.Sprintf("%d", data.ItemCount) }</span> items</span>
-				<span><span class="val">{ fmt.Sprintf("%d", data.AuthorCount) }</span> authors</span>
-				if data.AvgConf > 0 {
-					<span><span class="val">{ fmt.Sprintf("%.0f%%", data.AvgConf*100) }</span> avg confidence</span>
-				}
+				<a href={ templ.SafeURL("/?week=" + data.NextWeek) }>&rarr;</a>
 			</div>
 		</div>
 		<div class="actions">
 			if data.IsManager {
 				<button class="btn btn-primary" hx-post={ "/generate?week=" + data.WeekParam } hx-target="#generate-status" hx-swap="innerHTML" hx-disabled-elt="this">
-					<span class="htmx-indicator"><span class="spinner"></span></span>
-					Generate Report
-				</button>
-				if !data.HasClassifications {
-					<a href={ templ.SafeURL("/?week=" + data.WeekParam + "&classify=1") } class="btn btn-secondary" style="background:#fef3c7;border-color:#f59e0b;color:#92400e;" onclick="this.textContent='Classifying...';this.style.opacity='0.6';this.style.pointerEvents='none';">
-						Classify Items
-					</a>
-				} else {
-					<a href={ templ.SafeURL("/?week=" + data.WeekParam + "&classify=1") } class="btn btn-secondary" onclick="this.textContent='Classifying...';this.style.opacity='0.6';this.style.pointerEvents='none';">
-						Re-classify
-					</a>
-				}
-			}
-			<button class="btn btn-secondary" hx-get={ "/preview?mode=" + data.Mode + "&week=" + data.WeekParam } hx-target="#preview-content" hx-swap="innerHTML" hx-indicator="#preview-loading">
-				Preview Markdown
-			</button>
-			<span id="preview-loading" class="htmx-indicator" style="display:inline-flex;align-items:center;gap:6px;">
-				<span class="spinner"></span> Loading preview...
-			</span>
-			<select class="btn btn-secondary" id="report-mode" onchange="this.form && this.form.submit()" style="font-size:13px;">
-				<option value="team" selected?={ data.Mode == "team" }>Team mode</option>
-				<option value="boss" selected?={ data.Mode == "boss" }>Boss mode</option>
-			</select>
-		if data.IsManager {
-				<button class="btn btn-secondary" hx-get={ "/categories/new?week=" + data.WeekParam } hx-target="#new-category-form" hx-swap="innerHTML">
-					+ Category
+					Publish
 				</button>
 			}
+			<button class="btn btn-secondary" hx-get={ "/preview?mode=team&week=" + data.WeekParam } hx-target="#preview-content" hx-swap="innerHTML">Preview team</button>
+			<button class="btn btn-secondary" hx-get={ "/preview?mode=boss&week=" + data.WeekParam } hx-target="#preview-content" hx-swap="innerHTML">Preview boss</button>
 		</div>
-		<div id="new-category-form"></div>
 		<div id="generate-status"></div>
+		<div class="editor-layout">
+			<div class="editor-sections">
+				@ReportBody(data.Body)
+			</div>
+			<div class="preview-panel">
+				<h3>Markdown Preview</h3>
+				<div id="preview-content" class="preview-body">
+					<p class="muted">Pick a preview to see the rendered report.</p>
+				</div>
+			</div>
+		</div>
+	}
+}
+
+// ReportBody re-polls itself; the server answers 204 while the version is unchanged.
+templ ReportBody(data ReportBodyData) {
+	<div
+		id="report-body"
+		hx-get={ "/report/body?week=" + data.WeekParam + "&v=" + data.Version }
+		hx-trigger="every 15s [!document.querySelector('#report-body .edit-form')], report-changed from:body"
+		hx-swap="outerHTML"
+	>
+		<div class="stats">
+			<span><span class="val">{ fmt.Sprintf("%d", data.ItemCount) }</span> Work Items</span>
+			<span><span class="val">{ fmt.Sprintf("%d", len(data.Undetermined)) }</span> Undetermined</span>
+		</div>
 		if data.ItemCount == 0 {
 			<div class="empty">
-				<p>No work items reported this week.</p>
-				<p style="margin-top:8px;color:#bbb;">Items from /report and /fetch will appear here.</p>
+				<p>No Work Items this week.</p>
 			</div>
-		} else {
-			<div class="editor-layout" id="editor-layout">
-				<div class="editor-sections" id="editor-sections">
-					for _, section := range data.Sections {
-						@SectionGroup(section, data.AllSections, data.IsManager)
-					}
-				</div>
-				<div class="resize-handle" id="resize-handle"></div>
-				<div class="preview-panel" id="preview-panel">
-					<h3>Markdown Preview</h3>
-					<div id="preview-content" class="preview-body">
-						<p style="color:#999;">Click "Preview Markdown" to see the rendered report.</p>
-					</div>
-				</div>
-			</div>
-			<script>
-			(function() {
-				var handle = document.getElementById('resize-handle');
-				var panel = document.getElementById('preview-panel');
-				var layout = document.getElementById('editor-layout');
-				var dragging = false;
-
-				handle.addEventListener('mousedown', function(e) {
-					dragging = true;
-					handle.classList.add('dragging');
-					document.body.style.cursor = 'col-resize';
-					document.body.style.userSelect = 'none';
-					e.preventDefault();
-				});
-
-				document.addEventListener('mousemove', function(e) {
-					if (!dragging) return;
-					var layoutRect = layout.getBoundingClientRect();
-					var newWidth = layoutRect.right - e.clientX - 8;
-					if (newWidth < 200) newWidth = 200;
-					if (newWidth > layoutRect.width * 0.8) newWidth = layoutRect.width * 0.8;
-					panel.style.width = newWidth + 'px';
-				});
-
-				document.addEventListener('mouseup', function() {
-					if (!dragging) return;
-					dragging = false;
-					handle.classList.remove('dragging');
-					document.body.style.cursor = '';
-					document.body.style.userSelect = '';
-				});
-			})();
-			</script>
 		}
-	}
+		if len(data.Undetermined) > 0 {
+			<div class="section undetermined">
+				<div class="section-header">
+					<span class="name">Undetermined</span>
+					<span class="count">{ fmt.Sprintf("%d", len(data.Undetermined)) }</span>
+				</div>
+				for _, item := range data.Undetermined {
+					@ItemRow(item)
+				}
+			</div>
+		}
+		for _, area := range data.Areas {
+			<h2 class="area-name">{ area.Name }</h2>
+			for _, cat := range area.Categories {
+				@SectionGroup(cat)
+			}
+		}
+	</div>
 }

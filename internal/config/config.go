@@ -27,26 +27,25 @@ type Config struct {
 	GitHubOrg   string   `yaml:"github_org"`
 	GitHubRepos []string `yaml:"github_repos"`
 
-	LLMProvider      string  `yaml:"llm_provider"`
-	LLMModel         string  `yaml:"llm_model"`
-	LLMBatchSize     int     `yaml:"llm_batch_size"`
-	LLMConfidence    float64 `yaml:"llm_confidence_threshold"`
-	LLMExampleCount  int     `yaml:"llm_example_count"`
-	LLMExampleMaxLen int     `yaml:"llm_example_max_chars"`
-	LLMGlossaryPath  string  `yaml:"llm_glossary_path"`
-	LLMGuidePath     string  `yaml:"llm_classification_guide_path"`
-	LLMCriticEnabled bool    `yaml:"llm_critic_enabled"`
-	// Backward compatibility for old key name.
-	ReportTemplatePath string `yaml:"report_template_path"`
-	AnthropicAPIKey    string `yaml:"anthropic_api_key"`
-	OpenAIAPIKey       string `yaml:"openai_api_key"`
-	OpenAIBaseURL      string `yaml:"openai_base_url"`
+	LLMProvider      string `yaml:"llm_provider"`
+	LLMModel         string `yaml:"llm_model"`
+	LLMBatchSize     int    `yaml:"llm_batch_size"`
+	LLMExampleCount  int    `yaml:"llm_example_count"`
+	LLMExampleMaxLen int    `yaml:"llm_example_max_chars"`
+	AnthropicAPIKey  string `yaml:"anthropic_api_key"`
+	OpenAIAPIKey     string `yaml:"openai_api_key"`
+	OpenAIBaseURL    string `yaml:"openai_base_url"`
+
+	DecisionModelURL        string  `yaml:"decision_model_url"`
+	DecisionModelAPIKey     string  `yaml:"decision_model_api_key"`
+	DecisionModelName       string  `yaml:"decision_model_name"`
+	DecisionModelConfidence float64 `yaml:"decision_model_confidence"`
 
 	DBPath                     string `yaml:"db_path"`
 	ReportOutputDir            string `yaml:"report_output_dir"`
 	ReportChannelID            string `yaml:"report_channel_id"`
-	ExternalHTTPTimeoutSeconds int  `yaml:"external_http_timeout_seconds"`
-	TLSSkipVerify              bool `yaml:"tls_skip_verify"`
+	ExternalHTTPTimeoutSeconds int    `yaml:"external_http_timeout_seconds"`
+	TLSSkipVerify              bool   `yaml:"tls_skip_verify"`
 
 	ManagerSlackIDs   []string `yaml:"manager_slack_ids"`
 	TeamMembers       []string `yaml:"team_members"`
@@ -58,12 +57,12 @@ type Config struct {
 	TeamName          string   `yaml:"team_name"`
 
 	// Web UI
-	WebEnabled      bool   `yaml:"web_enabled"`
-	WebPort         int    `yaml:"web_port"`
-	WebClientID     string `yaml:"web_client_id"`
-	WebClientSecret string `yaml:"web_client_secret"`
+	WebEnabled       bool   `yaml:"web_enabled"`
+	WebPort          int    `yaml:"web_port"`
+	WebClientID      string `yaml:"web_client_id"`
+	WebClientSecret  string `yaml:"web_client_secret"`
 	WebSessionSecret string `yaml:"web_session_secret"`
-	WebBaseURL      string `yaml:"web_base_url"`
+	WebBaseURL       string `yaml:"web_base_url"`
 
 	Location *time.Location `yaml:"-"` // computed from Timezone, not from YAML
 }
@@ -102,16 +101,15 @@ func LoadConfig() Config {
 	envOverride(&cfg.LLMProvider, "LLM_PROVIDER")
 	envOverride(&cfg.LLMModel, "LLM_MODEL")
 	envOverrideInt(&cfg.LLMBatchSize, "LLM_BATCH_SIZE")
-	envOverrideFloat(&cfg.LLMConfidence, "LLM_CONFIDENCE_THRESHOLD")
 	envOverrideInt(&cfg.LLMExampleCount, "LLM_EXAMPLE_COUNT")
 	envOverrideInt(&cfg.LLMExampleMaxLen, "LLM_EXAMPLE_MAX_CHARS")
-	envOverride(&cfg.LLMGlossaryPath, "LLM_GLOSSARY_PATH")
-	envOverride(&cfg.LLMGuidePath, "LLM_CLASSIFICATION_GUIDE_PATH")
-	envOverrideBool(&cfg.LLMCriticEnabled, "LLM_CRITIC_ENABLED")
-	envOverride(&cfg.ReportTemplatePath, "REPORT_TEMPLATE_PATH")
 	envOverride(&cfg.AnthropicAPIKey, "ANTHROPIC_API_KEY")
 	envOverride(&cfg.OpenAIAPIKey, "OPENAI_API_KEY")
 	envOverride(&cfg.OpenAIBaseURL, "OPENAI_BASE_URL")
+	envOverride(&cfg.DecisionModelURL, "DECISION_MODEL_URL")
+	envOverride(&cfg.DecisionModelAPIKey, "DECISION_MODEL_API_KEY")
+	envOverride(&cfg.DecisionModelName, "DECISION_MODEL_NAME")
+	envOverrideFloat(&cfg.DecisionModelConfidence, "DECISION_MODEL_CONFIDENCE")
 	envOverride(&cfg.DBPath, "DB_PATH")
 	envOverride(&cfg.ReportOutputDir, "REPORT_OUTPUT_DIR")
 	envOverride(&cfg.ReportChannelID, "REPORT_CHANNEL_ID")
@@ -146,20 +144,14 @@ func LoadConfig() Config {
 	if cfg.LLMBatchSize == 0 {
 		cfg.LLMBatchSize = 50
 	}
-	if cfg.LLMConfidence == 0 {
-		cfg.LLMConfidence = 0.70
+	if cfg.DecisionModelConfidence == 0 {
+		cfg.DecisionModelConfidence = 0.70
 	}
 	if cfg.LLMExampleCount == 0 {
 		cfg.LLMExampleCount = 20
 	}
 	if cfg.LLMExampleMaxLen == 0 {
 		cfg.LLMExampleMaxLen = 140
-	}
-	if cfg.LLMGuidePath == "" {
-		cfg.LLMGuidePath = strings.TrimSpace(cfg.ReportTemplatePath)
-	}
-	if cfg.LLMGuidePath == "" {
-		cfg.LLMGuidePath = "./llm_classification_guide.md"
 	}
 	if cfg.DBPath == "" {
 		cfg.DBPath = "./reportbot.db"
@@ -196,8 +188,11 @@ func LoadConfig() Config {
 	}
 
 	required := map[string]string{
-		"slack_bot_token": cfg.SlackBotToken,
-		"slack_app_token": cfg.SlackAppToken,
+		"slack_bot_token":        cfg.SlackBotToken,
+		"slack_app_token":        cfg.SlackAppToken,
+		"decision_model_url":     cfg.DecisionModelURL,
+		"decision_model_api_key": cfg.DecisionModelAPIKey,
+		"decision_model_name":    cfg.DecisionModelName,
 	}
 	for name, val := range required {
 		if val == "" {
@@ -273,8 +268,8 @@ func LoadConfig() Config {
 	if cfg.LLMBatchSize < 1 {
 		log.Fatalf("invalid llm_batch_size '%d': must be >= 1", cfg.LLMBatchSize)
 	}
-	if cfg.LLMConfidence < 0 || cfg.LLMConfidence > 1 {
-		log.Fatalf("invalid llm_confidence_threshold '%f': must be between 0 and 1", cfg.LLMConfidence)
+	if cfg.DecisionModelConfidence <= 0 || cfg.DecisionModelConfidence >= 1 {
+		log.Fatalf("invalid decision_model_confidence '%f': must be between 0 and 1 (exclusive)", cfg.DecisionModelConfidence)
 	}
 	if cfg.LLMExampleCount < 0 {
 		log.Fatalf("invalid llm_example_count '%d': must be >= 0", cfg.LLMExampleCount)
@@ -288,11 +283,7 @@ func LoadConfig() Config {
 	if cfg.OpenAIBaseURL != "" {
 		cfg.OpenAIBaseURL = strings.TrimRight(cfg.OpenAIBaseURL, "/")
 	}
-	if cfg.LLMGlossaryPath != "" {
-		if err := validateGlossaryPath(cfg.LLMGlossaryPath); err != nil {
-			log.Fatalf("invalid llm_glossary_path '%s': %v", cfg.LLMGlossaryPath, err)
-		}
-	}
+	cfg.DecisionModelURL = strings.TrimRight(cfg.DecisionModelURL, "/")
 
 	return cfg
 }
@@ -362,19 +353,4 @@ func parseClock(s string) (int, int, error) {
 		return 0, 0, fmt.Errorf("time out of range: %02d:%02d", hour, min)
 	}
 	return hour, min, nil
-}
-
-func validateGlossaryPath(path string) error {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("read glossary: %w", err)
-	}
-	var g struct {
-		Terms       []struct{} `yaml:"terms"`
-		StatusHints []struct{} `yaml:"status_hints"`
-	}
-	if err := yaml.Unmarshal(data, &g); err != nil {
-		return fmt.Errorf("parse glossary yaml: %w", err)
-	}
-	return nil
 }

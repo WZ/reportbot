@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"regexp"
+	"reportbot/internal/fetch"
 	"strings"
 	"testing"
 	"time"
@@ -495,7 +496,7 @@ func TestFunctional_FetchAndImportGitHub_EndToEnd(t *testing.T) {
 		Location:    time.UTC,
 	}
 
-	first, err := FetchAndImportMRs(cfg, db)
+	first, err := FetchAndImportMRs(cfg, db, fetch.Hooks{})
 	if err != nil {
 		t.Fatalf("FetchAndImportMRs first run failed: %v", err)
 	}
@@ -503,7 +504,7 @@ func TestFunctional_FetchAndImportGitHub_EndToEnd(t *testing.T) {
 		t.Fatalf("unexpected first fetch result: %+v", first)
 	}
 
-	second, err := FetchAndImportMRs(cfg, db)
+	second, err := FetchAndImportMRs(cfg, db, fetch.Hooks{})
 	if err != nil {
 		t.Fatalf("FetchAndImportMRs second run failed: %v", err)
 	}

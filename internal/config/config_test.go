@@ -16,6 +16,9 @@ func setMinimalValidConfigEnv(t *testing.T) {
 	t.Setenv("LLM_PROVIDER", "openai")
 	t.Setenv("OPENAI_API_KEY", "sk-test")
 	t.Setenv("TIMEZONE", "UTC")
+	t.Setenv("DECISION_MODEL_URL", "https://api.compat.example/")
+	t.Setenv("DECISION_MODEL_API_KEY", "dm-test")
+	t.Setenv("DECISION_MODEL_NAME", "test-model")
 }
 
 func TestLoadConfigFromEnvWithDefaults(t *testing.T) {
@@ -52,6 +55,12 @@ func TestLoadConfigFromEnvWithDefaults(t *testing.T) {
 	if cfg.GitLabRefTicketLabel != "" {
 		t.Fatalf("unexpected gitlab ref ticket label default: %q", cfg.GitLabRefTicketLabel)
 	}
+	if cfg.DecisionModelConfidence != 0.70 {
+		t.Fatalf("unexpected decision model confidence default: %v", cfg.DecisionModelConfidence)
+	}
+	if cfg.DecisionModelURL != "https://api.compat.example" || cfg.DecisionModelName != "test-model" || cfg.DecisionModelAPIKey != "dm-test" {
+		t.Fatalf("unexpected decision model config: %+v", cfg)
+	}
 	if cfg.Location == nil || cfg.Location.String() != "UTC" {
 		t.Fatalf("unexpected location: %v", cfg.Location)
 	}
@@ -78,9 +87,13 @@ external_http_timeout_seconds: 75
 	}
 
 	t.Setenv("CONFIG_PATH", cfgPath)
+	t.Setenv("DECISION_MODEL_URL", "https://api.compat.example")
+	t.Setenv("DECISION_MODEL_API_KEY", "dm-test")
+	t.Setenv("DECISION_MODEL_NAME", "test-model")
+	t.Setenv("DECISION_MODEL_CONFIDENCE", "0.55")
 	t.Setenv("LLM_PROVIDER", "openai")
 	t.Setenv("OPENAI_API_KEY", "sk-env")
-	t.Setenv("OPENAI_BASE_URL", "https://api.fazai.fortinet.com/v1/")
+	t.Setenv("OPENAI_BASE_URL", "https://api.compat.example/v1/")
 	t.Setenv("TEAM_NAME", "Env Team")
 	t.Setenv("DB_PATH", "/tmp/env.db")
 	t.Setenv("EXTERNAL_HTTP_TIMEOUT_SECONDS", "120")
@@ -97,7 +110,7 @@ external_http_timeout_seconds: 75
 	if cfg.OpenAIAPIKey != "sk-env" {
 		t.Fatalf("expected openai key from env override")
 	}
-	if cfg.OpenAIBaseURL != "https://api.fazai.fortinet.com/v1" {
+	if cfg.OpenAIBaseURL != "https://api.compat.example/v1" {
 		t.Fatalf("expected openai base URL from env override, got %q", cfg.OpenAIBaseURL)
 	}
 	if cfg.DBPath != "/tmp/env.db" {
@@ -111,6 +124,9 @@ external_http_timeout_seconds: 75
 	}
 	if cfg.GitLabRefTicketLabel != "Jira" {
 		t.Fatalf("expected ticket field label from env override, got %q", cfg.GitLabRefTicketLabel)
+	}
+	if cfg.DecisionModelConfidence != 0.55 {
+		t.Fatalf("expected decision model confidence from env override, got %v", cfg.DecisionModelConfidence)
 	}
 }
 
@@ -172,26 +188,39 @@ func TestEnvOverrideHelpers(t *testing.T) {
 	}
 }
 
-func TestLoadConfigInvalidTimezoneFatal(t *testing.T) {
+func TestLoadConfigFatalCases(t *testing.T) {
 	if os.Getenv("TEST_INVALID_TZ_FATAL") == "1" {
 		_ = os.Setenv("CONFIG_PATH", filepath.Join(os.TempDir(), "no-config.yaml"))
 		_ = os.Setenv("SLACK_BOT_TOKEN", "xoxb-test")
 		_ = os.Setenv("SLACK_APP_TOKEN", "xapp-test")
 		_ = os.Setenv("LLM_PROVIDER", "openai")
 		_ = os.Setenv("OPENAI_API_KEY", "sk-test")
-		_ = os.Setenv("TIMEZONE", "Mars/Colony")
+		_ = os.Setenv("DECISION_MODEL_URL", "https://api.compat.example")
+		_ = os.Setenv("DECISION_MODEL_API_KEY", "dm-test")
+		_ = os.Setenv("DECISION_MODEL_NAME", "test-model")
+		_ = os.Setenv("TIMEZONE", os.Getenv("TEST_FATAL_TZ"))
+		_ = os.Setenv("DECISION_MODEL_CONFIDENCE", os.Getenv("TEST_FATAL_CONFIDENCE"))
+		if os.Getenv("TEST_FATAL_DROP_DECISION_URL") == "1" {
+			_ = os.Unsetenv("DECISION_MODEL_URL")
+		}
 		LoadConfig()
 		return
 	}
 
-	cmd := exec.Command(os.Args[0], "-test.run=TestLoadConfigInvalidTimezoneFatal")
-	cmd.Env = append(os.Environ(), "TEST_INVALID_TZ_FATAL=1")
-	err := cmd.Run()
-	if err == nil {
-		t.Fatal("expected subprocess to exit with failure")
-	}
-	var exitErr *exec.ExitError
-	if !errors.As(err, &exitErr) {
-		t.Fatalf("expected ExitError, got: %v", err)
+	for name, env := range map[string][]string{
+		"invalid timezone":           {"TEST_FATAL_TZ=Mars/Colony"},
+		"confidence out of range":    {"TEST_FATAL_TZ=UTC", "TEST_FATAL_CONFIDENCE=1.5"},
+		"missing decision model url": {"TEST_FATAL_TZ=UTC", "TEST_FATAL_DROP_DECISION_URL=1"},
+	} {
+		cmd := exec.Command(os.Args[0], "-test.run=TestLoadConfigFatalCases")
+		cmd.Env = append(append(os.Environ(), "TEST_INVALID_TZ_FATAL=1"), env...)
+		err := cmd.Run()
+		if err == nil {
+			t.Fatalf("%s: expected subprocess to exit with failure", name)
+		}
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) {
+			t.Fatalf("%s: expected ExitError, got: %v", name, err)
+		}
 	}
 }

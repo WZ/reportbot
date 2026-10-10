@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	sqlitedb "reportbot/internal/storage/sqlite"
 	"strings"
 	"testing"
 	"time"
@@ -121,7 +122,7 @@ func mockSlackJSONResponse(req *http.Request, payload any) (*http.Response, erro
 func TestHandleBlockActions_NudgeDoneUpdatesStatusAndRefreshesMessage(t *testing.T) {
 	db := newTestDB(t)
 	now := nudgeTestReportedAt()
-	if err := InsertWorkItem(db, WorkItem{
+	if _, err := sqlitedb.InsertWorkItem(db, WorkItem{
 		Description: "Close stale deployment work",
 		Author:      "Pat",
 		AuthorID:    "U_MEMBER",
@@ -161,7 +162,7 @@ func TestHandleBlockActions_NudgeDoneUpdatesStatusAndRefreshesMessage(t *testing
 	if rec.updateCalls != 1 {
 		t.Fatalf("expected one chat.update call, got %d", rec.updateCalls)
 	}
-	if !strings.Contains(rec.lastUpdateText, "Updated. No items are currently marked in progress.") {
+	if !strings.Contains(rec.lastUpdateText, "Updated. You have no open items.") {
 		t.Fatalf("unexpected updated message text: %q", rec.lastUpdateText)
 	}
 }
@@ -169,7 +170,7 @@ func TestHandleBlockActions_NudgeDoneUpdatesStatusAndRefreshesMessage(t *testing
 func TestHandleBlockActions_NudgeMoreUpdatesStatus(t *testing.T) {
 	db := newTestDB(t)
 	now := nudgeTestReportedAt()
-	if err := InsertWorkItem(db, WorkItem{
+	if _, err := sqlitedb.InsertWorkItem(db, WorkItem{
 		Description: "Validate build pipeline",
 		Author:      "Pat",
 		AuthorID:    "U_MEMBER",
@@ -223,7 +224,7 @@ func TestHandleBlockActions_NudgePageNextRefreshesWithoutMutation(t *testing.T) 
 	db := newTestDB(t)
 	now := nudgeTestReportedAt()
 	for i := 0; i < 11; i++ {
-		if err := InsertWorkItem(db, WorkItem{
+		if _, err := sqlitedb.InsertWorkItem(db, WorkItem{
 			Description: fmt.Sprintf("Paginated active item %02d", i+1),
 			Author:      "Pat",
 			AuthorID:    "U_MEMBER",
@@ -276,7 +277,7 @@ func TestHandleBlockActions_NudgeDoneClampsPageAfterLastItemRemoved(t *testing.T
 	db := newTestDB(t)
 	now := nudgeTestReportedAt()
 	for i := 0; i < 11; i++ {
-		if err := InsertWorkItem(db, WorkItem{
+		if _, err := sqlitedb.InsertWorkItem(db, WorkItem{
 			Description: fmt.Sprintf("Paginated active item %02d", i+1),
 			Author:      "Pat",
 			AuthorID:    "U_MEMBER",
@@ -326,7 +327,7 @@ func TestHandleBlockActions_NudgeDoneClampsPageAfterLastItemRemoved(t *testing.T
 func TestHandleBlockActions_NudgeUnauthorizedUserCannotUpdate(t *testing.T) {
 	db := newTestDB(t)
 	now := nudgeTestReportedAt()
-	if err := InsertWorkItem(db, WorkItem{
+	if _, err := sqlitedb.InsertWorkItem(db, WorkItem{
 		Description: "Protected item",
 		Author:      "Pat",
 		AuthorID:    "U_MEMBER",

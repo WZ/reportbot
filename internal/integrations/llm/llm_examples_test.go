@@ -2,47 +2,40 @@ package llm
 
 import (
 	"testing"
+
+	"reportbot/internal/domain"
 )
 
-func TestBuildTFIDFIndex_TopK(t *testing.T) {
-	items := []historicalItem{
-		{Description: "Fix database connection pool timeout", SectionID: "S0_0", SectionLabel: "Infrastructure"},
-		{Description: "Add user authentication OAuth flow", SectionID: "S1_0", SectionLabel: "Auth Service"},
-		{Description: "Database migration for new schema", SectionID: "S0_0", SectionLabel: "Infrastructure"},
+func TestSimilarIndexTopK(t *testing.T) {
+	items := []domain.PlacedItem{
+		{WorkItemID: 1, Description: "Fix database connection pool timeout", SectionID: 10},
+		{WorkItemID: 2, Description: "Add user authentication OAuth flow", SectionID: 11},
+		{WorkItemID: 3, Description: "Database migration for new schema", SectionID: 10},
 	}
-	idx := buildTFIDFIndex(items)
+	idx := NewSimilarIndex(items)
 
-	results := idx.topK("database connection issue", 2)
+	results := idx.TopK("database connection issue", 2, nil)
 	if len(results) == 0 {
 		t.Fatalf("expected at least one result for database query")
 	}
-	// The top result should be the database connection pool item.
-	if results[0].SectionID != "S0_0" {
-		t.Fatalf("expected top result to be Infrastructure, got %s", results[0].SectionID)
-	}
-	if results[0].Description != "Fix database connection pool timeout" {
-		t.Fatalf("expected most similar item first, got %s", results[0].Description)
+	if results[0].WorkItemID != 1 {
+		t.Fatalf("expected most similar item first, got %+v", results[0])
 	}
 }
 
-func TestTopKForBatch_Deduplication(t *testing.T) {
-	items := []historicalItem{
-		{Description: "Fix database timeout", SectionID: "S0_0"},
-		{Description: "Add user login", SectionID: "S1_0"},
-		{Description: "Improve database query performance", SectionID: "S0_0"},
+func TestSimilarIndexTopKFilterAndPersonTieBreak(t *testing.T) {
+	items := []domain.PlacedItem{
+		{WorkItemID: 1, Description: "upgrade cluster nodes", SectionID: 10},
+		{WorkItemID: 2, Description: "upgrade cluster nodes", SectionID: 11, ByPerson: true},
+		{WorkItemID: 3, Description: "upgrade cluster nodes", SectionID: 12},
 	}
-	idx := buildTFIDFIndex(items)
-
-	// Both queries should match "database" items, but dedup should apply.
-	results := idx.topKForBatch([]string{"database timeout fix", "database performance"}, 5)
-	descSeen := make(map[string]int)
-	for _, r := range results {
-		descSeen[r.Description]++
+	idx := NewSimilarIndex(items)
+	results := idx.TopK("upgrade cluster", 3, func(p domain.PlacedItem) bool { return p.WorkItemID != 3 })
+	if len(results) != 2 {
+		t.Fatalf("expected filter to drop one item, got %d", len(results))
 	}
-	for desc, count := range descSeen {
-		if count > 1 {
-			t.Fatalf("expected no duplicates, but %q appeared %d times", desc, count)
-		}
+	if results[0].WorkItemID != 2 {
+		t.Fatalf("expected person-decided item first on a tie, got %+v", results[0])
 	}
 }
 
@@ -87,9 +80,9 @@ func TestCosineSim_Identical(t *testing.T) {
 	}
 }
 
-func TestBuildTFIDFIndex_Empty(t *testing.T) {
-	idx := buildTFIDFIndex(nil)
-	results := idx.topK("anything", 5)
+func TestSimilarIndexEmpty(t *testing.T) {
+	idx := NewSimilarIndex(nil)
+	results := idx.TopK("anything", 5, nil)
 	if len(results) != 0 {
 		t.Fatalf("expected no results from empty index")
 	}

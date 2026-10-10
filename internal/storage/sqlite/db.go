@@ -3,498 +3,85 @@ package sqlite
 import (
 	"database/sql"
 	"fmt"
-	"reportbot/internal/domain"
 	"strings"
 	"time"
+
+	"reportbot/internal/domain"
 
 	_ "github.com/mattn/go-sqlite3"
 )
 
 type WorkItem = domain.WorkItem
-type ClassificationRecord = domain.ClassificationRecord
-type ClassificationCorrection = domain.ClassificationCorrection
-type ClassificationStats = domain.ClassificationStats
-type historicalItem = domain.HistoricalItem
+
+// querier is satisfied by *sql.DB and *sql.Tx.
+type querier interface {
+	Exec(query string, args ...any) (sql.Result, error)
+	Query(query string, args ...any) (*sql.Rows, error)
+	QueryRow(query string, args ...any) *sql.Row
+}
+
+type migration struct {
+	version int
+	apply   func(tx *sql.Tx) error
+}
+
+// migrations run in order at startup; each is recorded in schema_migrations.
+// They are additive only: destructive steps live in the cut-over command.
+var migrations = []migration{
+	{1, migrateBaseWorkItems},
+	{2, migrateTaxonomy},
+	{3, migratePlacement},
+	{4, migrateSupportTables},
+}
 
 func InitDB(path string) (*sql.DB, error) {
-	db, err := sql.Open("sqlite3", path)
+	// Immediate transactions take the write lock up front, so busy_timeout applies
+	// instead of a read-then-write transaction failing with SQLITE_BUSY.
+	dsn := path
+	if strings.Contains(dsn, "?") {
+		dsn += "&_txlock=immediate"
+	} else {
+		dsn += "?_txlock=immediate"
+	}
+	db, err := sql.Open("sqlite3", dsn)
 	if err != nil {
 		return nil, err
 	}
 
-	// Enable WAL mode for concurrent readers + single writer (needed for web UI + Slack bot)
 	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
 		return nil, fmt.Errorf("enabling WAL mode: %w", err)
 	}
 	if _, err := db.Exec("PRAGMA busy_timeout=5000"); err != nil {
 		return nil, fmt.Errorf("setting busy timeout: %w", err)
 	}
-
-	schema := `
-	CREATE TABLE IF NOT EXISTS work_items (
-		id          INTEGER PRIMARY KEY AUTOINCREMENT,
-		description TEXT NOT NULL,
-		author      TEXT NOT NULL,
-		source      TEXT NOT NULL DEFAULT 'slack',
-		source_ref  TEXT DEFAULT '',
-		category    TEXT DEFAULT '',
-		status      TEXT DEFAULT 'done',
-		ticket_ids  TEXT DEFAULT '',
-		reported_at DATETIME NOT NULL,
-		created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
-	);
-	CREATE INDEX IF NOT EXISTS idx_work_items_reported_at ON work_items(reported_at);
-	CREATE INDEX IF NOT EXISTS idx_work_items_author ON work_items(author);
-
-	CREATE TABLE IF NOT EXISTS classification_history (
-		id               INTEGER PRIMARY KEY AUTOINCREMENT,
-		work_item_id     INTEGER NOT NULL,
-		section_id       TEXT NOT NULL,
-		section_label    TEXT DEFAULT '',
-		confidence       REAL NOT NULL,
-		normalized_status TEXT DEFAULT '',
-		ticket_ids       TEXT DEFAULT '',
-		duplicate_of     TEXT DEFAULT '',
-		llm_provider     TEXT DEFAULT '',
-		llm_model        TEXT DEFAULT '',
-		classified_at    DATETIME DEFAULT CURRENT_TIMESTAMP
-	);
-	CREATE INDEX IF NOT EXISTS idx_ch_work_item ON classification_history(work_item_id);
-	CREATE INDEX IF NOT EXISTS idx_ch_date ON classification_history(classified_at);
-
-	CREATE TABLE IF NOT EXISTS classification_corrections (
-		id                   INTEGER PRIMARY KEY AUTOINCREMENT,
-		work_item_id         INTEGER NOT NULL,
-		original_section_id  TEXT NOT NULL,
-		original_label       TEXT DEFAULT '',
-		corrected_section_id TEXT NOT NULL,
-		corrected_label      TEXT DEFAULT '',
-		description          TEXT DEFAULT '',
-		corrected_by         TEXT DEFAULT '',
-		corrected_at         DATETIME DEFAULT CURRENT_TIMESTAMP
-	);
-	CREATE INDEX IF NOT EXISTS idx_cc_date ON classification_corrections(corrected_at);
-	`
-	_, err = db.Exec(schema)
-	if err != nil {
+	if err := Migrate(db); err != nil {
 		return nil, err
 	}
-
-	// Migration: add author_id column if missing.
-	var colCount int
-	_ = db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('work_items') WHERE name = 'author_id'`).Scan(&colCount)
-	if colCount == 0 {
-		_, _ = db.Exec(`ALTER TABLE work_items ADD COLUMN author_id TEXT DEFAULT ''`)
-	}
-
-	// Migration: remove duplicate external items before adding uniqueness constraint.
-	_, err = db.Exec(`
-		DELETE FROM work_items
-		WHERE source_ref <> ''
-		  AND id NOT IN (
-		    SELECT MIN(id)
-		    FROM work_items
-		    WHERE source_ref <> ''
-		    GROUP BY source, source_ref
-		  )
-	`)
-	if err != nil {
-		return nil, err
-	}
-
-	// Enforce uniqueness for externally sourced references (MR/PR URL) at DB level.
-	_, err = db.Exec(`
-		CREATE UNIQUE INDEX IF NOT EXISTS idx_work_items_unique_source_ref
-		ON work_items(source, source_ref)
-		WHERE source_ref <> ''
-	`)
-	if err != nil {
-		return nil, err
-	}
-
 	return db, nil
 }
 
-func InsertWorkItem(db *sql.DB, item WorkItem) error {
-	_, err := db.Exec(
-		`INSERT OR IGNORE INTO work_items (description, author, author_id, source, source_ref, category, status, ticket_ids, reported_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		item.Description, item.Author, item.AuthorID, item.Source, item.SourceRef,
-		item.Category, item.Status, item.TicketIDs, item.ReportedAt,
-	)
-	return err
-}
-
-func InsertWorkItemReturningID(db *sql.DB, item WorkItem) (int64, error) {
-	res, err := db.Exec(
-		`INSERT OR IGNORE INTO work_items (description, author, author_id, source, source_ref, category, status, ticket_ids, reported_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		item.Description, item.Author, item.AuthorID, item.Source, item.SourceRef,
-		item.Category, item.Status, item.TicketIDs, item.ReportedAt,
-	)
-	if err != nil {
-		return 0, err
-	}
-	return res.LastInsertId()
-}
-
-func InsertWorkItemsReturningIDs(db *sql.DB, items []WorkItem) ([]int64, error) {
-	tx, err := db.Begin()
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
-
-	stmt, err := tx.Prepare(
-		`INSERT OR IGNORE INTO work_items (description, author, author_id, source, source_ref, category, status, ticket_ids, reported_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer stmt.Close()
-
-	var ids []int64
-	for _, item := range items {
-		res, err := stmt.Exec(
-			item.Description, item.Author, item.AuthorID, item.Source, item.SourceRef,
-			item.Category, item.Status, item.TicketIDs, item.ReportedAt,
-		)
-		if err != nil {
-			return nil, err
-		}
-		id, err := res.LastInsertId()
-		if err != nil {
-			return nil, err
-		}
-		ids = append(ids, id)
-	}
-	return ids, tx.Commit()
-}
-
-func InsertWorkItems(db *sql.DB, items []WorkItem) (int, error) {
-	tx, err := db.Begin()
-	if err != nil {
-		return 0, err
-	}
-	defer tx.Rollback()
-
-	stmt, err := tx.Prepare(
-		`INSERT OR IGNORE INTO work_items (description, author, author_id, source, source_ref, category, status, ticket_ids, reported_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-	)
-	if err != nil {
-		return 0, err
-	}
-	defer stmt.Close()
-
-	inserted := 0
-	for _, item := range items {
-		res, err := stmt.Exec(
-			item.Description, item.Author, item.AuthorID, item.Source, item.SourceRef,
-			item.Category, item.Status, item.TicketIDs, item.ReportedAt,
-		)
-		if err != nil {
-			return inserted, err
-		}
-		rows, err := res.RowsAffected()
-		if err != nil {
-			return inserted, err
-		}
-		if rows > 0 {
-			inserted++
-		}
-	}
-
-	return inserted, tx.Commit()
-}
-
-func SourceRefExists(db *sql.DB, sourceRef string) (bool, error) {
-	var count int
-	err := db.QueryRow("SELECT COUNT(*) FROM work_items WHERE source_ref = ?", sourceRef).Scan(&count)
-	return count > 0, err
-}
-
-func GetItemsByDateRange(db *sql.DB, from, to time.Time) ([]WorkItem, error) {
-	rows, err := db.Query(
-		`SELECT id, description, author, author_id, source, source_ref, category, status, ticket_ids, reported_at, created_at
-		 FROM work_items WHERE reported_at >= ? AND reported_at < ? ORDER BY category, author, reported_at, id`,
-		from, to,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var items []WorkItem
-	for rows.Next() {
-		var item WorkItem
-		err := rows.Scan(
-			&item.ID, &item.Description, &item.Author, &item.AuthorID, &item.Source,
-			&item.SourceRef, &item.Category, &item.Status, &item.TicketIDs,
-			&item.ReportedAt, &item.CreatedAt,
-		)
-		if err != nil {
-			return nil, err
-		}
-		items = append(items, item)
-	}
-	return items, rows.Err()
-}
-
-func FindItemsByTicketID(db *sql.DB, ticketID string) ([]WorkItem, error) {
-	rows, err := db.Query(
-		`SELECT id, description, author, author_id, source, source_ref, category, status, ticket_ids, reported_at, created_at
-		 FROM work_items
-		 WHERE ticket_ids LIKE '%' || ? || '%'
-		    OR description LIKE '[' || ? || ']%'
-		 ORDER BY reported_at DESC, id DESC`,
-		ticketID, ticketID,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var items []WorkItem
-	for rows.Next() {
-		var item WorkItem
-		err := rows.Scan(
-			&item.ID, &item.Description, &item.Author, &item.AuthorID, &item.Source,
-			&item.SourceRef, &item.Category, &item.Status, &item.TicketIDs,
-			&item.ReportedAt, &item.CreatedAt,
-		)
-		if err != nil {
-			return nil, err
-		}
-		items = append(items, item)
-	}
-	return items, rows.Err()
-}
-
-func GetInProgressItems(db *sql.DB) ([]WorkItem, error) {
-	rows, err := db.Query(
-		`SELECT id, description, author, author_id, source, source_ref, category, status, ticket_ids, reported_at, created_at
-		 FROM work_items WHERE lower(trim(status)) LIKE '%in progress%' ORDER BY reported_at DESC, id DESC`,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var items []WorkItem
-	for rows.Next() {
-		var item WorkItem
-		err := rows.Scan(
-			&item.ID, &item.Description, &item.Author, &item.AuthorID, &item.Source,
-			&item.SourceRef, &item.Category, &item.Status, &item.TicketIDs,
-			&item.ReportedAt, &item.CreatedAt,
-		)
-		if err != nil {
-			return nil, err
-		}
-		items = append(items, item)
-	}
-	return items, rows.Err()
-}
-
-func GetWorkItemByID(db *sql.DB, id int64) (WorkItem, error) {
-	var item WorkItem
-	err := db.QueryRow(
-		`SELECT id, description, author, author_id, source, source_ref, category, status, ticket_ids, reported_at, created_at
-		 FROM work_items WHERE id = ?`,
-		id,
-	).Scan(
-		&item.ID, &item.Description, &item.Author, &item.AuthorID, &item.Source,
-		&item.SourceRef, &item.Category, &item.Status, &item.TicketIDs,
-		&item.ReportedAt, &item.CreatedAt,
-	)
-	return item, err
-}
-
-func UpdateWorkItemTextAndStatus(db *sql.DB, id int64, description, status string) error {
-	_, err := db.Exec(
-		`UPDATE work_items
-		 SET description = ?, status = ?
-		 WHERE id = ?`,
-		description, status, id,
-	)
-	return err
-}
-
-func UpdateWorkItemStatus(db *sql.DB, id int64, status string) error {
-	_, err := db.Exec(
-		`UPDATE work_items
-		 SET status = ?
-		 WHERE id = ?`,
-		status, id,
-	)
-	return err
-}
-
-func DeleteWorkItemByID(db *sql.DB, id int64) error {
-	_, err := db.Exec(`DELETE FROM work_items WHERE id = ?`, id)
-	return err
-}
-
-func GetPendingSlackItemsByAuthorAndDateRange(db *sql.DB, author string, from, to time.Time) ([]WorkItem, error) {
-	rows, err := db.Query(
-		`SELECT id, description, author, author_id, source, source_ref, category, status, ticket_ids, reported_at, created_at
-		 FROM work_items
-		 WHERE author = ? AND source = 'slack' AND reported_at >= ? AND reported_at < ?
-		   AND lower(trim(status)) <> 'done'
-		 ORDER BY reported_at DESC, id DESC`,
-		author, from, to,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var items []WorkItem
-	for rows.Next() {
-		var item WorkItem
-		err := rows.Scan(
-			&item.ID, &item.Description, &item.Author, &item.AuthorID, &item.Source,
-			&item.SourceRef, &item.Category, &item.Status, &item.TicketIDs,
-			&item.ReportedAt, &item.CreatedAt,
-		)
-		if err != nil {
-			return nil, err
-		}
-		items = append(items, item)
-	}
-	return items, rows.Err()
-}
-
-func GetSlackItemsByAuthorAndDateRange(db *sql.DB, author string, from, to time.Time) ([]WorkItem, error) {
-	rows, err := db.Query(
-		`SELECT id, description, author, author_id, source, source_ref, category, status, ticket_ids, reported_at, created_at
-		 FROM work_items
-		 WHERE author = ? AND source = 'slack' AND reported_at >= ? AND reported_at < ?
-		 ORDER BY reported_at DESC, id DESC`,
-		author, from, to,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var items []WorkItem
-	for rows.Next() {
-		var item WorkItem
-		err := rows.Scan(
-			&item.ID, &item.Description, &item.Author, &item.AuthorID, &item.Source,
-			&item.SourceRef, &item.Category, &item.Status, &item.TicketIDs,
-			&item.ReportedAt, &item.CreatedAt,
-		)
-		if err != nil {
-			return nil, err
-		}
-		items = append(items, item)
-	}
-	return items, rows.Err()
-}
-
-func GetSlackAuthorsByDateRange(db *sql.DB, from, to time.Time) (map[string]bool, error) {
-	rows, err := db.Query(
-		`SELECT DISTINCT author FROM work_items
-		 WHERE reported_at >= ? AND reported_at < ? AND source = 'slack'`,
-		from, to,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	authors := make(map[string]bool)
-	for rows.Next() {
-		var author string
-		if err := rows.Scan(&author); err != nil {
-			return nil, err
-		}
-		if author != "" {
-			authors[author] = true
-		}
-	}
-	return authors, rows.Err()
-}
-
-func GetSlackAuthorIDsByDateRange(db *sql.DB, from, to time.Time) (map[string]bool, error) {
-	rows, err := db.Query(
-		`SELECT DISTINCT author_id FROM work_items
-		 WHERE reported_at >= ? AND reported_at < ? AND source = 'slack' AND author_id <> ''`,
-		from, to,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	authorIDs := make(map[string]bool)
-	for rows.Next() {
-		var authorID string
-		if err := rows.Scan(&authorID); err != nil {
-			return nil, err
-		}
-		if authorID != "" {
-			authorIDs[authorID] = true
-		}
-	}
-	return authorIDs, rows.Err()
-}
-
-func UpdateCategories(db *sql.DB, categorized map[int64]string) error {
-	tx, err := db.Begin()
-	if err != nil {
+func Migrate(db *sql.DB) error {
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
+		version    INTEGER PRIMARY KEY,
+		applied_at DATETIME NOT NULL
+	)`); err != nil {
 		return err
 	}
-	defer tx.Rollback()
-
-	stmt, err := tx.Prepare("UPDATE work_items SET category = ? WHERE id = ?")
-	if err != nil {
-		return err
-	}
-	defer stmt.Close()
-
-	for id, category := range categorized {
-		if _, err := stmt.Exec(category, id); err != nil {
-			return err
+	for _, m := range migrations {
+		if err := RunOnce(db, m.version, m.apply); err != nil {
+			return fmt.Errorf("migration %d: %w", m.version, err)
 		}
 	}
-	return tx.Commit()
+	return nil
 }
 
-func UpdateTicketIDs(db *sql.DB, ticketMap map[int64]string) error {
-	tx, err := db.Begin()
-	if err != nil {
+// RunOnce applies fn in a transaction unless version is already recorded.
+func RunOnce(db *sql.DB, version int, fn func(tx *sql.Tx) error) error {
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE version = ?`, version).Scan(&n); err != nil {
 		return err
 	}
-	defer tx.Rollback()
-
-	stmt, err := tx.Prepare("UPDATE work_items SET ticket_ids = ? WHERE id = ?")
-	if err != nil {
-		return err
-	}
-	defer stmt.Close()
-
-	for id, tickets := range ticketMap {
-		if _, err := stmt.Exec(tickets, id); err != nil {
-			return err
-		}
-	}
-	return tx.Commit()
-}
-
-func UpdateWorkItemCategory(db *sql.DB, id int64, category string) error {
-	_, err := db.Exec("UPDATE work_items SET category = ? WHERE id = ?", category, id)
-	return err
-}
-
-// --- Classification History ---
-
-func InsertClassificationHistory(db *sql.DB, records []ClassificationRecord) error {
-	if len(records) == 0 {
+	if n > 0 {
 		return nil
 	}
 	tx, err := db.Begin()
@@ -502,364 +89,167 @@ func InsertClassificationHistory(db *sql.DB, records []ClassificationRecord) err
 		return err
 	}
 	defer tx.Rollback()
-
-	stmt, err := tx.Prepare(
-		`INSERT INTO classification_history
-		 (work_item_id, section_id, section_label, confidence, normalized_status, ticket_ids, duplicate_of, llm_provider, llm_model)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-	)
-	if err != nil {
+	if err := fn(tx); err != nil {
 		return err
 	}
-	defer stmt.Close()
-
-	for _, r := range records {
-		if _, err := stmt.Exec(
-			r.WorkItemID, r.SectionID, r.SectionLabel, r.Confidence,
-			r.NormalizedStatus, r.TicketIDs, r.DuplicateOf,
-			r.LLMProvider, r.LLMModel,
-		); err != nil {
-			return err
-		}
+	if _, err := tx.Exec(`INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)`, version, time.Now()); err != nil {
+		return err
 	}
 	return tx.Commit()
 }
 
-func GetLatestClassification(db *sql.DB, workItemID int64) (ClassificationRecord, error) {
-	var r ClassificationRecord
-	err := db.QueryRow(
-		`SELECT id, work_item_id, section_id, section_label, confidence,
-		        normalized_status, ticket_ids, duplicate_of, llm_provider, llm_model, classified_at
-		 FROM classification_history
-		 WHERE work_item_id = ?
-		 ORDER BY classified_at DESC LIMIT 1`,
-		workItemID,
-	).Scan(
-		&r.ID, &r.WorkItemID, &r.SectionID, &r.SectionLabel, &r.Confidence,
-		&r.NormalizedStatus, &r.TicketIDs, &r.DuplicateOf,
-		&r.LLMProvider, &r.LLMModel, &r.ClassifiedAt,
-	)
-	return r, err
+func MigrationApplied(db *sql.DB, version int) (bool, error) {
+	var n int
+	err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE version = ?`, version).Scan(&n)
+	return n > 0, err
 }
 
-// GetLatestClassificationsForItems returns the most recent classification for each
-// of the given work item IDs. Items with no classification are omitted from the result.
-func GetLatestClassificationsForItems(db *sql.DB, itemIDs []int64) (map[int64]ClassificationRecord, error) {
-	if len(itemIDs) == 0 {
-		return nil, nil
-	}
-	// Build query with placeholders
-	placeholders := make([]string, len(itemIDs))
-	args := make([]interface{}, len(itemIDs))
-	for i, id := range itemIDs {
-		placeholders[i] = "?"
-		args[i] = id
-	}
-	query := fmt.Sprintf(
-		`SELECT ch.id, ch.work_item_id, ch.section_id, ch.section_label, ch.confidence,
-		        ch.normalized_status, ch.ticket_ids, ch.duplicate_of, ch.llm_provider, ch.llm_model, ch.classified_at
-		 FROM classification_history ch
-		 INNER JOIN (
-		   SELECT work_item_id, MAX(classified_at) AS max_at
-		   FROM classification_history
-		   WHERE work_item_id IN (%s)
-		   GROUP BY work_item_id
-		 ) latest ON ch.work_item_id = latest.work_item_id AND ch.classified_at = latest.max_at`,
-		strings.Join(placeholders, ","),
-	)
-	rows, err := db.Query(query, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	result := make(map[int64]ClassificationRecord)
-	for rows.Next() {
-		var r ClassificationRecord
-		if err := rows.Scan(
-			&r.ID, &r.WorkItemID, &r.SectionID, &r.SectionLabel, &r.Confidence,
-			&r.NormalizedStatus, &r.TicketIDs, &r.DuplicateOf,
-			&r.LLMProvider, &r.LLMModel, &r.ClassifiedAt,
-		); err != nil {
-			return nil, err
-		}
-		result[r.WorkItemID] = r
-	}
-	return result, rows.Err()
+func columnExists(q querier, table, column string) (bool, error) {
+	var n int
+	err := q.QueryRow(`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?`, table, column).Scan(&n)
+	return n > 0, err
 }
 
-// GetAllSectionLabels returns all distinct section_id → section_label pairs from classification history.
-func GetAllSectionLabels(db *sql.DB) (map[string]string, error) {
-	rows, err := db.Query(
-		`SELECT DISTINCT section_id, section_label FROM classification_history WHERE section_id != '' ORDER BY section_id`)
-	if err != nil {
-		return nil, err
+func migrateBaseWorkItems(tx *sql.Tx) error {
+	if _, err := tx.Exec(`
+	CREATE TABLE IF NOT EXISTS work_items (
+		id          INTEGER PRIMARY KEY AUTOINCREMENT,
+		description TEXT NOT NULL,
+		author      TEXT NOT NULL,
+		author_id   TEXT DEFAULT '',
+		source      TEXT NOT NULL DEFAULT 'slack',
+		status      TEXT NOT NULL DEFAULT 'in progress',
+		ticket_ids  TEXT DEFAULT '',
+		reported_at DATETIME NOT NULL,
+		created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
+	CREATE INDEX IF NOT EXISTS idx_work_items_reported_at ON work_items(reported_at);
+	CREATE INDEX IF NOT EXISTS idx_work_items_author ON work_items(author);
+	`); err != nil {
+		return err
 	}
-	defer rows.Close()
-	result := make(map[string]string)
-	for rows.Next() {
-		var id, label string
-		if err := rows.Scan(&id, &label); err != nil {
-			return nil, err
-		}
-		if label == "" {
-			label = id
-		}
-		result[id] = label
+	// Databases created before author_id existed.
+	ok, err := columnExists(tx, "work_items", "author_id")
+	if err != nil || ok {
+		return err
 	}
-	return result, rows.Err()
-}
-
-// RenameSectionLabel updates the display label for all classification records with the given section_id.
-// This is display-only — the section_id (used by LLM) is unchanged.
-func RenameSectionLabel(db *sql.DB, sectionID, newLabel string) error {
-	_, err := db.Exec(
-		"UPDATE classification_history SET section_label = ? WHERE section_id = ?",
-		newLabel, sectionID)
+	_, err = tx.Exec(`ALTER TABLE work_items ADD COLUMN author_id TEXT DEFAULT ''`)
 	return err
 }
 
-// --- Classification Corrections ---
-
-func InsertClassificationCorrection(db *sql.DB, c ClassificationCorrection) error {
-	_, err := db.Exec(
-		`INSERT INTO classification_corrections
-		 (work_item_id, original_section_id, original_label, corrected_section_id, corrected_label, description, corrected_by)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		c.WorkItemID, c.OriginalSectionID, c.OriginalLabel,
-		c.CorrectedSectionID, c.CorrectedLabel, c.Description, c.CorrectedBy,
-	)
+func migrateTaxonomy(tx *sql.Tx) error {
+	_, err := tx.Exec(`
+	CREATE TABLE taxonomy_nodes (
+		id          INTEGER PRIMARY KEY AUTOINCREMENT,
+		parent_id   INTEGER REFERENCES taxonomy_nodes(id),
+		level       TEXT NOT NULL CHECK (level IN ('area','category','section')),
+		name        TEXT NOT NULL,
+		description TEXT NOT NULL DEFAULT '',
+		sort_order  INTEGER NOT NULL,
+		retired_at  DATETIME,
+		created_at  DATETIME NOT NULL,
+		updated_at  DATETIME NOT NULL
+	);
+	CREATE INDEX idx_tax_parent ON taxonomy_nodes(parent_id, sort_order);
+	`)
 	return err
 }
 
-// ReclassifyItem atomically records a correction, updates the item's category,
-// and inserts a new classification_history record so the web UI shows the change immediately.
-func ReclassifyItem(db *sql.DB, c ClassificationCorrection, newCategory string) error {
-	tx, err := db.Begin()
-	if err != nil {
-		return fmt.Errorf("begin reclassify tx: %w", err)
+func migratePlacement(tx *sql.Tx) error {
+	stmts := []string{
+		`ALTER TABLE work_items ADD COLUMN status_note TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE work_items ADD COLUMN done_at DATETIME`,
+		`ALTER TABLE work_items ADD COLUMN section_id INTEGER REFERENCES taxonomy_nodes(id)`,
+		`ALTER TABLE work_items ADD COLUMN placed_by TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE work_items ADD COLUMN placement_confidence REAL`,
+		`ALTER TABLE work_items ADD COLUMN llm_section_id INTEGER`,
+		`ALTER TABLE work_items ADD COLUMN filing_state TEXT NOT NULL DEFAULT 'filed'`,
+		`ALTER TABLE work_items ADD COLUMN undetermined_reason TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE work_items ADD COLUMN updated_at DATETIME`,
+		`ALTER TABLE work_items ADD COLUMN import_key TEXT`,
+		`CREATE UNIQUE INDEX idx_work_items_import_key ON work_items(import_key) WHERE import_key IS NOT NULL`,
+		`CREATE INDEX idx_work_items_open ON work_items(done_at, section_id)`,
+		`CREATE TABLE placement_history (
+			id             INTEGER PRIMARY KEY AUTOINCREMENT,
+			work_item_id   INTEGER NOT NULL REFERENCES work_items(id) ON DELETE CASCADE,
+			from_section   INTEGER,
+			from_placed_by TEXT NOT NULL DEFAULT '',
+			to_section     INTEGER,
+			placed_by      TEXT NOT NULL,
+			model_section  INTEGER,
+			confidence     REAL,
+			reason         TEXT NOT NULL,
+			actor_id       TEXT NOT NULL DEFAULT '',
+			created_at     DATETIME NOT NULL
+		)`,
+		`CREATE INDEX idx_ph_item ON placement_history(work_item_id, id)`,
+		`CREATE INDEX idx_ph_date ON placement_history(created_at)`,
+		`CREATE TABLE model_judgments (
+			id            INTEGER PRIMARY KEY AUTOINCREMENT,
+			work_item_id  INTEGER NOT NULL,
+			kind          TEXT NOT NULL,
+			subject       TEXT NOT NULL DEFAULT '',
+			answer_json   TEXT NOT NULL,
+			model         TEXT NOT NULL,
+			input_tokens  INTEGER NOT NULL DEFAULT 0,
+			output_tokens INTEGER NOT NULL DEFAULT 0,
+			latency_ms    INTEGER NOT NULL DEFAULT 0,
+			created_at    DATETIME NOT NULL
+		)`,
+		`CREATE INDEX idx_mj_item ON model_judgments(work_item_id, kind)`,
+		`CREATE INDEX idx_mj_date ON model_judgments(created_at)`,
 	}
-	defer tx.Rollback()
-
-	_, err = tx.Exec(
-		`INSERT INTO classification_corrections
-		 (work_item_id, original_section_id, original_label, corrected_section_id, corrected_label, description, corrected_by)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		c.WorkItemID, c.OriginalSectionID, c.OriginalLabel,
-		c.CorrectedSectionID, c.CorrectedLabel, c.Description, c.CorrectedBy,
-	)
-	if err != nil {
-		return fmt.Errorf("insert correction: %w", err)
-	}
-
-	_, err = tx.Exec("UPDATE work_items SET category = ? WHERE id = ?", newCategory, c.WorkItemID)
-	if err != nil {
-		return fmt.Errorf("update category: %w", err)
-	}
-
-	// Insert a classification_history record so GetLatestClassificationsForItems
-	// returns the corrected section on next page load
-	_, err = tx.Exec(
-		`INSERT INTO classification_history
-		 (work_item_id, section_id, section_label, confidence, llm_provider, llm_model)
-		 VALUES (?, ?, ?, 1.0, 'manual', 'user')`,
-		c.WorkItemID, c.CorrectedSectionID, c.CorrectedLabel,
-	)
-	if err != nil {
-		return fmt.Errorf("insert classification history: %w", err)
-	}
-
-	return tx.Commit()
-}
-
-func GetRecentCorrections(db *sql.DB, since time.Time, limit int) ([]ClassificationCorrection, error) {
-	rows, err := db.Query(
-		`SELECT id, work_item_id, original_section_id, original_label,
-		        corrected_section_id, corrected_label, description, corrected_by, corrected_at
-		 FROM classification_corrections
-		 WHERE corrected_at >= ?
-		 ORDER BY corrected_at DESC
-		 LIMIT ?`,
-		since, limit,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var out []ClassificationCorrection
-	for rows.Next() {
-		var c ClassificationCorrection
-		if err := rows.Scan(
-			&c.ID, &c.WorkItemID, &c.OriginalSectionID, &c.OriginalLabel,
-			&c.CorrectedSectionID, &c.CorrectedLabel, &c.Description,
-			&c.CorrectedBy, &c.CorrectedAt,
-		); err != nil {
-			return nil, err
-		}
-		out = append(out, c)
-	}
-	return out, rows.Err()
-}
-
-func GetClassifiedItemsWithSections(db *sql.DB, since time.Time, limit int) ([]historicalItem, error) {
-	rows, err := db.Query(
-		`SELECT w.description, ch.section_id, ch.section_label
-		 FROM classification_history ch
-		 JOIN work_items w ON w.id = ch.work_item_id
-		 WHERE ch.confidence >= 0.70 AND ch.classified_at >= ?
-		 ORDER BY ch.classified_at DESC, ch.id DESC
-		 LIMIT ?`,
-		since, limit,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var out []historicalItem
-	for rows.Next() {
-		var h historicalItem
-		if err := rows.Scan(&h.Description, &h.SectionID, &h.SectionLabel); err != nil {
-			return nil, err
-		}
-		out = append(out, h)
-	}
-	return out, rows.Err()
-}
-
-func CountCorrectionsByPhrase(db *sql.DB, description, correctedSectionID string) (int, error) {
-	var count int
-	err := db.QueryRow(
-		`SELECT COUNT(*) FROM classification_corrections
-		 WHERE LOWER(TRIM(description)) = LOWER(TRIM(?))
-		   AND corrected_section_id = ?`,
-		description, correctedSectionID,
-	).Scan(&count)
-	return count, err
-}
-
-// --- Classification Stats ---
-
-func GetClassificationStats(db *sql.DB, since time.Time) (ClassificationStats, error) {
-	var s ClassificationStats
-	err := db.QueryRow(
-		`SELECT COUNT(*), COALESCE(AVG(confidence), 0),
-		        COALESCE(SUM(CASE WHEN confidence < 0.50 THEN 1 ELSE 0 END), 0),
-		        COALESCE(SUM(CASE WHEN confidence >= 0.50 AND confidence < 0.70 THEN 1 ELSE 0 END), 0),
-		        COALESCE(SUM(CASE WHEN confidence >= 0.70 AND confidence < 0.90 THEN 1 ELSE 0 END), 0),
-		        COALESCE(SUM(CASE WHEN confidence >= 0.90 THEN 1 ELSE 0 END), 0)
-		 FROM classification_history WHERE classified_at >= ?`,
-		since,
-	).Scan(&s.TotalClassifications, &s.AvgConfidence,
-		&s.BucketBelow50, &s.Bucket50to70, &s.Bucket70to90, &s.Bucket90Plus)
-	if err != nil {
-		return s, err
-	}
-
-	err = db.QueryRow(
-		`SELECT COUNT(*) FROM classification_corrections WHERE corrected_at >= ?`,
-		since,
-	).Scan(&s.TotalCorrections)
-	return s, err
-}
-
-type SectionCorrectionStat struct {
-	OriginalSectionID string
-	OriginalLabel     string
-	CorrectionCount   int
-}
-
-func GetCorrectionsBySection(db *sql.DB, since time.Time) ([]SectionCorrectionStat, error) {
-	rows, err := db.Query(
-		`SELECT original_section_id, COALESCE(MAX(original_label), ''), COUNT(*) as cnt
-		 FROM classification_corrections
-		 WHERE corrected_at >= ?
-		 GROUP BY original_section_id
-		 ORDER BY cnt DESC
-		 LIMIT 10`,
-		since,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var out []SectionCorrectionStat
-	for rows.Next() {
-		var s SectionCorrectionStat
-		if err := rows.Scan(&s.OriginalSectionID, &s.OriginalLabel, &s.CorrectionCount); err != nil {
-			return nil, err
-		}
-		out = append(out, s)
-	}
-	return out, rows.Err()
-}
-
-type WeeklyTrend struct {
-	WeekStart       string
-	Classifications int
-	Corrections     int
-	AvgConfidence   float64
-}
-
-func GetWeeklyClassificationTrend(db *sql.DB, since time.Time) ([]WeeklyTrend, error) {
-	rows, err := db.Query(
-		`SELECT
-		    strftime('%Y-%m-%d', classified_at, 'weekday 0', '-6 days') as week_start,
-		    COUNT(*) as classifications,
-		    COALESCE(AVG(confidence), 0) as avg_confidence
-		 FROM classification_history
-		 WHERE classified_at >= ?
-		 GROUP BY week_start
-		 ORDER BY week_start DESC`,
-		since,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var trends []WeeklyTrend
-	for rows.Next() {
-		var t WeeklyTrend
-		if err := rows.Scan(&t.WeekStart, &t.Classifications, &t.AvgConfidence); err != nil {
-			return nil, err
-		}
-		trends = append(trends, t)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-
-	// Load correction counts per week.
-	corrRows, err := db.Query(
-		`SELECT
-		    strftime('%Y-%m-%d', corrected_at, 'weekday 0', '-6 days') as week_start,
-		    COUNT(*) as corrections
-		 FROM classification_corrections
-		 WHERE corrected_at >= ?
-		 GROUP BY week_start`,
-		since,
-	)
-	if err != nil {
-		return trends, nil // non-fatal
-	}
-	defer corrRows.Close()
-
-	corrMap := make(map[string]int)
-	for corrRows.Next() {
-		var ws string
-		var cnt int
-		if err := corrRows.Scan(&ws, &cnt); err != nil {
-			continue
-		}
-		corrMap[ws] = cnt
-	}
-	for i := range trends {
-		if cnt, ok := corrMap[trends[i].WeekStart]; ok {
-			trends[i].Corrections = cnt
+	for _, s := range stmts {
+		if _, err := tx.Exec(s); err != nil {
+			return fmt.Errorf("%s: %w", s, err)
 		}
 	}
-	return trends, nil
+	return nil
+}
+
+func migrateSupportTables(tx *sql.Tx) error {
+	_, err := tx.Exec(`
+	CREATE TABLE code_changes (
+		id            INTEGER PRIMARY KEY AUTOINCREMENT,
+		source        TEXT NOT NULL,
+		source_ref    TEXT NOT NULL,
+		title         TEXT NOT NULL,
+		author        TEXT NOT NULL,
+		author_id     TEXT NOT NULL DEFAULT '',
+		ticket_ids    TEXT NOT NULL DEFAULT '',
+		state         TEXT NOT NULL,
+		merged_at     DATETIME,
+		work_item_id  INTEGER REFERENCES work_items(id) ON DELETE SET NULL,
+		link_kind     TEXT NOT NULL,
+		suggested_for INTEGER,
+		fetched_at    DATETIME NOT NULL,
+		UNIQUE (source, source_ref)
+	);
+	CREATE INDEX idx_cc_item ON code_changes(work_item_id);
+
+	CREATE TABLE jobs (
+		id           INTEGER PRIMARY KEY AUTOINCREMENT,
+		kind         TEXT NOT NULL,
+		work_item_id INTEGER,
+		payload      TEXT NOT NULL DEFAULT '{}',
+		state        TEXT NOT NULL DEFAULT 'queued',
+		attempts     INTEGER NOT NULL DEFAULT 0,
+		run_after    DATETIME NOT NULL,
+		last_error   TEXT NOT NULL DEFAULT '',
+		created_at   DATETIME NOT NULL,
+		updated_at   DATETIME NOT NULL
+	);
+	CREATE INDEX idx_jobs_due ON jobs(state, run_after);
+	CREATE INDEX idx_jobs_item ON jobs(work_item_id, state);
+
+	CREATE TABLE published_reports (
+		week_start         TEXT PRIMARY KEY,
+		team_md            TEXT NOT NULL,
+		boss_md            TEXT NOT NULL,
+		undetermined_count INTEGER NOT NULL,
+		published_by       TEXT NOT NULL,
+		published_at       DATETIME NOT NULL
+	);
+	`)
+	return err
 }

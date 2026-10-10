@@ -28,7 +28,11 @@ templ Layout(title string, csrfToken string, isManager bool, activePage string) 
 			<nav>
 				<span class="logo">ReportBot</span>
 				<div class="nav-links">
-					<a href="/" class={ templ.KV("active", activePage == "editor") }>Report Editor</a>
+					<a href="/" class={ templ.KV("active", activePage == "live") }>Live report</a>
+					<a href="/published" class={ templ.KV("active", activePage == "published") }>Published</a>
+					if isManager {
+						<a href="/taxonomy" class={ templ.KV("active", activePage == "taxonomy") }>Taxonomy</a>
+					}
 				</div>
 				if isManager {
 					<span class="role-badge manager">Manager</span>

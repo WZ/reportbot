@@ -7,14 +7,15 @@ import (
 	"log"
 	"math/rand"
 	"net/http"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"reportbot/internal/domain"
+	"reportbot/internal/filing"
 	"reportbot/internal/report"
+	"reportbot/internal/storage/sqlite"
 	"reportbot/internal/web"
 	"reportbot/internal/web/middleware"
 	"reportbot/internal/web/templates"
@@ -22,23 +23,13 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
-// buildResultCache caches BuildResult per week to avoid re-running the LLM pipeline
-// on every HTMX partial swap. Key: Monday date string, Value: cachedResult.
-var buildResultCache sync.Map
-
-type cachedResult struct {
-	result  web.BuildResult
-	created time.Time
-}
-
-// generateJobs tracks async report generation jobs.
+// generateJobs tracks async publish jobs.
 var generateJobs sync.Map // key: jobID string, value: *generateJob
 
 type generateJob struct {
 	mu      sync.Mutex
 	status  string // "running", "done", "error"
 	message string
-	path    string
 }
 
 func (j *generateJob) update(status, message string) {
@@ -48,417 +39,374 @@ func (j *generateJob) update(status, message string) {
 	j.message = message
 }
 
-func (j *generateJob) setDone(message, path string) {
+func (j *generateJob) read() (status, message string) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	j.status = "done"
-	j.message = message
-	j.path = path
+	return j.status, j.message
 }
 
-func (j *generateJob) read() (status, message, path string) {
-	j.mu.Lock()
-	defer j.mu.Unlock()
-	return j.status, j.message, j.path
-}
-
-func invalidateCache() {
-	buildResultCache = sync.Map{}
-}
-
-// ReportEditorPage serves the main editor page.
-func ReportEditorPage(cfg web.Config, db *sql.DB) http.HandlerFunc {
+// ReportPage serves the live Weekly Report.
+func ReportPage(cfg web.Config, db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		isManager := middleware.IsManager(r)
-		userID := middleware.UserID(r)
-
-		weekParam := r.URL.Query().Get("week")
-		monday, weekLabel, prevWeek, nextWeek := resolveWeek(cfg, weekParam)
-
-		from := monday
-		to := monday.AddDate(0, 0, 7)
-
-		items, err := web.GetItemsByDateRange(db, from, to)
+		monday, label, prevWeek, nextWeek := resolveWeek(cfg, r.URL.Query().Get("week"))
+		body, err := loadReportBody(cfg, db, r, monday)
 		if err != nil {
-			log.Printf("Error loading items: %v", err)
-			http.Error(w, "Failed to load items", http.StatusInternalServerError)
+			log.Printf("Error loading live report: %v", err)
+			http.Error(w, "Failed to load the report", http.StatusInternalServerError)
 			return
 		}
-
-		// Non-managers see only their own items
-		if !isManager {
-			items = filterByAuthorID(items, userID)
+		data := templates.ReportPageData{
+			WeekLabel: label,
+			WeekParam: monday.Format("2006-01-02"),
+			PrevWeek:  prevWeek,
+			NextWeek:  nextWeek,
+			IsManager: middleware.IsManager(r),
+			CSRFToken: web.GetCSRFToken(r),
+			Body:      body,
 		}
-
-		// Decide whether to run LLM classification or use existing DB classifications
-		doClassify := r.URL.Query().Get("classify") == "1"
-		var sections []templates.SectionData
-		var avgConf float64
-		var hasClassifications bool
-
-		if doClassify {
-			// Explicit classify request — run LLM pipeline (expensive)
-			log.Printf("Running LLM classification for week %s (explicit request)", monday.Format("2006-01-02"))
-			sections, avgConf = classifyWithLLM(cfg, db, items, monday)
-			hasClassifications = len(sections) > 0
-		} else {
-			// Default — use existing classifications from DB (fast, no LLM)
-			sections, avgConf, hasClassifications = buildSectionsFromDB(db, items)
-		}
-
-		// Count unique authors
-		authorSet := make(map[string]bool)
-		for _, item := range items {
-			authorSet[strings.TrimSpace(item.Author)] = true
-		}
-
-		mode := r.URL.Query().Get("mode")
-		if mode != "boss" {
-			mode = "team"
-		}
-
-		// Build allSections for reclassify dropdown (includes all known sections, even empty ones)
-		allSections := buildAllSections(db, sections)
-
-		data := templates.EditorData{
-			TeamName:           cfg.TeamName,
-			WeekLabel:          weekLabel,
-			WeekParam:          monday.Format("2006-01-02"),
-			PrevWeek:           prevWeek,
-			NextWeek:           nextWeek,
-			ItemCount:          len(items),
-			AuthorCount:        len(authorSet),
-			AvgConf:            avgConf,
-			Sections:           sections,
-			AllSections:        allSections,
-			IsManager:          isManager,
-			CSRFToken:          web.GetCSRFToken(r),
-			Mode:               mode,
-			HasClassifications: hasClassifications,
-		}
-
-		if err := templates.ReportEditor(data).Render(r.Context(), w); err != nil {
-			log.Printf("Error rendering report editor: %v", err)
+		if err := templates.ReportPage(data).Render(r.Context(), w); err != nil {
+			log.Printf("Error rendering live report: %v", err)
 		}
 	}
 }
 
-// PreviewMarkdown renders the report as markdown for the preview panel.
-// Moved to manager-only routes to prevent non-manager data leak.
+// ReportBody returns the report body partial, or 204 when nothing changed since version v.
+func ReportBody(cfg web.Config, db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		version, err := web.ReportVersion(db)
+		if err != nil {
+			log.Printf("Error reading report version: %v", err)
+			http.Error(w, "Failed to load the report", http.StatusInternalServerError)
+			return
+		}
+		if version == r.URL.Query().Get("v") {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		monday, _, _, _ := resolveWeek(cfg, r.URL.Query().Get("week"))
+		body, err := loadReportBody(cfg, db, r, monday)
+		if err != nil {
+			log.Printf("Error loading live report: %v", err)
+			http.Error(w, "Failed to load the report", http.StatusInternalServerError)
+			return
+		}
+		if err := templates.ReportBody(body).Render(r.Context(), w); err != nil {
+			log.Printf("Error rendering report body: %v", err)
+		}
+	}
+}
+
+// loadReportBody reads the version first so a change made while loading shows on the next poll.
+func loadReportBody(cfg web.Config, db *sql.DB, r *http.Request, monday time.Time) (templates.ReportBodyData, error) {
+	version, err := web.ReportVersion(db)
+	if err != nil {
+		return templates.ReportBodyData{}, err
+	}
+	live, err := web.LoadRange(db, monday, monday.AddDate(0, 0, 7))
+	if err != nil {
+		return templates.ReportBodyData{}, err
+	}
+	groups := sectionGroups(live.Taxonomy)
+	toItems := func(items []web.WorkItem) []templates.ItemData {
+		out := make([]templates.ItemData, 0, len(items))
+		for _, it := range items {
+			out = append(out, itemData(cfg, it, canEdit(r, it), groups))
+		}
+		return out
+	}
+	body := templates.ReportBodyData{
+		WeekParam:    monday.Format("2006-01-02"),
+		Version:      version,
+		ItemCount:    live.View.ItemCount(),
+		Undetermined: toItems(live.View.Undetermined),
+	}
+	for _, a := range live.View.Areas {
+		area := templates.AreaData{Name: a.Name}
+		for _, c := range a.Categories {
+			cat := templates.CategoryData{Name: c.Name, Path: a.Name + domain.PathSeparator + c.Name, Items: toItems(c.Items)}
+			for _, s := range c.Sections {
+				cat.Sections = append(cat.Sections, templates.SectionData{Name: s.Section.Label(), Path: s.Section.Path(), Items: toItems(s.Items)})
+			}
+			area.Categories = append(area.Categories, cat)
+		}
+		body.Areas = append(body.Areas, area)
+	}
+	return body, nil
+}
+
+// PreviewMarkdown renders the live view as team or boss markdown.
 func PreviewMarkdown(cfg web.Config, db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		weekParam := r.URL.Query().Get("week")
-		monday, _, _, _ := resolveWeek(cfg, weekParam)
-
-		from := monday
-		to := monday.AddDate(0, 0, 7)
-
-		items, err := web.GetItemsByDateRange(db, from, to)
+		monday, _, _, _ := resolveWeek(cfg, r.URL.Query().Get("week"))
+		live, err := web.LoadRange(db, monday, monday.AddDate(0, 0, 7))
 		if err != nil {
-			log.Printf("Error loading items for preview: %v", err)
-			renderPreviewError(r, w, "Error loading items. Check server logs for details.")
+			log.Printf("Error loading report for preview: %v", err)
+			if err := templates.MarkdownPreviewRaw("Error loading the report. Check server logs for details.").Render(r.Context(), w); err != nil {
+				log.Printf("Error rendering preview error: %v", err)
+			}
 			return
 		}
-
-		// Non-managers see only their own items in preview too
-		if !middleware.IsManager(r) {
-			items = filterByAuthorID(items, middleware.UserID(r))
-		}
-
-		corrections, err := web.GetRecentCorrections(db, monday.AddDate(0, -1, 0), 200)
-		if err != nil {
-			log.Printf("Warning: failed to load corrections for preview (proceeding without): %v", err)
-		}
-		historicalItems, err := web.GetClassifiedItemsWithSections(db, monday.AddDate(0, -3, 0), 500)
-		if err != nil {
-			log.Printf("Warning: failed to load historical items for preview (proceeding without): %v", err)
-		}
-
-		result, err := web.BuildReportsFromLast(cfg, items, monday, corrections, historicalItems)
-		if err != nil {
-			log.Printf("Error building report for preview: %v", err)
-			renderPreviewError(r, w, "Error building report. Check server logs for details.")
-			return
-		}
-
-		mode := r.URL.Query().Get("mode")
-		if mode != "boss" {
-			mode = "team"
-		}
-
-		md := web.RenderMarkdownByMode(result.Template, mode)
-		htmlContent := simpleMarkdownToHTML(md)
-		if err := templates.MarkdownPreviewHTML(htmlContent).Render(r.Context(), w); err != nil {
+		md := report.RenderMarkdownByMode(live.View, r.URL.Query().Get("mode"))
+		if err := templates.MarkdownPreviewHTML(simpleMarkdownToHTML(md)).Render(r.Context(), w); err != nil {
 			log.Printf("Error rendering markdown preview: %v", err)
 		}
 	}
 }
 
-func renderPreviewError(r *http.Request, w http.ResponseWriter, msg string) {
-	if err := templates.MarkdownPreviewRaw(msg).Render(r.Context(), w); err != nil {
-		log.Printf("Error rendering preview error: %v", err)
+// canEdit allows the Work Item's owner and managers.
+func canEdit(r *http.Request, item web.WorkItem) bool {
+	if middleware.IsManager(r) {
+		return true
+	}
+	if item.AuthorID != "" {
+		return item.AuthorID == middleware.UserID(r)
+	}
+	name := strings.TrimSpace(middleware.UserName(r))
+	return name != "" && strings.EqualFold(strings.TrimSpace(item.Author), name)
+}
+
+// loadEditableItem resolves {id} and writes the error response when the viewer may not edit it.
+func loadEditableItem(w http.ResponseWriter, r *http.Request, db *sql.DB) (web.WorkItem, bool) {
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		http.Error(w, "Invalid item ID", http.StatusBadRequest)
+		return web.WorkItem{}, false
+	}
+	item, err := web.GetWorkItemByID(db, id)
+	if err == sql.ErrNoRows {
+		http.Error(w, "Work Item not found", http.StatusNotFound)
+		return item, false
+	}
+	if err != nil {
+		log.Printf("Error loading item %d: %v", id, err)
+		http.Error(w, "Failed to load Work Item", http.StatusInternalServerError)
+		return item, false
+	}
+	if !canEdit(r, item) {
+		http.Error(w, "Forbidden: only the author or a manager can change this Work Item", http.StatusForbidden)
+		return item, false
+	}
+	return item, true
+}
+
+// renderItem renders the item's row, or its edit form when edit is set.
+func renderItem(w http.ResponseWriter, r *http.Request, cfg web.Config, db *sql.DB, id int64, edit bool) {
+	item, err := web.GetWorkItemByID(db, id)
+	if err != nil {
+		log.Printf("Error reloading item %d: %v", id, err)
+		http.Error(w, "Failed to load Work Item", http.StatusInternalServerError)
+		return
+	}
+	tax, err := web.LoadTaxonomy(db)
+	if err != nil {
+		log.Printf("Error loading taxonomy: %v", err)
+		http.Error(w, "Failed to load Taxonomy", http.StatusInternalServerError)
+		return
+	}
+	data := itemData(cfg, item, true, sectionGroups(tax))
+	if edit {
+		err = templates.ItemEditForm(data, domain.Statuses).Render(r.Context(), w)
+	} else {
+		err = templates.ItemRow(data).Render(r.Context(), w)
+	}
+	if err != nil {
+		log.Printf("Error rendering item %d: %v", id, err)
 	}
 }
 
-// ReclassifyItemHandler moves an item to a different section.
-func ReclassifyItemHandler(cfg web.Config, db *sql.DB) http.HandlerFunc {
+// reportChanged makes the page refresh its report body after the response is swapped in.
+func reportChanged(w http.ResponseWriter) {
+	w.Header().Set("HX-Trigger-After-Settle", "report-changed")
+}
+
+func EditItemForm(cfg web.Config, db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		itemID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
-		if err != nil {
-			http.Error(w, "Invalid item ID", http.StatusBadRequest)
-			return
+		if item, ok := loadEditableItem(w, r, db); ok {
+			renderItem(w, r, cfg, db, item.ID, true)
 		}
-
-		newSectionID := r.FormValue("section_id")
-		if newSectionID == "" {
-			http.Error(w, "Missing section_id", http.StatusBadRequest)
-			return
-		}
-
-		item, err := web.GetWorkItemByID(db, itemID)
-		if err != nil {
-			if err == sql.ErrNoRows {
-				http.Error(w, "Item not found", http.StatusNotFound)
-			} else {
-				log.Printf("DB error fetching item %d: %v", itemID, err)
-				http.Error(w, "Failed to load item", http.StatusInternalServerError)
-			}
-			return
-		}
-
-		// Look up section label for the new section
-		labels, _ := web.GetAllSectionLabels(db)
-		newLabel := newSectionID
-		if l, ok := labels[newSectionID]; ok {
-			newLabel = l
-		}
-
-		correction := web.ClassificationCorrection{
-			WorkItemID:         item.ID,
-			OriginalSectionID:  item.Category,
-			CorrectedSectionID: newSectionID,
-			CorrectedLabel:     newLabel,
-			Description:        item.Description,
-			CorrectedBy:        middleware.UserID(r),
-		}
-
-		if err := web.ReclassifyItem(db, correction, newSectionID); err != nil {
-			log.Printf("Reclassify error: %v", err)
-			http.Error(w, "Failed to reclassify", http.StatusInternalServerError)
-			return
-		}
-
-		invalidateCache()
-
-		// Retarget to the item row and remove it (it moved to a different section)
-		w.Header().Set("HX-Retarget", fmt.Sprintf("#item-%d", itemID))
-		w.Header().Set("HX-Reswap", "delete")
-		w.WriteHeader(http.StatusOK)
 	}
 }
 
-// UpdateItemHandler updates an item's description and status.
-func UpdateItemHandler(db *sql.DB) http.HandlerFunc {
+func ViewItemRow(cfg web.Config, db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		itemID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
-		if err != nil {
-			http.Error(w, "Invalid item ID", http.StatusBadRequest)
+		if item, ok := loadEditableItem(w, r, db); ok {
+			renderItem(w, r, cfg, db, item.ID, false)
+		}
+	}
+}
+
+// UpdateItem saves text, Status, Status Note and tickets. Picking another Section is a
+// person's Placement; otherwise changed text sends the Work Item back for filing.
+func UpdateItem(cfg web.Config, db *sql.DB, wake func()) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		item, ok := loadEditableItem(w, r, db)
+		if !ok {
 			return
 		}
-
 		desc := strings.TrimSpace(r.FormValue("description"))
-		status := strings.TrimSpace(r.FormValue("status"))
-
+		status := r.FormValue("status")
 		if desc == "" {
-			http.Error(w, "Description cannot be empty", http.StatusBadRequest)
+			http.Error(w, "Description is required", http.StatusBadRequest)
 			return
 		}
-
-		if err := web.UpdateWorkItemTextAndStatus(db, itemID, desc, status); err != nil {
-			log.Printf("Update item error: %v", err)
-			http.Error(w, "Failed to update item", http.StatusInternalServerError)
+		if !domain.IsStatus(status) {
+			http.Error(w, "Invalid status", http.StatusBadRequest)
 			return
 		}
-
-		invalidateCache()
-
-		// Re-fetch and render the updated item row in place
-		item, err := web.GetWorkItemByID(db, itemID)
-		if err != nil {
-			w.Header().Set("HX-Redirect", r.Header.Get("HX-Current-URL"))
-			w.WriteHeader(http.StatusOK)
+		sectionID := item.SectionID
+		if v := r.FormValue("section_id"); v != "" {
+			id, err := parseSectionID(db, v)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			sectionID = id
+		}
+		if err := web.UpdateWorkItemFields(db, item.ID, desc, status, strings.TrimSpace(r.FormValue("status_note")), strings.TrimSpace(r.FormValue("ticket_ids"))); err != nil {
+			log.Printf("Error updating item %d: %v", item.ID, err)
+			http.Error(w, "Failed to save Work Item", http.StatusInternalServerError)
 			return
 		}
-		cls, _ := web.GetLatestClassification(db, itemID)
-		allSections := loadAllSectionsForDropdown(db)
-		itemData := templates.ItemData{
-			ID: item.ID, Description: item.Description, Author: item.Author,
-			Status: item.Status, Source: item.Source, SourceRef: item.SourceRef,
-			Confidence: cls.Confidence, SectionID: cls.SectionID, TicketIDs: item.TicketIDs,
+		switch {
+		case sectionID != item.SectionID:
+			if err := placeByPerson(db, item.ID, sectionID, middleware.UserID(r)); err != nil {
+				log.Printf("Error placing item %d: %v", item.ID, err)
+				http.Error(w, "Failed to move Work Item", http.StatusInternalServerError)
+				return
+			}
+		case desc != item.Description:
+			if err := web.SetFilingPending(db, item.ID, filing.Payload{Kind: "edit"}.JSON()); err != nil {
+				log.Printf("Error re-queuing filing for item %d: %v", item.ID, err)
+				http.Error(w, "Saved, but failed to re-file the Work Item", http.StatusInternalServerError)
+				return
+			}
+			wake()
 		}
-		isManager := middleware.IsManager(r)
-		if err := templates.ItemRow(itemData, allSections, isManager).Render(r.Context(), w); err != nil {
-			log.Printf("Error rendering updated item row: %v", err)
-		}
+		reportChanged(w)
+		renderItem(w, r, cfg, db, item.ID, false)
 	}
 }
 
-// DeleteItemHandler deletes an item.
-func DeleteItemHandler(db *sql.DB) http.HandlerFunc {
+// MoveItem files the Work Item in the chosen Section (0 = Undetermined) as a person's decision.
+func MoveItem(cfg web.Config, db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		itemID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+		item, ok := loadEditableItem(w, r, db)
+		if !ok {
+			return
+		}
+		sectionID, err := parseSectionID(db, r.FormValue("section_id"))
 		if err != nil {
-			http.Error(w, "Invalid item ID", http.StatusBadRequest)
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-
-		if err := web.DeleteWorkItemByID(db, itemID); err != nil {
-			log.Printf("Delete item error: %v", err)
-			http.Error(w, "Failed to delete item", http.StatusInternalServerError)
+		if err := placeByPerson(db, item.ID, sectionID, middleware.UserID(r)); err != nil {
+			log.Printf("Error moving item %d: %v", item.ID, err)
+			http.Error(w, "Failed to move Work Item", http.StatusInternalServerError)
 			return
 		}
+		reportChanged(w)
+		renderItem(w, r, cfg, db, item.ID, false)
+	}
+}
 
-		invalidateCache()
-		// Return empty — hx-swap="delete" on the button removes the item from DOM
+func DeleteItem(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		item, ok := loadEditableItem(w, r, db)
+		if !ok {
+			return
+		}
+		if err := web.DeleteWorkItemByID(db, item.ID); err != nil {
+			log.Printf("Error deleting item %d: %v", item.ID, err)
+			http.Error(w, "Failed to delete Work Item", http.StatusInternalServerError)
+			return
+		}
+		reportChanged(w)
 		w.WriteHeader(http.StatusOK)
 	}
 }
 
-// EditItemForm returns an inline edit form for an item.
-func EditItemForm(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		itemID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
-		if err != nil {
-			http.Error(w, "Invalid item ID", http.StatusBadRequest)
-			return
-		}
-
-		item, err := web.GetWorkItemByID(db, itemID)
-		if err != nil {
-			if err == sql.ErrNoRows {
-				http.Error(w, "Item not found", http.StatusNotFound)
-			} else {
-				log.Printf("DB error fetching item %d for edit: %v", itemID, err)
-				http.Error(w, "Failed to load item", http.StatusInternalServerError)
-			}
-			return
-		}
-
-		if err := templates.ItemEditForm(item.ID, item.Description, item.Status).Render(r.Context(), w); err != nil {
-			log.Printf("Error rendering edit form: %v", err)
-		}
+// parseSectionID accepts 0 (Undetermined) or an active Section.
+func parseSectionID(db *sql.DB, v string) (int64, error) {
+	id, err := strconv.ParseInt(v, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid section_id")
 	}
+	if id == 0 {
+		return 0, nil
+	}
+	tax, err := web.LoadTaxonomy(db)
+	if err != nil {
+		return 0, err
+	}
+	if _, ok := tax.Section(id); !ok {
+		return 0, fmt.Errorf("unknown Section")
+	}
+	return id, nil
 }
 
-// ViewItemRow returns a single item row (used by cancel edit to restore the row).
-func ViewItemRow(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		itemID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
-		if err != nil {
-			http.Error(w, "Invalid item ID", http.StatusBadRequest)
-			return
-		}
-
-		item, err := web.GetWorkItemByID(db, itemID)
-		if err != nil {
-			if err == sql.ErrNoRows {
-				http.Error(w, "Item not found", http.StatusNotFound)
-			} else {
-				log.Printf("DB error fetching item %d: %v", itemID, err)
-				http.Error(w, "Failed to load item", http.StatusInternalServerError)
-			}
-			return
-		}
-
-		// Get classification for confidence score
-		cls, _ := web.GetLatestClassification(db, itemID)
-
-		itemData := templates.ItemData{
-			ID:          item.ID,
-			Description: item.Description,
-			Author:      item.Author,
-			Status:      item.Status,
-			Source:      item.Source,
-			SourceRef:   item.SourceRef,
-			Confidence:  cls.Confidence,
-			SectionID:   cls.SectionID,
-			TicketIDs:   item.TicketIDs,
-		}
-
-		isManager := middleware.IsManager(r)
-		// Pass empty sections list — reclassify dropdown won't show on the restored row
-		// (page reload will restore it fully)
-		if err := templates.ItemRow(itemData, nil, isManager).Render(r.Context(), w); err != nil {
-			log.Printf("Error rendering item row: %v", err)
-		}
-	}
+func placeByPerson(db *sql.DB, itemID, sectionID int64, actorID string) error {
+	return web.SetPlacement(db, itemID, sqlite.Placement{
+		SectionID:   sectionID,
+		PlacedBy:    domain.PlacedByPerson,
+		HistoryNote: sqlite.ReasonWebMove,
+		ActorID:     actorID,
+	})
 }
 
-// GenerateReport starts async report generation.
+// GenerateReport publishes the week. With Undetermined Work Items it first asks for confirmation.
 func GenerateReport(cfg web.Config, db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// Extract params before spawning goroutine (don't capture *http.Request in closure)
-		weekParam := r.URL.Query().Get("week")
-		monday, _, _, _ := resolveWeek(cfg, weekParam)
+		monday, _, _, _ := resolveWeek(cfg, r.URL.Query().Get("week"))
+		week := monday.Format("2006-01-02")
+		userID := middleware.UserID(r)
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+
+		live, err := web.LoadRange(db, monday, monday.AddDate(0, 0, 7))
+		if err != nil {
+			log.Printf("Generate: failed to load report: %v", err)
+			fmt.Fprint(w, `<div class="flash flash-error">Failed to load the report. Check server logs.</div>`)
+			return
+		}
+		if live.View.ItemCount() == 0 {
+			fmt.Fprint(w, `<div class="flash flash-info">No Work Items this week.</div>`)
+			return
+		}
+		if n := len(live.View.Undetermined); n > 0 && r.FormValue("confirm") != "1" {
+			fmt.Fprintf(w, `<div class="flash flash-warning">%d Work Item(s) are still in Undetermined. `+
+				`<button class="btn btn-secondary" hx-post="/generate?week=%s&amp;confirm=1" hx-target="#generate-status" hx-swap="innerHTML">Publish anyway</button></div>`,
+				n, html.EscapeString(week))
+			return
+		}
 
 		jobID := fmt.Sprintf("gen-%d", rand.Int63())
-		job := &generateJob{status: "running", message: "Starting report generation..."}
+		job := &generateJob{status: "running", message: "Publishing..."}
 		generateJobs.Store(jobID, job)
 
 		go func() {
 			report.GenerationMu.Lock()
 			defer report.GenerationMu.Unlock()
 
-			from := monday
-			to := monday.AddDate(0, 0, 7)
-
-			job.update("running", "Loading items...")
-			items, err := web.GetItemsByDateRange(db, from, to)
+			live, err := web.LoadRange(db, monday, monday.AddDate(0, 0, 7))
 			if err != nil {
-				job.update("error", "Failed to load items. Check server logs.")
-				log.Printf("Generate: failed to load items: %v", err)
+				job.update("error", "Failed to load the report. Check server logs.")
+				log.Printf("Generate: failed to load report: %v", err)
 				return
 			}
-
-			job.update("running", "Classifying items...")
-			corrections, err := web.GetRecentCorrections(db, monday.AddDate(0, -1, 0), 200)
+			res, err := web.Publish(db, cfg, live, userID)
 			if err != nil {
-				log.Printf("Generate: warning: failed to load corrections (proceeding without): %v", err)
-			}
-			historicalItems, err := web.GetClassifiedItemsWithSections(db, monday.AddDate(0, -3, 0), 500)
-			if err != nil {
-				log.Printf("Generate: warning: failed to load historical items (proceeding without): %v", err)
-			}
-
-			result, err := web.BuildReportsFromLast(cfg, items, monday, corrections, historicalItems)
-			if err != nil {
-				job.update("error", "Classification failed. Check server logs.")
-				log.Printf("Generate: classification failed: %v", err)
+				job.update("error", "Failed to publish. Check server logs.")
+				log.Printf("Generate: publish failed: %v", err)
 				return
 			}
-
-			job.update("running", "Writing report files...")
-			md := web.RenderMarkdownByMode(result.Template, "team")
-			friday := domain.FridayOfWeek(monday)
-			path, err := web.WriteReportFile(md, cfg.ReportOutputDir, friday, cfg.TeamName)
-			if err != nil {
-				job.update("error", "Failed to write report. Check server logs.")
-				log.Printf("Generate: failed to write report: %v", err)
-				return
-			}
-
-			invalidateCache()
-			job.setDone(fmt.Sprintf("Report generated: %s", path), path)
+			job.update("done", fmt.Sprintf("Published %d Work Items. Saved to %s", live.View.ItemCount(), res.TeamPath))
 		}()
 
-		// Return polling element with HTML-escaped jobID
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		safeID := html.EscapeString(jobID)
-		fmt.Fprintf(w, `<div class="generate-status" hx-get="/generate/%s/status" hx-trigger="every 2s" hx-swap="innerHTML"><div class="spinner"></div><span>Starting report generation...</span></div>`, safeID)
+		fmt.Fprintf(w, `<div class="generate-status" hx-get="/generate/%s/status" hx-trigger="every 2s" hx-swap="outerHTML"><div class="spinner"></div><span>Publishing...</span></div>`,
+			html.EscapeString(jobID))
 	}
 }
 
-// GenerateStatus returns the current status of a generation job.
+// GenerateStatus returns the current status of a publish job.
 func GenerateStatus() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		jobID := chi.URLParam(r, "jobID")
@@ -467,17 +415,13 @@ func GenerateStatus() http.HandlerFunc {
 			http.Error(w, "Job not found", http.StatusNotFound)
 			return
 		}
-
-		job := val.(*generateJob)
-		status, message, _ := job.read()
-		safeID := html.EscapeString(jobID)
+		status, message := val.(*generateJob).read()
 		safeMsg := html.EscapeString(message)
-
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-
 		switch status {
 		case "running":
-			fmt.Fprintf(w, `<div class="generate-status" hx-get="/generate/%s/status" hx-trigger="every 2s" hx-swap="innerHTML"><div class="spinner"></div><span>%s</span></div>`, safeID, safeMsg)
+			fmt.Fprintf(w, `<div class="generate-status" hx-get="/generate/%s/status" hx-trigger="every 2s" hx-swap="outerHTML"><div class="spinner"></div><span>%s</span></div>`,
+				html.EscapeString(jobID), safeMsg)
 		case "done":
 			generateJobs.Delete(jobID)
 			fmt.Fprintf(w, `<div class="flash flash-success">%s</div>`, safeMsg)
@@ -488,551 +432,71 @@ func GenerateStatus() http.HandlerFunc {
 	}
 }
 
-// NewCategoryForm returns the inline form for adding a new category.
-func NewCategoryForm() http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		weekParam := r.URL.Query().Get("week")
-		if err := templates.CategoryForm(weekParam).Render(r.Context(), w); err != nil {
-			log.Printf("Error rendering category form: %v", err)
-		}
-	}
-}
-
-// CreateCategory creates a new custom category section.
-func CreateCategory(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		name := strings.TrimSpace(r.FormValue("name"))
-		if name == "" {
-			http.Error(w, "Category name is required", http.StatusBadRequest)
-			return
-		}
-
-		// Generate a unique section ID for the custom category
-		sectionID := fmt.Sprintf("CUSTOM_%d", time.Now().UnixMilli())
-
-		// Insert a placeholder classification record so the section appears in DB queries.
-		// We use work_item_id=0 as a sentinel — it won't match any real item.
-		_, err := db.Exec(
-			`INSERT INTO classification_history
-			 (work_item_id, section_id, section_label, confidence, llm_provider, llm_model)
-			 VALUES (0, ?, ?, 1.0, 'manual', 'user')`,
-			sectionID, name,
-		)
-		if err != nil {
-			log.Printf("Error creating category: %v", err)
-			http.Error(w, "Failed to create category", http.StatusInternalServerError)
-			return
-		}
-
-		invalidateCache()
-
-		// Return empty section card + clear the form — no full page reload
-		isManager := middleware.IsManager(r)
-		section := templates.SectionData{ID: sectionID, Name: name}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		allSections := loadAllSectionsForDropdown(db)
-		if err := templates.SectionGroup(section, allSections, isManager).Render(r.Context(), w); err != nil {
-			log.Printf("Error rendering new section: %v", err)
-		}
-	}
-}
-
-// RenameCategoryForm returns an inline rename form for a section.
-func RenameCategoryForm(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		sectionID := chi.URLParam(r, "id")
-		weekParam := r.URL.Query().Get("week")
-
-		// Look up current name
-		labels, _ := web.GetAllSectionLabels(db)
-		currentName := sectionID
-		if name, ok := labels[sectionID]; ok {
-			currentName = name
-		}
-
-		if err := templates.SectionRenameForm(sectionID, currentName, weekParam).Render(r.Context(), w); err != nil {
-			log.Printf("Error rendering rename form: %v", err)
-		}
-	}
-}
-
-// CancelRename returns the original section name span (restores after rename form cancel).
-func CancelRename(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		sectionID := chi.URLParam(r, "id")
-		labels, _ := web.GetAllSectionLabels(db)
-		name := sectionID
-		if l, ok := labels[sectionID]; ok {
-			name = l
-		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprintf(w, `<span id="section-name-%s" class="name">%s</span>`,
-			html.EscapeString(sectionID), html.EscapeString(name))
-	}
-}
-
-// RenameCategory updates a section's display label.
-func RenameCategory(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		sectionID := chi.URLParam(r, "id")
-		newName := strings.TrimSpace(r.FormValue("name"))
-		if newName == "" {
-			http.Error(w, "Category name is required", http.StatusBadRequest)
-			return
-		}
-
-		if err := web.RenameSectionLabel(db, sectionID, newName); err != nil {
-			log.Printf("Error renaming category %s: %v", sectionID, err)
-			http.Error(w, "Failed to rename category", http.StatusInternalServerError)
-			return
-		}
-
-		invalidateCache()
-
-		// Return just the updated name span — swaps in place without reload
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprintf(w, `<span id="section-name-%s" class="name">%s</span>`,
-			html.EscapeString(sectionID), html.EscapeString(newName))
-	}
-}
-
 // --- Helpers ---
 
-// buildAllSections merges current sections with all known section labels from DB.
-// This ensures the reclassify dropdown includes sections that have no items this week.
-// Parent sections that have subcategories (name contains " > ") are hidden from the dropdown.
-func buildAllSections(db *sql.DB, currentSections []templates.SectionData) []templates.SectionData {
-	allLabels, err := web.GetAllSectionLabels(db)
-	if err != nil {
-		log.Printf("Warning: failed to load section labels: %v", err)
-		return currentSections
+func itemData(cfg web.Config, it web.WorkItem, editable bool, groups []templates.OptionGroup) templates.ItemData {
+	d := templates.ItemData{
+		ID:                 it.ID,
+		Author:             it.Author,
+		Description:        it.Description,
+		Status:             it.Status,
+		StatusNote:         it.StatusNote,
+		StatusText:         report.StatusText(it),
+		TicketIDs:          it.TicketIDs,
+		Source:             it.Source,
+		SectionID:          it.SectionID,
+		PlacedBy:           it.PlacedBy,
+		UndeterminedReason: it.UndeterminedReason,
+		CanEdit:            editable,
 	}
+	if editable {
+		d.SectionGroups = groups
+	}
+	if it.Confidence != nil {
+		d.Confidence = fmt.Sprintf("%.0f%%", *it.Confidence*100)
+	}
+	switch {
+	case it.FilingState == domain.FilingPending:
+		d.Attention = "filing…"
+	case it.FilingState == domain.FilingFailed:
+		d.Attention = "filing failed"
+	case it.FilingState == domain.FilingAsking:
+		d.Attention = "asking the reporter"
+	case it.PlacedBy == domain.PlacedByModel && it.Confidence != nil && *it.Confidence < cfg.DecisionModelConfidence:
+		d.Attention = "low confidence"
+	}
+	return d
+}
 
-	// Collect all label names to detect parent/child relationships
-	allNames := make(map[string]bool)
-	for _, label := range allLabels {
-		allNames[label] = true
-	}
-	for _, s := range currentSections {
-		allNames[s.Name] = true
-	}
-
-	// Build set of parent names that have subcategories
-	parentsWithChildren := make(map[string]bool)
-	for name := range allNames {
-		if idx := strings.Index(name, " > "); idx > 0 {
-			parent := name[:idx]
-			parentsWithChildren[parent] = true
+// sectionGroups lists the active Sections as "Area › Category" groups in Taxonomy order.
+func sectionGroups(tax domain.Taxonomy) []templates.OptionGroup {
+	var groups []templates.OptionGroup
+	for _, s := range tax.Sections() {
+		label := s.Area + domain.PathSeparator + s.Category
+		if len(groups) == 0 || groups[len(groups)-1].Label != label {
+			groups = append(groups, templates.OptionGroup{Label: label})
 		}
+		g := &groups[len(groups)-1]
+		g.Options = append(g.Options, templates.Option{ID: s.ID, Name: s.Label()})
 	}
-
-	// Filter: skip parent sections that have subcategories
-	shouldInclude := func(name string) bool {
-		return !parentsWithChildren[name]
-	}
-
-	// Start with current sections (filtered)
-	seen := make(map[string]bool)
-	var result []templates.SectionData
-	for _, s := range currentSections {
-		seen[s.ID] = true
-		if shouldInclude(s.Name) {
-			result = append(result, s)
-		}
-	}
-
-	// Add any sections from DB that aren't already present (filtered)
-	var extra []templates.SectionData
-	for id, label := range allLabels {
-		if !seen[id] && id != "UND" && shouldInclude(label) {
-			extra = append(extra, templates.SectionData{ID: id, Name: label})
-			seen[id] = true
-		}
-	}
-
-	// Sort extra sections
-	sort.Slice(extra, func(i, j int) bool {
-		return extra[i].ID < extra[j].ID
-	})
-
-	// Deduplicate by name (same name can appear under different section IDs)
-	combined := append(result, extra...)
-	seenNames := make(map[string]bool)
-	var deduped []templates.SectionData
-	for _, s := range combined {
-		if !seenNames[s.Name] {
-			seenNames[s.Name] = true
-			deduped = append(deduped, s)
-		}
-	}
-
-	return deduped
+	return groups
 }
 
 func resolveWeek(cfg web.Config, weekParam string) (monday time.Time, label, prevWeek, nextWeek string) {
-	now := time.Now()
-	if cfg.Location != nil {
-		now = now.In(cfg.Location)
+	loc := cfg.Location
+	if loc == nil {
+		loc = time.Local
 	}
-
-	if weekParam != "" {
-		if parsed, err := time.Parse("2006-01-02", weekParam); err == nil {
-			// Round to Monday
-			for parsed.Weekday() != time.Monday {
-				parsed = parsed.AddDate(0, 0, -1)
-			}
-			monday = parsed
-		}
+	if parsed, err := time.ParseInLocation("2006-01-02", weekParam, loc); err == nil {
+		monday, _ = domain.CurrentWeekRangeAt(parsed)
+	} else {
+		monday, _ = web.ReportWeekRange(cfg, time.Now().In(loc))
 	}
-
-	if monday.IsZero() {
-		// Use ReportWeekRange to match Slack behavior (including monday_cutoff_time)
-		start, _ := web.ReportWeekRange(cfg, now)
-		monday = start
-	}
-
 	sunday := monday.AddDate(0, 0, 6)
 	label = fmt.Sprintf("%s - %s, %d", monday.Format("Jan 2"), sunday.Format("Jan 2"), monday.Year())
 	prevWeek = monday.AddDate(0, 0, -7).Format("2006-01-02")
 	nextWeek = monday.AddDate(0, 0, 7).Format("2006-01-02")
 	return
-}
-
-// buildSectionsFromDB groups items using their existing classifications from the DB.
-// No LLM calls — fast page loads. Items without classifications go to "Unclassified".
-func buildSectionsFromDB(db *sql.DB, items []web.WorkItem) ([]templates.SectionData, float64, bool) {
-	if len(items) == 0 {
-		return nil, 0, false
-	}
-
-	// Batch-fetch existing classifications
-	ids := make([]int64, len(items))
-	for i, item := range items {
-		ids[i] = item.ID
-	}
-	classifications, err := web.GetLatestClassificationsForItems(db, ids)
-	if err != nil {
-		log.Printf("Warning: failed to load classifications from DB: %v", err)
-		return buildUnclassifiedSection(items), 0, false
-	}
-
-	hasClassifications := len(classifications) > 0
-
-	// Group items by section
-	sectionMap := make(map[string]*templates.SectionData)
-	var sectionOrder []string
-	var totalConf float64
-	var confCount int
-
-	for _, item := range items {
-		cls, classified := classifications[item.ID]
-		sectionID := "UND"
-		sectionLabel := "Unclassified"
-		conf := 0.0
-
-		if classified {
-			sectionID = cls.SectionID
-			sectionLabel = cls.SectionLabel
-			if sectionLabel == "" {
-				sectionLabel = sectionID
-			}
-			conf = cls.Confidence
-			totalConf += conf
-			confCount++
-		}
-
-		sec, exists := sectionMap[sectionID]
-		if !exists {
-			sec = &templates.SectionData{
-				ID:   sectionID,
-				Name: sectionLabel,
-			}
-			sectionMap[sectionID] = sec
-			sectionOrder = append(sectionOrder, sectionID)
-		}
-
-		if conf < 0.7 {
-			sec.NeedsReview = true
-		}
-
-		sec.Items = append(sec.Items, templates.ItemData{
-			ID:          item.ID,
-			Description: item.Description,
-			Author:      item.Author,
-			Status:      item.Status,
-			Source:      item.Source,
-			SourceRef:   item.SourceRef,
-			Confidence:  conf,
-			SectionID:   sectionID,
-			TicketIDs:   item.TicketIDs,
-		})
-	}
-
-	// Sort sections by section_id to preserve template ordering.
-	// Section IDs like S0_0, S0_1, S1_0 sort lexicographically in template order.
-	// "UND" and "CUSTOM_*" go last.
-	sort.Slice(sectionOrder, func(i, j int) bool {
-		a, b := sectionOrder[i], sectionOrder[j]
-		if a == "UND" {
-			return false
-		}
-		if b == "UND" {
-			return true
-		}
-		aCustom := strings.HasPrefix(a, "CUSTOM_")
-		bCustom := strings.HasPrefix(b, "CUSTOM_")
-		if aCustom != bCustom {
-			return !aCustom // template sections before custom
-		}
-		return a < b
-	})
-
-	var sections []templates.SectionData
-	for _, id := range sectionOrder {
-		sections = append(sections, *sectionMap[id])
-	}
-
-	// Add empty custom categories so they show as visible section cards
-	allLabels, err := web.GetAllSectionLabels(db)
-	if err == nil {
-		seen := make(map[string]bool)
-		for _, id := range sectionOrder {
-			seen[id] = true
-		}
-		var customSections []templates.SectionData
-		for id, label := range allLabels {
-			if !seen[id] && strings.HasPrefix(id, "CUSTOM_") {
-				customSections = append(customSections, templates.SectionData{
-					ID:   id,
-					Name: label,
-				})
-			}
-		}
-		sort.Slice(customSections, func(i, j int) bool {
-			return customSections[i].ID < customSections[j].ID
-		})
-		// Insert custom sections before UND
-		if len(sections) > 0 && sections[len(sections)-1].ID == "UND" {
-			und := sections[len(sections)-1]
-			sections = append(sections[:len(sections)-1], customSections...)
-			sections = append(sections, und)
-		} else {
-			sections = append(sections, customSections...)
-		}
-	}
-
-	avgConf := 0.0
-	if confCount > 0 {
-		avgConf = totalConf / float64(confCount)
-	}
-
-	return sections, avgConf, hasClassifications
-}
-
-// classifyWithLLM runs the full LLM classification pipeline.
-// Only called on explicit "Classify" or "Re-classify" button click.
-func classifyWithLLM(cfg web.Config, db *sql.DB, items []web.WorkItem, monday time.Time) ([]templates.SectionData, float64) {
-	if len(items) == 0 {
-		return nil, 0
-	}
-
-	cacheKey := monday.Format("2006-01-02")
-
-	// Check cache first (from a recent classify action)
-	if cached, ok := buildResultCache.Load(cacheKey); ok {
-		cr := cached.(*cachedResult)
-		if time.Since(cr.created) < 5*time.Minute {
-			return convertBuildResult(cr.result, items), avgConfidence(cr.result.Decisions)
-		}
-		buildResultCache.Delete(cacheKey)
-	}
-
-	corrections, err := web.GetRecentCorrections(db, monday.AddDate(0, -1, 0), 200)
-	if err != nil {
-		log.Printf("Warning: failed to load corrections (proceeding without): %v", err)
-	}
-	historicalItems, err := web.GetClassifiedItemsWithSections(db, monday.AddDate(0, -3, 0), 500)
-	if err != nil {
-		log.Printf("Warning: failed to load historical items (proceeding without): %v", err)
-	}
-
-	result, err := web.BuildReportsFromLast(cfg, items, monday, corrections, historicalItems)
-	if err != nil {
-		log.Printf("BuildReportsFromLast failed (showing unclassified): %v", err)
-		return buildUnclassifiedSection(items), 0
-	}
-
-	// Cache the result
-	buildResultCache.Store(cacheKey, &cachedResult{result: result, created: time.Now()})
-
-	return convertBuildResult(result, items), avgConfidence(result.Decisions)
-}
-
-func buildUnclassifiedSection(items []web.WorkItem) []templates.SectionData {
-	var itemData []templates.ItemData
-	for _, item := range items {
-		itemData = append(itemData, toItemData(item, "UND", 0))
-	}
-	return []templates.SectionData{{
-		ID:          "UND",
-		Name:        "Unclassified",
-		Items:       itemData,
-		NeedsReview: true,
-	}}
-}
-
-func convertBuildResult(result web.BuildResult, items []web.WorkItem) []templates.SectionData {
-	if result.Template == nil {
-		return nil
-	}
-
-	// Build item lookup
-	itemMap := make(map[string]web.WorkItem)
-	for _, item := range items {
-		itemMap[strings.ToLower(strings.TrimSpace(item.Description))] = item
-	}
-
-	var sections []templates.SectionData
-	for ci, cat := range result.Template.Categories {
-		if cat.MarkerLine != "" {
-			continue
-		}
-		sectionID := fmt.Sprintf("S%d", ci)
-		if len(result.Options) > ci {
-			sectionID = result.Options[ci].ID
-		}
-
-		var sectionItems []templates.ItemData
-		needsReview := false
-
-		for _, sub := range cat.Subsections {
-			for _, tItem := range sub.Items {
-				if !tItem.IsNew {
-					continue // Skip carry-over items from template
-				}
-				// Find the original item to get metadata
-				key := strings.ToLower(strings.TrimSpace(tItem.Description))
-				origItem, found := itemMap[key]
-
-				conf := 0.0
-				source := "slack"
-				sourceRef := ""
-				var id int64
-
-				if found {
-					id = origItem.ID
-					source = origItem.Source
-					sourceRef = origItem.SourceRef
-					if d, ok := result.Decisions[origItem.ID]; ok {
-						conf = d.Confidence
-					}
-				} else {
-					// Item not found in map — skip rendering mutation controls
-					// by leaving ID as 0 (template checks for this)
-					log.Printf("Warning: template item %q not found in item map, skipping mutation controls", tItem.Description)
-				}
-
-				if conf < 0.7 {
-					needsReview = true
-				}
-
-				sectionItems = append(sectionItems, templates.ItemData{
-					ID:          id,
-					Description: tItem.Description,
-					Author:      tItem.Author,
-					Status:      tItem.Status,
-					Source:      source,
-					SourceRef:   sourceRef,
-					Confidence:  conf,
-					SectionID:   sectionID,
-					TicketIDs:   tItem.TicketIDs,
-					IsNew:       tItem.IsNew,
-				})
-			}
-		}
-
-		if len(sectionItems) == 0 {
-			continue
-		}
-
-		sections = append(sections, templates.SectionData{
-			ID:          sectionID,
-			Name:        cat.Name,
-			Items:       sectionItems,
-			NeedsReview: needsReview,
-		})
-	}
-
-	return sections
-}
-
-func toItemData(item web.WorkItem, sectionID string, conf float64) templates.ItemData {
-	return templates.ItemData{
-		ID:          item.ID,
-		Description: item.Description,
-		Author:      item.Author,
-		Status:      item.Status,
-		Source:      item.Source,
-		SourceRef:   item.SourceRef,
-		Confidence:  conf,
-		SectionID:   sectionID,
-		TicketIDs:   item.TicketIDs,
-	}
-}
-
-func avgConfidence(decisions map[int64]web.LLMSectionDecision) float64 {
-	if len(decisions) == 0 {
-		return 0
-	}
-	var total float64
-	for _, d := range decisions {
-		total += d.Confidence
-	}
-	return total / float64(len(decisions))
-}
-
-// loadAllSectionsForDropdown returns all known sections for the reclassify dropdown.
-// Excludes parent sections that have subcategories (e.g., "Release and Support" is hidden
-// if "Release and Support > FAZ-BD 7.6.2 release" exists).
-func loadAllSectionsForDropdown(db *sql.DB) []templates.SectionData {
-	labels, err := web.GetAllSectionLabels(db)
-	if err != nil {
-		return nil
-	}
-
-	// Find parents that have children
-	parentsWithChildren := make(map[string]bool)
-	for _, label := range labels {
-		if idx := strings.Index(label, " > "); idx > 0 {
-			parentsWithChildren[label[:idx]] = true
-		}
-	}
-
-	// Build filtered, deduped list
-	seenNames := make(map[string]bool)
-	var sections []templates.SectionData
-	for id, label := range labels {
-		if parentsWithChildren[label] {
-			continue // skip parent that has subcategories
-		}
-		if seenNames[label] {
-			continue // skip duplicate names
-		}
-		seenNames[label] = true
-		sections = append(sections, templates.SectionData{ID: id, Name: label})
-	}
-	sort.Slice(sections, func(i, j int) bool { return sections[i].ID < sections[j].ID })
-	return sections
-}
-
-func filterByAuthorID(items []web.WorkItem, userID string) []web.WorkItem {
-	var filtered []web.WorkItem
-	for _, item := range items {
-		if item.AuthorID == userID {
-			filtered = append(filtered, item)
-		}
-	}
-	return filtered
 }
 
 // simpleMarkdownToHTML converts report markdown to readable HTML.

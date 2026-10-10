@@ -6,18 +6,102 @@ import (
 	"time"
 )
 
+// Statuses in report order; done is terminal.
+const (
+	StatusInProgress = "in progress"
+	StatusInTesting  = "in testing"
+	StatusBlocked    = "blocked"
+	StatusDone       = "done"
+)
+
+var Statuses = []string{StatusInProgress, StatusInTesting, StatusBlocked, StatusDone}
+
+// StatusRank orders statuses for rendering; unknown values sort last.
+func StatusRank(status string) int {
+	for i, s := range Statuses {
+		if s == status {
+			return i
+		}
+	}
+	return len(Statuses)
+}
+
+func IsStatus(status string) bool { return StatusRank(status) < len(Statuses) }
+
+const (
+	PlacedByModel  = "model"
+	PlacedByPerson = "person"
+)
+
+// Filing states of a Work Item's Placement.
+const (
+	FilingPending = "pending" // waiting for the models
+	FilingFiled   = "filed"   // has a Section, or is Undetermined by a person's or model's decision
+	FilingAsking  = "asking"  // Undetermined; the reporter was asked "Where does this go?"
+	FilingFailed  = "failed"  // Undetermined; a model was unreachable after retries
+)
+
+// Reasons a Work Item sits in Undetermined.
+const (
+	ReasonLowConfidence    = "low_confidence"
+	ReasonLLMUndetermined  = "llm_undetermined"
+	ReasonModelUnreachable = "model_unreachable"
+	ReasonSectionRetired   = "section_retired"
+	ReasonNoTaxonomy       = "no_taxonomy"
+)
+
 type WorkItem struct {
 	ID          int64
 	Description string
 	Author      string
 	AuthorID    string // Slack user ID (immutable, for authorization)
-	Source      string // "slack", "gitlab", or "github"
-	SourceRef   string // GitLab MR URL, GitHub PR URL, or empty
-	Category    string
-	Status      string // "done", "in progress", "in QA", etc.
+	Source      string // "slack", "gitlab", "github" or "import"
+	Status      string
+	StatusNote  string
 	TicketIDs   string // comma-separated: "1247202,1230118"
 	ReportedAt  time.Time
 	CreatedAt   time.Time
+	DoneAt      time.Time // zero while not done
+
+	SectionID          int64 // 0 = Undetermined
+	PlacedBy           string
+	Confidence         *float64 // Section check probability; nil when no check was made
+	FilingState        string
+	UndeterminedReason string
+}
+
+func (w WorkItem) IsOpen() bool { return w.Status != StatusDone }
+
+// CodeChange is a merge or pull request; it is its own Work Item or linked to one.
+type CodeChange struct {
+	ID           int64
+	Source       string // "gitlab" | "github"
+	SourceRef    string // MR/PR URL
+	Title        string
+	Author       string
+	AuthorID     string
+	TicketIDs    string
+	State        string // "open" | "merged" | "closed"
+	MergedAt     time.Time
+	WorkItemID   int64
+	LinkKind     string // "own" | "linked" | "suggested"
+	SuggestedFor int64
+}
+
+const (
+	LinkOwn       = "own"
+	LinkLinked    = "linked"
+	LinkSuggested = "suggested"
+)
+
+// PlacedItem is a Work Item with a Placement, used as a similar-item example.
+type PlacedItem struct {
+	WorkItemID  int64
+	Description string
+	Author      string
+	SectionID   int64
+	ByPerson    bool
+	ReportedAt  time.Time
 }
 
 type GitLabMR struct {
@@ -46,18 +130,6 @@ type GitHubPR struct {
 	State        string // "open", "merged" (derived), or "closed"
 	Labels       []string
 	RepoFullName string // e.g. "org/repo-name"
-}
-
-type ReportSection struct {
-	Category string
-	Authors  []string
-	Items    []WorkItem
-}
-
-// CurrentWeekRange returns Monday 00:00:00 and next Monday 00:00:00 for the current calendar week.
-func CurrentWeekRange(loc *time.Location) (time.Time, time.Time) {
-	now := time.Now().In(loc)
-	return CurrentWeekRangeAt(now)
 }
 
 func CurrentWeekRangeAt(now time.Time) (time.Time, time.Time) {

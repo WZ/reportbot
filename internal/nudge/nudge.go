@@ -139,24 +139,10 @@ func RenderNudgeForUser(api *slack.Client, db *sql.DB, cfg Config, userID, repor
 	monday, nextMonday := ReportWeekRange(cfg, now)
 	reminder := buildGenericNudgeText(reportChannelID, monday, nextMonday)
 
-	items, err := GetItemsByDateRange(db, monday, nextMonday)
+	// Every Open Work Item, including merged Code Changes waiting in testing, so people can close them here.
+	items, err := GetOpenItems(db)
 	if err != nil {
 		return RenderedNudge{}, err
-	}
-
-	// Also include in-progress items from previous weeks so carry-over
-	// work appears in the interactive nudge.
-	ipItems, ipErr := GetInProgressItems(db)
-	if ipErr == nil {
-		seen := make(map[int64]bool, len(items))
-		for _, it := range items {
-			seen[it.ID] = true
-		}
-		for _, it := range ipItems {
-			if !seen[it.ID] {
-				items = append(items, it)
-			}
-		}
 	}
 
 	user, err := api.GetUserInfo(userID)
@@ -190,14 +176,14 @@ func renderGenericNudge(cfg Config, reportChannelID string, now time.Time) Rende
 }
 
 func renderUpdatedNoItems(reminder string) RenderedNudge {
-	msg := "Updated. No items are currently marked `in progress`."
+	msg := "Updated. You have no open items."
 	blocks := []slack.Block{
 		slack.NewSectionBlock(slack.NewTextBlockObject(slack.MarkdownType, reminder, false, false), nil, nil),
 		slack.NewDividerBlock(),
 		slack.NewSectionBlock(slack.NewTextBlockObject(slack.MarkdownType, msg, false, false), nil, nil),
 	}
 	return RenderedNudge{
-		Text:   reminder + "\n\nUpdated. No items are currently marked in progress.",
+		Text:   reminder + "\n\nUpdated. You have no open items.",
 		Blocks: blocks,
 	}
 }
@@ -276,6 +262,11 @@ func buildMoreMenu(userID string, itemID int64, page int) *slack.OverflowBlockEl
 		slack.NewOptionBlockObject(
 			fmt.Sprintf("status|%s|%d|in progress|%d", userID, itemID, page),
 			slack.NewTextBlockObject(slack.PlainTextType, "Mark as In progress", false, false),
+			nil,
+		),
+		slack.NewOptionBlockObject(
+			fmt.Sprintf("status|%s|%d|blocked|%d", userID, itemID, page),
+			slack.NewTextBlockObject(slack.PlainTextType, "Mark as Blocked", false, false),
 			nil,
 		),
 	)
@@ -360,7 +351,7 @@ func dedupeAndFilterActiveItems(items []WorkItem) []WorkItem {
 
 	active := make([]WorkItem, 0, len(latest))
 	for _, item := range latest {
-		if statusContainsInProgress(item.Status) {
+		if item.IsOpen() {
 			active = append(active, item)
 		}
 	}
@@ -382,10 +373,6 @@ func nudgeDedupeKey(item WorkItem) string {
 func normalizeDescriptionForDedupe(description, tickets string) string {
 	description = strings.TrimSpace(stripLeadingTicketPrefixIfSame(description, tickets))
 	return strings.ToLower(description)
-}
-
-func statusContainsInProgress(status string) bool {
-	return strings.Contains(strings.ToLower(strings.TrimSpace(status)), "in progress")
 }
 
 func pageBounds(total, page int) (int, int) {
@@ -419,14 +406,14 @@ func clampPage(page, totalPages int) int {
 func renderIntroText(count int, updated bool) string {
 	if updated {
 		if count == 1 {
-			return "Updated. This item is still marked `in progress`:"
+			return "Updated. This item is still open:"
 		}
-		return "Updated. These items are still marked `in progress`:"
+		return "Updated. These items are still open:"
 	}
 	if count == 1 {
-		return "This item is still marked `in progress`. Please update the status if it has changed."
+		return "This item is still open. Please update the status if it has changed."
 	}
-	return "These items are still marked `in progress`. Please update the status if any have changed."
+	return "These items are still open. Please update the status if any have changed."
 }
 
 func buildGenericNudgeText(reportChannelID string, monday, nextMonday time.Time) string {
@@ -450,6 +437,9 @@ func formatNudgeItem(lineNumber int, item WorkItem) string {
 		description = fmt.Sprintf("[%s] %s", tickets, description)
 	}
 	statusText := strings.TrimSpace(item.Status)
+	if note := strings.TrimSpace(item.StatusNote); note != "" {
+		statusText += ": " + note
+	}
 	suffix := fmt.Sprintf(" _(current: %s)_", statusText)
 	prefix := fmt.Sprintf("%d. ", lineNumber)
 	description = truncateRunes(description, nudgeItemMaxRunes-runeLen(prefix)-runeLen(suffix))

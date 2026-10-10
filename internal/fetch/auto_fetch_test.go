@@ -1,7 +1,12 @@
 package fetch
 
 import (
+	"path/filepath"
 	"testing"
+	"time"
+
+	"reportbot/internal/domain"
+	"reportbot/internal/storage/sqlite"
 )
 
 func TestFormatFetchSummary_AllFailed(t *testing.T) {
@@ -81,11 +86,53 @@ func TestFormatFetchSummary_ZeroFetchedNoErrors(t *testing.T) {
 
 func TestFetchAndImportMRs_NeitherConfigured(t *testing.T) {
 	cfg := Config{}
-	_, err := FetchAndImportMRs(cfg, nil)
+	_, err := FetchAndImportMRs(cfg, nil, Hooks{})
 	if err == nil {
 		t.Fatal("expected error when neither source is configured")
 	}
 	if got := err.Error(); got != "neither GitLab nor GitHub is configured" {
 		t.Errorf("unexpected error: %q", got)
+	}
+}
+
+func TestImportCodeChangesLinkMergeAndOwnItems(t *testing.T) {
+	db, err := sqlite.InitDB(filepath.Join(t.TempDir(), "fetch.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	open, _ := sqlite.InsertWorkItem(db, domain.WorkItem{Description: "shard timeout", Author: "Dev A", Source: "slack",
+		Status: domain.StatusInProgress, TicketIDs: "1234567", ReportedAt: time.Now(), FilingState: domain.FilingFiled})
+
+	now := time.Now()
+	changes := []fetched{
+		{cc: domain.CodeChange{Source: "gitlab", SourceRef: "https://git.example/mr/1", Title: "fix shard timeout", Author: "Dev A", TicketIDs: "1234567", State: "open"}, reportedAt: now},
+		{cc: domain.CodeChange{Source: "gitlab", SourceRef: "https://git.example/mr/2", Title: "new exporter", Author: "Dev B", State: "merged"}, reportedAt: now},
+		{cc: domain.CodeChange{Source: "github", SourceRef: "https://git.example/pr/3", Title: "abandoned", Author: "Dev B", State: "closed"}, reportedAt: now},
+	}
+	hooks := Hooks{ResolveAuthorID: func(name string) string { return "U-" + name }}
+	var res FetchResult
+	if err := importCodeChanges(db, changes, hooks, &res); err != nil {
+		t.Fatal(err)
+	}
+	if res.Linked != 1 || res.Inserted != 1 || res.SkippedClosed != 1 || res.MovedToTesting != 0 {
+		t.Fatalf("unexpected result: %+v", res)
+	}
+
+	// The exporter became its own Work Item: merged means in testing, never done.
+	cc, ok, _ := sqlite.GetCodeChangeByRef(db, "gitlab", "https://git.example/mr/2")
+	own, _ := sqlite.GetWorkItemByID(db, cc.WorkItemID)
+	if !ok || cc.LinkKind != domain.LinkOwn || own.Status != domain.StatusInTesting || own.FilingState != domain.FilingPending || own.AuthorID != "U-Dev B" {
+		t.Fatalf("unexpected own Work Item: %+v %+v", cc, own)
+	}
+
+	// Next fetch: the linked MR merged, so its Work Item moves to in testing.
+	changes[0].cc.State = "merged"
+	res = FetchResult{}
+	if err := importCodeChanges(db, changes[:1], hooks, &res); err != nil {
+		t.Fatal(err)
+	}
+	if it, _ := sqlite.GetWorkItemByID(db, open); it.Status != domain.StatusInTesting || res.MovedToTesting != 1 || res.AlreadyTracked != 1 {
+		t.Fatalf("expected in testing after merge: %+v %+v", it, res)
 	}
 }

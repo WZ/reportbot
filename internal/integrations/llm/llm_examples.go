@@ -8,15 +8,14 @@ import (
 	"unicode"
 )
 
-type historicalItem = domain.HistoricalItem
-
 type sparseVec = map[int]float64
 
-type tfidfIndex struct {
+// SimilarIndex finds the placed Work Items most similar to a text (TF-IDF cosine).
+type SimilarIndex struct {
 	vocab map[string]int
 	idf   []float64
 	docs  []sparseVec
-	items []historicalItem
+	items []domain.PlacedItem
 }
 
 func tokenize(s string) []string {
@@ -39,9 +38,9 @@ func tokenize(s string) []string {
 	return tokens
 }
 
-func buildTFIDFIndex(items []historicalItem) *tfidfIndex {
+func NewSimilarIndex(items []domain.PlacedItem) *SimilarIndex {
 	if len(items) == 0 {
-		return &tfidfIndex{vocab: make(map[string]int)}
+		return &SimilarIndex{vocab: make(map[string]int)}
 	}
 
 	// Build vocabulary.
@@ -90,7 +89,7 @@ func buildTFIDFIndex(items []historicalItem) *tfidfIndex {
 		}
 	}
 
-	return &tfidfIndex{
+	return &SimilarIndex{
 		vocab: vocab,
 		idf:   idf,
 		docs:  docs,
@@ -98,7 +97,7 @@ func buildTFIDFIndex(items []historicalItem) *tfidfIndex {
 	}
 }
 
-func (idx *tfidfIndex) queryVec(query string) sparseVec {
+func (idx *SimilarIndex) queryVec(query string) sparseVec {
 	tokens := tokenize(query)
 	tf := make(map[int]int)
 	for _, tok := range tokens {
@@ -113,65 +112,41 @@ func (idx *tfidfIndex) queryVec(query string) sparseVec {
 	return vec
 }
 
-// topKIndices returns the indices of the top-K most similar items to query.
-func (idx *tfidfIndex) topKIndices(query string, k int) []int {
-	if len(idx.items) == 0 || k <= 0 {
+// TopK returns up to k items most similar to query, skipping items keep rejects.
+// Ties go to person-decided items.
+func (idx *SimilarIndex) TopK(query string, k int, keep func(domain.PlacedItem) bool) []domain.PlacedItem {
+	if idx == nil || len(idx.items) == 0 || k <= 0 {
 		return nil
 	}
 	qvec := idx.queryVec(query)
 	if len(qvec) == 0 {
 		return nil
 	}
-
 	type scored struct {
 		index int
 		score float64
 	}
 	var results []scored
 	for i, dvec := range idx.docs {
-		sim := cosineSim(qvec, dvec)
-		if sim > 0 {
+		if keep != nil && !keep(idx.items[i]) {
+			continue
+		}
+		if sim := cosineSim(qvec, dvec); sim > 0 {
 			results = append(results, scored{i, sim})
 		}
 	}
-	sort.Slice(results, func(a, b int) bool {
-		return results[a].score > results[b].score
+	sort.SliceStable(results, func(a, b int) bool {
+		if results[a].score != results[b].score {
+			return results[a].score > results[b].score
+		}
+		return idx.items[results[a].index].ByPerson && !idx.items[results[b].index].ByPerson
 	})
 	if len(results) > k {
 		results = results[:k]
 	}
-	out := make([]int, len(results))
+	out := make([]domain.PlacedItem, len(results))
 	for i, r := range results {
-		out[i] = r.index
-	}
-	return out
-}
-
-func (idx *tfidfIndex) topK(query string, k int) []historicalItem {
-	indices := idx.topKIndices(query, k)
-	out := make([]historicalItem, len(indices))
-	for i, docIdx := range indices {
-		out[i] = idx.items[docIdx]
-	}
-	return out
-}
-
-func (idx *tfidfIndex) topKForBatch(queries []string, k int) []historicalItem {
-	if len(idx.items) == 0 || k <= 0 {
-		return nil
-	}
-	seen := make(map[int]bool)
-	var out []historicalItem
-	for _, q := range queries {
-		for _, docIdx := range idx.topKIndices(q, k) {
-			if !seen[docIdx] {
-				seen[docIdx] = true
-				out = append(out, idx.items[docIdx])
-			}
-		}
-	}
-	if len(out) > k {
-		out = out[:k]
+		out[i] = idx.items[r.index]
 	}
 	return out
 }

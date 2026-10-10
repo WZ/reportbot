@@ -1,0 +1,43 @@
+package templates
+
+type PublishedReportData struct {
+	CSRFToken   string
+	IsManager   bool
+	Week        string
+	Mode        string
+	PublishedBy string
+	PublishedAt string
+	HTML        string
+}
+
+templ PublishedList(csrfToken string, isManager bool, weeks []string) {
+	@Layout("Published Reports", csrfToken, isManager, "published") {
+		<div class="editor-header">
+			<h1>Published Reports</h1>
+		</div>
+		if len(weeks) == 0 {
+			<div class="empty"><p>No Published Reports yet.</p></div>
+		}
+		<ul class="published-list">
+			for _, w := range weeks {
+				<li><a href={ templ.SafeURL("/published/" + w) }>{ "Week of " + w }</a></li>
+			}
+		</ul>
+	}
+}
+
+templ PublishedReport(data PublishedReportData) {
+	@Layout("Published Report", data.CSRFToken, data.IsManager, "published") {
+		<div class="editor-header">
+			<h1>{ "Published Report: week of " + data.Week }</h1>
+			<span class="muted">{ "Published by " + data.PublishedBy + " at " + data.PublishedAt }</span>
+		</div>
+		<div class="actions">
+			<a class={ "btn", templ.KV("btn-primary", data.Mode == "team"), templ.KV("btn-secondary", data.Mode != "team") } href={ templ.SafeURL("/published/" + data.Week) }>Team</a>
+			<a class={ "btn", templ.KV("btn-primary", data.Mode == "boss"), templ.KV("btn-secondary", data.Mode != "boss") } href={ templ.SafeURL("/published/" + data.Week + "?mode=boss") }>Boss</a>
+		</div>
+		<div class="preview-panel published">
+			@MarkdownPreviewHTML(data.HTML)
+		</div>
+	}
+}

@@ -5,673 +5,572 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"reportbot/internal/domain"
-	"reportbot/internal/report"
+	"reportbot/internal/storage/sqlite"
 	"reportbot/internal/web"
-	mw "reportbot/internal/web/middleware"
-
-	"github.com/go-chi/chi/v5"
 )
 
-// --- Test helpers ---
+const testWeek = "2026-03-16"
 
-// testConfig returns a minimal Config for tests.
-func testConfig() web.Config {
-	return web.Config{
-		TeamName:         "TestTeam",
-		ManagerSlackIDs:  []string{"UMGR"},
-		WebSessionSecret: "test-secret-32-bytes-long-xxxxx",
-	}
+type user struct{ id, name string }
+
+var (
+	manager = user{"UMGR", "Manager"}
+	alice   = user{"UALICE", "alice"}
+	bob     = user{"UBOB", "bob"}
+	carol   = user{"UCAROL", "carol"}
+)
+
+type testEnv struct {
+	t       *testing.T
+	db      *sql.DB
+	cfg     web.Config
+	handler http.Handler
+	woke    atomic.Int32
+	sec     map[string]int64 // seeded node ids by name
+	items   map[string]int64 // seeded Work Item ids by key
 }
 
-// authMiddleware returns a chi-compatible middleware that injects auth context.
-func authMiddleware(userID, userName string, isManager bool) func(http.Handler) http.Handler {
-	return mw.Auth(
-		func(cookie *http.Cookie) (mw.SessionPayload, error) {
-			return mw.SessionPayload{UserID: userID, UserName: userName}, nil
+func conf(f float64) *float64 { return &f }
+
+// newEnv builds a server over a fresh database: Taxonomy Platform › Storage › {Ingest, Query}
+// and Platform › Ops (a Category that is itself a Section), plus three Work Items.
+func newEnv(t *testing.T) *testEnv {
+	t.Helper()
+	db, err := sqlite.InitDB(filepath.Join(t.TempDir(), "x.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	ids, err := sqlite.SeedTaxonomy(db, []sqlite.SeedArea{{
+		Name: "Platform",
+		Categories: []sqlite.SeedCategory{
+			{Name: "Storage", Sections: []string{"Ingest", "Query"}},
+			{Name: "Ops"},
 		},
-		func() *http.Cookie {
-			return &http.Cookie{Name: "reportbot_session", Value: "", Path: "/", MaxAge: -1}
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := &testEnv{
+		t:  t,
+		db: db,
+		cfg: web.Config{
+			TeamName:                "TestTeam",
+			ManagerSlackIDs:         []string{manager.id},
+			WebSessionSecret:        "test-secret-32-bytes-long-xxxxx",
+			ReportOutputDir:         t.TempDir(),
+			DecisionModelConfidence: 0.7,
+			Location:                time.UTC,
 		},
-		func(uid string) bool {
-			return isManager
+		sec: map[string]int64{
+			"Ingest":  ids[sqlite.SeedKey("Platform", "Storage", "Ingest")],
+			"Query":   ids[sqlite.SeedKey("Platform", "Storage", "Query")],
+			"Storage": ids[sqlite.SeedKey("Platform", "Storage", "")],
+			"Ops":     ids[sqlite.SeedKey("Platform", "Ops", "")],
 		},
-	)
+		items: map[string]int64{},
+	}
+	reported := time.Date(2026, 3, 17, 10, 0, 0, 0, time.UTC)
+	for key, it := range map[string]domain.WorkItem{
+		"alice": {Description: "Fix ingest lag", Author: "Alice", AuthorID: alice.id, Source: "slack", Status: domain.StatusInProgress,
+			SectionID: e.sec["Ingest"], PlacedBy: domain.PlacedByModel, Confidence: conf(0.95)},
+		"bob": {Description: "Mystery task", Author: "Bob", AuthorID: bob.id, Source: "gitlab", Status: domain.StatusInProgress,
+			UndeterminedReason: domain.ReasonLowConfidence},
+		"carol": {Description: "Tune query cache", Author: "Carol", Source: "slack", Status: domain.StatusInTesting,
+			SectionID: e.sec["Query"], PlacedBy: domain.PlacedByModel, Confidence: conf(0.4)},
+	} {
+		it.ReportedAt = reported
+		it.FilingState = domain.FilingFiled
+		id, err := sqlite.InsertWorkItem(db, it)
+		if err != nil {
+			t.Fatal(err)
+		}
+		e.items[key] = id
+	}
+	e.handler = NewServer(e.cfg, db, func() { e.woke.Add(1) }).Handler
+	return e
 }
 
-// sessionCookie returns a dummy session cookie so the auth middleware doesn't reject for missing cookie.
-func sessionCookie() *http.Cookie {
-	return &http.Cookie{Name: "reportbot_session", Value: "test"}
-}
-
-// saveDeps saves and returns a restore function for all overrideable deps.
-type depsSnapshot struct {
-	GetItemsByDateRange          func(*sql.DB, time.Time, time.Time) ([]web.WorkItem, error)
-	GetWorkItemByID              func(*sql.DB, int64) (web.WorkItem, error)
-	GetRecentCorrections         func(*sql.DB, time.Time, int) ([]web.ClassificationCorrection, error)
-	GetClassifiedItemsWithSections func(*sql.DB, time.Time, int) ([]domain.HistoricalItem, error)
-	BuildReportsFromLast         func(web.Config, []web.WorkItem, time.Time, []web.ClassificationCorrection, []domain.HistoricalItem) (web.BuildResult, error)
-	RenderMarkdownByMode         func(*web.ReportTemplate, string) string
-	ReclassifyItem               func(*sql.DB, web.ClassificationCorrection, string) error
-	UpdateWorkItemTextAndStatus  func(*sql.DB, int64, string, string) error
-	DeleteWorkItemByID                func(*sql.DB, int64) error
-	WriteReportFile                   func(string, string, time.Time, string) (string, error)
-	IsManagerID                       func(web.Config, string) bool
-	ReportWeekRange                   func(web.Config, time.Time) (time.Time, time.Time)
-	GetLatestClassificationsForItems  func(*sql.DB, []int64) (map[int64]web.ClassificationRecord, error)
-	GetAllSectionLabels               func(*sql.DB) (map[string]string, error)
-}
-
-func saveDeps() (restore func()) {
-	snap := depsSnapshot{
-		GetItemsByDateRange:              web.GetItemsByDateRange,
-		GetWorkItemByID:                  web.GetWorkItemByID,
-		GetRecentCorrections:             web.GetRecentCorrections,
-		GetClassifiedItemsWithSections:   web.GetClassifiedItemsWithSections,
-		BuildReportsFromLast:             web.BuildReportsFromLast,
-		RenderMarkdownByMode:             web.RenderMarkdownByMode,
-		ReclassifyItem:                   web.ReclassifyItem,
-		UpdateWorkItemTextAndStatus:      web.UpdateWorkItemTextAndStatus,
-		DeleteWorkItemByID:               web.DeleteWorkItemByID,
-		WriteReportFile:                  web.WriteReportFile,
-		IsManagerID:                      web.IsManagerID,
-		ReportWeekRange:                  web.ReportWeekRange,
-		GetLatestClassificationsForItems: web.GetLatestClassificationsForItems,
-		GetAllSectionLabels:              web.GetAllSectionLabels,
+// do sends a signed-in request; POSTs carry the form and a matching CSRF cookie and header.
+func (e *testEnv) do(method, path string, u user, form url.Values) *httptest.ResponseRecorder {
+	e.t.Helper()
+	var req *http.Request
+	if method == http.MethodPost {
+		req = httptest.NewRequest(method, path, strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Header.Set("X-CSRF-Token", "csrf-test")
+	} else {
+		req = httptest.NewRequest(method, path, nil)
 	}
-	return func() {
-		web.GetItemsByDateRange = snap.GetItemsByDateRange
-		web.GetWorkItemByID = snap.GetWorkItemByID
-		web.GetRecentCorrections = snap.GetRecentCorrections
-		web.GetClassifiedItemsWithSections = snap.GetClassifiedItemsWithSections
-		web.BuildReportsFromLast = snap.BuildReportsFromLast
-		web.RenderMarkdownByMode = snap.RenderMarkdownByMode
-		web.ReclassifyItem = snap.ReclassifyItem
-		web.UpdateWorkItemTextAndStatus = snap.UpdateWorkItemTextAndStatus
-		web.DeleteWorkItemByID = snap.DeleteWorkItemByID
-		web.WriteReportFile = snap.WriteReportFile
-		web.IsManagerID = snap.IsManagerID
-		web.ReportWeekRange = snap.ReportWeekRange
-		web.GetLatestClassificationsForItems = snap.GetLatestClassificationsForItems
-		web.GetAllSectionLabels = snap.GetAllSectionLabels
+	req.AddCookie(&http.Cookie{Name: "_csrf", Value: "csrf-test"})
+	cookie, err := web.CreateSessionCookie(e.cfg.WebSessionSecret,
+		web.SessionPayload{UserID: u.id, UserName: u.name, ExpiresAt: time.Now().Add(time.Hour)}, false)
+	if err != nil {
+		e.t.Fatal(err)
 	}
-}
-
-// stubEmptyBuild stubs out the build pipeline to return empty/no-op results.
-func stubEmptyBuild() {
-	web.GetLatestClassificationsForItems = func(db *sql.DB, ids []int64) (map[int64]web.ClassificationRecord, error) {
-		return nil, nil
-	}
-	web.GetAllSectionLabels = func(db *sql.DB) (map[string]string, error) {
-		return nil, nil
-	}
-	web.GetRecentCorrections = func(db *sql.DB, since time.Time, limit int) ([]web.ClassificationCorrection, error) {
-		return nil, nil
-	}
-	web.GetClassifiedItemsWithSections = func(db *sql.DB, since time.Time, limit int) ([]domain.HistoricalItem, error) {
-		return nil, nil
-	}
-	web.BuildReportsFromLast = func(cfg web.Config, items []web.WorkItem, reportDate time.Time, corrections []web.ClassificationCorrection, historicalItems []domain.HistoricalItem) (web.BuildResult, error) {
-		return web.BuildResult{
-			Template: &report.ReportTemplate{
-				Categories: []report.TemplateCategory{
-					{
-						Name: "Engineering",
-						Subsections: []report.TemplateSubsection{
-							{
-								Name: "General",
-								Items: []report.TemplateItem{
-									{Author: "Alice", Description: "Fix login bug", Status: "done", IsNew: true},
-								},
-							},
-						},
-					},
-				},
-			},
-			Decisions: map[int64]web.LLMSectionDecision{
-				1: {SectionID: "S0_0", Confidence: 0.95},
-			},
-		}, nil
-	}
-	web.ReportWeekRange = func(cfg web.Config, now time.Time) (time.Time, time.Time) {
-		monday := time.Date(2026, 3, 16, 0, 0, 0, 0, time.UTC)
-		return monday, monday.AddDate(0, 0, 7)
-	}
-}
-
-// --- Tests ---
-
-func TestEditorPage_LoadsItemsGroupedBySection(t *testing.T) {
-	restore := saveDeps()
-	defer restore()
-
-	web.GetItemsByDateRange = func(db *sql.DB, from, to time.Time) ([]web.WorkItem, error) {
-		return []web.WorkItem{
-			{ID: 1, Description: "Fix login bug", Author: "Alice", AuthorID: "UMGR", Source: "slack", Status: "done"},
-			{ID: 2, Description: "Add search feature", Author: "Bob", AuthorID: "UMGR", Source: "gitlab", Status: "in progress"},
-		}, nil
-	}
-	stubEmptyBuild()
-
-	cfg := testConfig()
-	r := chi.NewRouter()
-	r.Use(authMiddleware("UMGR", "manager", true))
-	r.Get("/", ReportEditorPage(cfg, nil))
-
-	req := httptest.NewRequest("GET", "/", nil)
-	req.AddCookie(sessionCookie())
+	req.AddCookie(cookie)
 	rr := httptest.NewRecorder()
-	r.ServeHTTP(rr, req)
+	e.handler.ServeHTTP(rr, req)
+	return rr
+}
 
-	if rr.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", rr.Code)
+func (e *testEnv) item(key string) domain.WorkItem {
+	e.t.Helper()
+	it, err := sqlite.GetWorkItemByID(e.db, e.items[key])
+	if err != nil {
+		e.t.Fatal(err)
 	}
+	return it
+}
+
+func (e *testEnv) node(id int64) domain.TaxonomyNode {
+	e.t.Helper()
+	tax, err := sqlite.LoadTaxonomy(e.db)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	n, ok := tax.Node(id)
+	if !ok {
+		e.t.Fatalf("node %d not found", id)
+	}
+	return n
+}
+
+func expectCode(t *testing.T, rr *httptest.ResponseRecorder, want int) {
+	t.Helper()
+	if rr.Code != want {
+		t.Fatalf("expected %d, got %d: %s", want, rr.Code, rr.Body.String())
+	}
+}
+
+func itemPath(id int64, suffix string) string { return fmt.Sprintf("/items/%d%s", id, suffix) }
+
+func TestLivePage_RequiresSignIn(t *testing.T) {
+	e := newEnv(t)
+	rr := httptest.NewRecorder()
+	e.handler.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/", nil))
+	expectCode(t, rr, http.StatusFound)
+	if loc := rr.Header().Get("Location"); loc != "/login" {
+		t.Errorf("expected redirect to /login, got %q", loc)
+	}
+}
+
+func TestLivePage_UndeterminedFirstWithSectionPaths(t *testing.T) {
+	e := newEnv(t)
+	rr := e.do(http.MethodGet, "/?week="+testWeek, bob, nil)
+	expectCode(t, rr, http.StatusOK)
 	body := rr.Body.String()
-	if !strings.Contains(body, "Weekly Report") {
-		t.Error("expected response to contain 'Weekly Report'")
+
+	und, mystery, ingest := strings.Index(body, ">Undetermined<"), strings.Index(body, "Mystery task"), strings.Index(body, "Fix ingest lag")
+	if und < 0 || mystery < 0 || ingest < 0 {
+		t.Fatalf("expected Undetermined block and both Work Items, got: %s", body)
+	}
+	if !(und < mystery && mystery < ingest) {
+		t.Errorf("expected Undetermined first: und=%d mystery=%d ingest=%d", und, mystery, ingest)
+	}
+	for _, want := range []string{"Platform › Storage › Ingest", "Platform › Storage › Query", "placed by model · 95%", "Undetermined: low_confidence", "low confidence", `hx-trigger="every 15s`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("expected page to contain %q", want)
+		}
+	}
+	if !strings.Contains(body, `hx-get="`+itemPath(e.items["bob"], "/edit")+`"`) {
+		t.Error("expected an edit button on the viewer's own Work Item")
+	}
+	if strings.Contains(body, `hx-get="`+itemPath(e.items["alice"], "/edit")+`"`) {
+		t.Error("expected no edit button on another author's Work Item")
 	}
 }
 
-func TestEditorPage_EmptyWeek(t *testing.T) {
-	restore := saveDeps()
-	defer restore()
-
-	web.GetItemsByDateRange = func(db *sql.DB, from, to time.Time) ([]web.WorkItem, error) {
-		return nil, nil
+func TestLivePage_PendingItemNeedsAttention(t *testing.T) {
+	e := newEnv(t)
+	if err := sqlite.SetFilingPending(e.db, e.items["alice"], "{}"); err != nil {
+		t.Fatal(err)
 	}
-	stubEmptyBuild()
-
-	cfg := testConfig()
-	r := chi.NewRouter()
-	r.Use(authMiddleware("UMGR", "manager", true))
-	r.Get("/", ReportEditorPage(cfg, nil))
-
-	req := httptest.NewRequest("GET", "/", nil)
-	req.AddCookie(sessionCookie())
-	rr := httptest.NewRecorder()
-	r.ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", rr.Code)
+	body := e.do(http.MethodGet, "/?week="+testWeek, alice, nil).Body.String()
+	if !strings.Contains(body, "filing…") {
+		t.Error("expected a pending Work Item to show filing…")
 	}
+}
+
+func TestItemRoutes_Permissions(t *testing.T) {
+	e := newEnv(t)
+	form := url.Values{"description": {"Fix ingest lag"}, "status": {"done"}}
+
+	expectCode(t, e.do(http.MethodGet, itemPath(e.items["alice"], "/edit"), bob, nil), http.StatusForbidden)
+	expectCode(t, e.do(http.MethodPost, itemPath(e.items["alice"], ""), bob, form), http.StatusForbidden)
+	expectCode(t, e.do(http.MethodPost, itemPath(e.items["alice"], "/move"), bob, url.Values{"section_id": {"0"}}), http.StatusForbidden)
+	expectCode(t, e.do(http.MethodPost, itemPath(e.items["alice"], "/delete"), bob, nil), http.StatusForbidden)
+	if e.item("alice").Status != domain.StatusInProgress {
+		t.Fatal("a forbidden edit changed the Work Item")
+	}
+
+	rr := e.do(http.MethodGet, itemPath(e.items["alice"], "/edit"), alice, nil)
+	expectCode(t, rr, http.StatusOK)
+	if !strings.Contains(rr.Body.String(), `<option value="blocked"`) {
+		t.Error("expected the edit form to offer every Status")
+	}
+	expectCode(t, e.do(http.MethodPost, itemPath(e.items["alice"], ""), alice, form), http.StatusOK)
+	if e.item("alice").Status != domain.StatusDone {
+		t.Error("expected the owner's edit to be saved")
+	}
+
+	// No author ID: the signed-in name owns it.
+	carolForm := url.Values{"description": {"Tune query cache"}, "status": {"blocked"}, "status_note": {"waiting on infra"}}
+	expectCode(t, e.do(http.MethodPost, itemPath(e.items["carol"], ""), carol, carolForm), http.StatusOK)
+	if it := e.item("carol"); it.Status != domain.StatusBlocked || it.StatusNote != "waiting on infra" {
+		t.Errorf("expected carol's edit saved, got %+v", it)
+	}
+
+	managerForm := url.Values{"description": {"Mystery task"}, "status": {"in testing"}}
+	expectCode(t, e.do(http.MethodPost, itemPath(e.items["bob"], ""), manager, managerForm), http.StatusOK)
+	if e.item("bob").Status != domain.StatusInTesting {
+		t.Error("expected a manager to edit any Work Item")
+	}
+}
+
+func TestUpdateItem_RejectsBadInput(t *testing.T) {
+	e := newEnv(t)
+	expectCode(t, e.do(http.MethodPost, itemPath(e.items["alice"], ""), alice, url.Values{"description": {""}, "status": {"done"}}), http.StatusBadRequest)
+	expectCode(t, e.do(http.MethodPost, itemPath(e.items["alice"], ""), alice, url.Values{"description": {"x"}, "status": {"in review"}}), http.StatusBadRequest)
+}
+
+func TestUpdateItem_TextChangeRequeuesFiling(t *testing.T) {
+	e := newEnv(t)
+	form := url.Values{"description": {"Fix ingest lag on shard 3"}, "status": {"in progress"}, "section_id": {fmt.Sprint(e.sec["Ingest"])}}
+	rr := e.do(http.MethodPost, itemPath(e.items["alice"], ""), alice, form)
+	expectCode(t, rr, http.StatusOK)
+
+	if it := e.item("alice"); it.FilingState != domain.FilingPending || it.Description != "Fix ingest lag on shard 3" {
+		t.Errorf("expected new text and pending filing, got %+v", it)
+	}
+	var payload string
+	if err := e.db.QueryRow(`SELECT payload FROM jobs WHERE kind = ? AND work_item_id = ? AND state = 'queued'`, sqlite.JobFile, e.items["alice"]).Scan(&payload); err != nil {
+		t.Fatalf("expected a queued filing job: %v", err)
+	}
+	if !strings.Contains(payload, `"kind":"edit"`) {
+		t.Errorf("expected an edit payload, got %s", payload)
+	}
+	if e.woke.Load() != 1 {
+		t.Errorf("expected wake once, got %d", e.woke.Load())
+	}
+	if rr.Header().Get("HX-Trigger-After-Settle") != "report-changed" {
+		t.Error("expected the response to refresh the report")
+	}
+}
+
+func TestUpdateItem_SectionChangeIsPersonPlacement(t *testing.T) {
+	e := newEnv(t)
+	form := url.Values{"description": {"Fix ingest lag in query"}, "status": {"in progress"}, "section_id": {fmt.Sprint(e.sec["Query"])}}
+	expectCode(t, e.do(http.MethodPost, itemPath(e.items["alice"], ""), alice, form), http.StatusOK)
+	it := e.item("alice")
+	if it.SectionID != e.sec["Query"] || it.PlacedBy != domain.PlacedByPerson || it.FilingState != domain.FilingFiled {
+		t.Errorf("expected a person Placement in Query, got %+v", it)
+	}
+	if e.woke.Load() != 0 {
+		t.Error("expected no re-filing when a person picked the Section")
+	}
+}
+
+func TestMoveItem_RecordsPersonPlacement(t *testing.T) {
+	e := newEnv(t)
+	rr := e.do(http.MethodPost, itemPath(e.items["bob"], "/move"), bob, url.Values{"section_id": {fmt.Sprint(e.sec["Query"])}})
+	expectCode(t, rr, http.StatusOK)
+	if !strings.Contains(rr.Body.String(), "placed by person") {
+		t.Errorf("expected the row to show the new Placement, got %s", rr.Body.String())
+	}
+	if it := e.item("bob"); it.SectionID != e.sec["Query"] || it.PlacedBy != domain.PlacedByPerson {
+		t.Errorf("expected bob's Work Item in Query placed by person, got %+v", it)
+	}
+	var reason, actor string
+	if err := e.db.QueryRow(`SELECT reason, actor_id FROM placement_history WHERE work_item_id = ? ORDER BY id DESC LIMIT 1`, e.items["bob"]).Scan(&reason, &actor); err != nil {
+		t.Fatal(err)
+	}
+	if reason != sqlite.ReasonWebMove || actor != bob.id {
+		t.Errorf("expected history reason=%s actor=%s, got %s %s", sqlite.ReasonWebMove, bob.id, reason, actor)
+	}
+
+	expectCode(t, e.do(http.MethodPost, itemPath(e.items["bob"], "/move"), bob, url.Values{"section_id": {"0"}}), http.StatusOK)
+	if e.item("bob").SectionID != 0 {
+		t.Error("expected section_id=0 to move the Work Item to Undetermined")
+	}
+	expectCode(t, e.do(http.MethodPost, itemPath(e.items["bob"], "/move"), bob, url.Values{"section_id": {fmt.Sprint(e.sec["Storage"])}}), http.StatusBadRequest)
+}
+
+func TestDeleteItem(t *testing.T) {
+	e := newEnv(t)
+	expectCode(t, e.do(http.MethodPost, itemPath(e.items["alice"], "/delete"), alice, nil), http.StatusOK)
+	if _, err := sqlite.GetWorkItemByID(e.db, e.items["alice"]); err != sql.ErrNoRows {
+		t.Errorf("expected the Work Item deleted, got err=%v", err)
+	}
+	expectCode(t, e.do(http.MethodPost, itemPath(e.items["alice"], "/delete"), alice, nil), http.StatusNotFound)
+}
+
+func TestPreview_TeamAndBoss(t *testing.T) {
+	e := newEnv(t)
+	rr := e.do(http.MethodGet, "/preview?mode=team&week="+testWeek, bob, nil)
+	expectCode(t, rr, http.StatusOK)
+	team := rr.Body.String()
+	if !strings.Contains(team, "<strong>Alice</strong> - Fix ingest lag (in progress)") || !strings.Contains(team, "<h4>Undetermined</h4>") {
+		t.Errorf("unexpected team preview: %s", team)
+	}
+
+	boss := e.do(http.MethodGet, "/preview?mode=boss&week="+testWeek, bob, nil).Body.String()
+	if strings.Contains(boss, "<strong>Alice</strong> -") || !strings.Contains(boss, "Fix ingest lag (in progress)") {
+		t.Errorf("unexpected boss preview: %s", boss)
+	}
+	if !strings.Contains(boss, "Alice") {
+		t.Error("expected the boss preview to name authors in the Category heading")
+	}
+}
+
+func TestGenerate_WarnsThenPublishes(t *testing.T) {
+	e := newEnv(t)
+	expectCode(t, e.do(http.MethodPost, "/generate?week="+testWeek, bob, nil), http.StatusForbidden)
+
+	rr := e.do(http.MethodPost, "/generate?week="+testWeek, manager, nil)
+	expectCode(t, rr, http.StatusOK)
+	if body := rr.Body.String(); !strings.Contains(body, "Undetermined") || !strings.Contains(body, "confirm=1") {
+		t.Fatalf("expected an Undetermined warning with a confirm button, got %s", body)
+	}
+	if _, ok, _ := sqlite.GetPublishedReport(e.db, testWeek); ok {
+		t.Fatal("expected nothing published before confirmation")
+	}
+
+	rr = e.do(http.MethodPost, "/generate?week="+testWeek+"&confirm=1", manager, nil)
+	expectCode(t, rr, http.StatusOK)
+	m := regexp.MustCompile(`/generate/([^/]+)/status`).FindStringSubmatch(rr.Body.String())
+	if m == nil {
+		t.Fatalf("expected a polling element, got %s", rr.Body.String())
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	var status string
+	for {
+		status = e.do(http.MethodGet, "/generate/"+m[1]+"/status", manager, nil).Body.String()
+		if !strings.Contains(status, "spinner") || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !strings.Contains(status, "flash-success") {
+		t.Fatalf("expected publish to succeed, got %s", status)
+	}
+
+	rep, ok, err := sqlite.GetPublishedReport(e.db, testWeek)
+	if err != nil || !ok {
+		t.Fatalf("expected a Published Report row: ok=%v err=%v", ok, err)
+	}
+	if rep.PublishedBy != manager.id || rep.UndeterminedCount != 1 || !strings.Contains(rep.TeamMarkdown, "Fix ingest lag") {
+		t.Errorf("unexpected Published Report: %+v", rep)
+	}
+	for _, pattern := range []string{"*.md", "*.eml"} {
+		files, _ := filepath.Glob(filepath.Join(e.cfg.ReportOutputDir, pattern))
+		if len(files) != 1 {
+			t.Errorf("expected one %s file, got %v", pattern, files)
+			continue
+		}
+		if fi, err := os.Stat(files[0]); err != nil || fi.Size() == 0 {
+			t.Errorf("expected %s to be written", files[0])
+		}
+	}
+}
+
+func TestReportBody_NoContentUntilVersionChanges(t *testing.T) {
+	e := newEnv(t)
+	version, err := sqlite.ReportVersion(e.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := "/report/body?week=" + testWeek + "&v=" + version
+	rr := e.do(http.MethodGet, path, bob, nil)
+	expectCode(t, rr, http.StatusNoContent)
+	if rr.Body.Len() != 0 {
+		t.Error("expected an empty 204 body")
+	}
+
+	if err := sqlite.UpdateWorkItemFields(e.db, e.items["alice"], "Fix ingest lag", domain.StatusBlocked, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	rr = e.do(http.MethodGet, path, bob, nil)
+	expectCode(t, rr, http.StatusOK)
+	if body := rr.Body.String(); !strings.Contains(body, `id="report-body"`) || strings.Contains(body, "&v="+version+`"`) {
+		t.Errorf("expected a fresh body with the new version, got %s", body)
+	}
+}
+
+func TestPublishedPages(t *testing.T) {
+	e := newEnv(t)
+	if err := sqlite.SavePublishedReport(e.db, sqlite.PublishedReport{
+		WeekStart: testWeek, TeamMarkdown: "### Platform\n\n- **Alice** - team line (done)\n",
+		BossMarkdown: "### Platform\n\n- boss line (done)\n", PublishedBy: manager.id,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rr := e.do(http.MethodGet, "/published", bob, nil)
+	expectCode(t, rr, http.StatusOK)
+	if !strings.Contains(rr.Body.String(), `href="/published/`+testWeek+`"`) {
+		t.Errorf("expected the week listed, got %s", rr.Body.String())
+	}
+
+	team := e.do(http.MethodGet, "/published/"+testWeek, bob, nil).Body.String()
+	if !strings.Contains(team, "<strong>Alice</strong> - team line (done)") || strings.Contains(team, "boss line") {
+		t.Errorf("expected the team version, got %s", team)
+	}
+	boss := e.do(http.MethodGet, "/published/"+testWeek+"?mode=boss", bob, nil).Body.String()
+	if !strings.Contains(boss, "boss line (done)") {
+		t.Errorf("expected the boss version, got %s", boss)
+	}
+	expectCode(t, e.do(http.MethodGet, "/published/2020-01-06", bob, nil), http.StatusNotFound)
+}
+
+// --- Taxonomy ---
+
+// clearReclassify marks queued re-classification done so the next edit must queue a new one.
+func (e *testEnv) clearReclassify() {
+	e.t.Helper()
+	if _, err := e.db.Exec(`UPDATE jobs SET state = 'done' WHERE kind = ?`, sqlite.JobReclassify); err != nil {
+		e.t.Fatal(err)
+	}
+}
+
+func (e *testEnv) expectReclassifyQueued(step string) {
+	e.t.Helper()
+	pending, err := sqlite.PendingReclassify(e.db)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	if !pending {
+		e.t.Errorf("%s: expected re-classification queued", step)
+	}
+}
+
+func TestTaxonomyPage(t *testing.T) {
+	e := newEnv(t)
+	expectCode(t, e.do(http.MethodGet, "/taxonomy", bob, nil), http.StatusForbidden)
+
+	rr := e.do(http.MethodGet, "/taxonomy", manager, nil)
+	expectCode(t, rr, http.StatusOK)
 	body := rr.Body.String()
-	// With no items, ItemCount in the rendered template should be 0
-	if strings.Contains(body, "Engineering") {
-		t.Error("expected no sections to be rendered for an empty week")
+	for _, want := range []string{"Platform", "Storage", "Ingest", "Ops", `name="csrf_token"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("expected taxonomy page to contain %q", want)
+		}
+	}
+	if strings.Contains(body, "Re-classifying") {
+		t.Error("expected no re-classifying note while nothing is queued")
+	}
+	if err := sqlite.EnqueueReclassify(e.db); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(e.do(http.MethodGet, "/taxonomy", manager, nil).Body.String(), "Re-classifying Open Work Items") {
+		t.Error("expected the re-classifying note while a job is queued")
 	}
 }
 
-func TestEditorPage_WeekParameter(t *testing.T) {
-	restore := saveDeps()
-	defer restore()
-
-	var capturedFrom, capturedTo time.Time
-	web.GetItemsByDateRange = func(db *sql.DB, from, to time.Time) ([]web.WorkItem, error) {
-		capturedFrom = from
-		capturedTo = to
-		return nil, nil
+func TestTaxonomyEdits_QueueReclassification(t *testing.T) {
+	e := newEnv(t)
+	storage := fmt.Sprint(e.sec["Storage"])
+	steps := []struct {
+		name string
+		path string
+		form url.Values
+	}{
+		{"add", "/taxonomy/nodes", url.Values{"parent_id": {storage}, "level": {"section"}, "name": {"Retention"}, "description": {"Data retention"}}},
+		{"rename", fmt.Sprintf("/taxonomy/nodes/%d", e.sec["Query"]), url.Values{"name": {"Search"}, "description": {"Query and search"}}},
+		{"move", fmt.Sprintf("/taxonomy/nodes/%d/move", e.sec["Query"]), url.Values{"dir": {"up"}}},
+		{"retire", fmt.Sprintf("/taxonomy/nodes/%d/retire", e.sec["Ops"]), nil},
 	}
-	stubEmptyBuild()
-
-	cfg := testConfig()
-	r := chi.NewRouter()
-	r.Use(authMiddleware("UMGR", "manager", true))
-	r.Get("/", ReportEditorPage(cfg, nil))
-
-	req := httptest.NewRequest("GET", "/?week=2026-03-16", nil)
-	req.AddCookie(sessionCookie())
-	rr := httptest.NewRecorder()
-	r.ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", rr.Code)
+	for i, s := range steps {
+		e.clearReclassify()
+		rr := e.do(http.MethodPost, s.path, manager, s.form)
+		expectCode(t, rr, http.StatusSeeOther)
+		e.expectReclassifyQueued(s.name)
+		if got := e.woke.Load(); got != int32(i+1) {
+			t.Errorf("%s: expected wake count %d, got %d", s.name, i+1, got)
+		}
 	}
 
-	expectedMonday := time.Date(2026, 3, 16, 0, 0, 0, 0, time.UTC)
-	if !capturedFrom.Equal(expectedMonday) {
-		t.Errorf("expected from=%v, got %v", expectedMonday, capturedFrom)
+	tax, err := sqlite.LoadTaxonomy(e.db)
+	if err != nil {
+		t.Fatal(err)
 	}
-	expectedTo := expectedMonday.AddDate(0, 0, 7)
-	if !capturedTo.Equal(expectedTo) {
-		t.Errorf("expected to=%v, got %v", expectedTo, capturedTo)
+	var names []string
+	for _, n := range tax.Children(e.sec["Storage"]) {
+		names = append(names, n.Name)
 	}
+	if got := strings.Join(names, ","); got != "Search,Ingest,Retention" {
+		t.Errorf("expected Storage sections Search,Ingest,Retention, got %s", got)
+	}
+	if !e.node(e.sec["Ops"]).Retired {
+		t.Error("expected Ops retired")
+	}
+
+	expectCode(t, e.do(http.MethodPost, "/taxonomy/nodes", bob, url.Values{"parent_id": {"0"}, "level": {"area"}, "name": {"X"}}), http.StatusForbidden)
+	expectCode(t, e.do(http.MethodPost, fmt.Sprintf("/taxonomy/nodes/%d/move", e.sec["Query"]), manager, url.Values{"dir": {"sideways"}}), http.StatusBadRequest)
 }
 
-func TestEditorPage_InvalidWeekParam(t *testing.T) {
-	restore := saveDeps()
-	defer restore()
-
-	web.GetItemsByDateRange = func(db *sql.DB, from, to time.Time) ([]web.WorkItem, error) {
-		return nil, nil
+func TestTaxonomySplit(t *testing.T) {
+	e := newEnv(t)
+	rr := e.do(http.MethodPost, fmt.Sprintf("/taxonomy/nodes/%d/split", e.sec["Ingest"]), manager, url.Values{"names": {"Batch ingest\n\n Stream ingest \n"}})
+	expectCode(t, rr, http.StatusSeeOther)
+	e.expectReclassifyQueued("split")
+	if !e.node(e.sec["Ingest"]).Retired {
+		t.Error("expected the split Section retired")
 	}
-	stubEmptyBuild()
-
-	cfg := testConfig()
-	r := chi.NewRouter()
-	r.Use(authMiddleware("UMGR", "manager", true))
-	r.Get("/", ReportEditorPage(cfg, nil))
-
-	req := httptest.NewRequest("GET", "/?week=garbage", nil)
-	req.AddCookie(sessionCookie())
-	rr := httptest.NewRecorder()
-	r.ServeHTTP(rr, req)
-
-	// Should not fail; should fall back to the current week
-	if rr.Code != http.StatusOK {
-		t.Fatalf("expected 200 for invalid week param, got %d", rr.Code)
+	tax, _ := sqlite.LoadTaxonomy(e.db)
+	var names []string
+	for _, n := range tax.Children(e.sec["Storage"]) {
+		names = append(names, n.Name)
 	}
+	if got := strings.Join(names, ","); got != "Query,Batch ingest,Stream ingest" {
+		t.Errorf("expected new sibling Sections, got %s", got)
+	}
+
+	// A Category that is itself a Section gains child Sections and stays active.
+	expectCode(t, e.do(http.MethodPost, fmt.Sprintf("/taxonomy/nodes/%d/split", e.sec["Ops"]), manager, url.Values{"names": {"Deploys\nOn-call"}}), http.StatusSeeOther)
+	tax, _ = sqlite.LoadTaxonomy(e.db)
+	if n, _ := tax.Node(e.sec["Ops"]); n.Retired {
+		t.Error("expected the Category to stay active")
+	}
+	if kids := tax.Children(e.sec["Ops"]); len(kids) != 2 || kids[0].Level != domain.LevelSection {
+		t.Errorf("expected two child Sections under Ops, got %+v", kids)
+	}
+	if _, ok := tax.Section(e.sec["Ops"]); ok {
+		t.Error("expected Ops to no longer be a Section")
+	}
+
+	expectCode(t, e.do(http.MethodPost, fmt.Sprintf("/taxonomy/nodes/%d/split", e.sec["Storage"]), manager, url.Values{"names": {"X"}}), http.StatusBadRequest)
+	expectCode(t, e.do(http.MethodPost, fmt.Sprintf("/taxonomy/nodes/%d/split", e.sec["Query"]), manager, url.Values{"names": {"  "}}), http.StatusBadRequest)
 }
 
-func TestReclassifyItem_Success(t *testing.T) {
-	restore := saveDeps()
-	defer restore()
-
-	var reclassifyCalled bool
-	var capturedNewSection string
-	web.GetWorkItemByID = func(db *sql.DB, id int64) (web.WorkItem, error) {
-		return web.WorkItem{ID: 42, Description: "Test item", Category: "S0_0"}, nil
+func TestTaxonomyMerge(t *testing.T) {
+	e := newEnv(t)
+	rr := e.do(http.MethodPost, fmt.Sprintf("/taxonomy/nodes/%d/merge", e.sec["Query"]), manager, url.Values{"into": {fmt.Sprint(e.sec["Ingest"])}})
+	expectCode(t, rr, http.StatusSeeOther)
+	e.expectReclassifyQueued("merge")
+	if e.woke.Load() != 1 {
+		t.Errorf("expected wake once, got %d", e.woke.Load())
 	}
-	web.ReclassifyItem = func(db *sql.DB, c web.ClassificationCorrection, newCategory string) error {
-		reclassifyCalled = true
-		capturedNewSection = newCategory
-		return nil
+	if it := e.item("carol"); it.SectionID != e.sec["Ingest"] || it.PlacedBy != domain.PlacedByPerson {
+		t.Errorf("expected carol's Work Item merged into Ingest, got %+v", it)
 	}
-	web.GetAllSectionLabels = func(db *sql.DB) (map[string]string, error) {
-		return map[string]string{"S0_0": "Infra", "S1_0": "Backend"}, nil
+	if !e.node(e.sec["Query"]).Retired {
+		t.Error("expected the merged Section retired")
 	}
-
-	cfg := testConfig()
-	r := chi.NewRouter()
-	r.Use(authMiddleware("UMGR", "manager", true))
-	r.Post("/items/{id}/reclassify", ReclassifyItemHandler(cfg, nil))
-
-	body := strings.NewReader("section_id=S1_0")
-	req := httptest.NewRequest("POST", "/items/42/reclassify", body)
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.AddCookie(sessionCookie())
-	rr := httptest.NewRecorder()
-	r.ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
-	}
-	if !reclassifyCalled {
-		t.Error("expected ReclassifyItem to be called")
-	}
-	if capturedNewSection != "S1_0" {
-		t.Errorf("expected new section 'S1_0', got %q", capturedNewSection)
-	}
-}
-
-func TestReclassifyItem_InvalidSectionID(t *testing.T) {
-	restore := saveDeps()
-	defer restore()
-
-	web.GetWorkItemByID = func(db *sql.DB, id int64) (web.WorkItem, error) {
-		return web.WorkItem{ID: 42}, nil
+	var reason string
+	if err := e.db.QueryRow(`SELECT reason FROM placement_history WHERE work_item_id = ? ORDER BY id DESC LIMIT 1`, e.items["carol"]).Scan(&reason); err != nil || reason != sqlite.ReasonTaxonomyMerge {
+		t.Errorf("expected a taxonomy_merge history row, got %q err=%v", reason, err)
 	}
 
-	cfg := testConfig()
-	r := chi.NewRouter()
-	r.Use(authMiddleware("UMGR", "manager", true))
-	r.Post("/items/{id}/reclassify", ReclassifyItemHandler(cfg, nil))
-
-	body := strings.NewReader("section_id=")
-	req := httptest.NewRequest("POST", "/items/42/reclassify", body)
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.AddCookie(sessionCookie())
-	rr := httptest.NewRecorder()
-	r.ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400 for empty section_id, got %d", rr.Code)
-	}
-}
-
-func TestReclassifyItem_NonManagerForbidden(t *testing.T) {
-	restore := saveDeps()
-	defer restore()
-
-	cfg := testConfig()
-	r := chi.NewRouter()
-	r.Use(authMiddleware("UDEV1", "dev", false))
-	r.Use(mw.RequireManager)
-	r.Post("/items/{id}/reclassify", ReclassifyItemHandler(cfg, nil))
-
-	body := strings.NewReader("section_id=S1_0")
-	req := httptest.NewRequest("POST", "/items/42/reclassify", body)
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.AddCookie(sessionCookie())
-	rr := httptest.NewRecorder()
-	r.ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusForbidden {
-		t.Fatalf("expected 403 for non-manager, got %d", rr.Code)
-	}
-}
-
-func TestUpdateItem_Success(t *testing.T) {
-	restore := saveDeps()
-	defer restore()
-
-	var capturedID int64
-	var capturedDesc, capturedStatus string
-	web.UpdateWorkItemTextAndStatus = func(db *sql.DB, id int64, desc, status string) error {
-		capturedID = id
-		capturedDesc = desc
-		capturedStatus = status
-		return nil
-	}
-	web.GetWorkItemByID = func(db *sql.DB, id int64) (web.WorkItem, error) {
-		return web.WorkItem{ID: id, Description: "Updated description", Author: "Test", Status: "in progress"}, nil
-	}
-	web.GetLatestClassification = func(db *sql.DB, id int64) (web.ClassificationRecord, error) {
-		return web.ClassificationRecord{SectionID: "S0_0", Confidence: 0.9}, nil
-	}
-	web.GetAllSectionLabels = func(db *sql.DB) (map[string]string, error) {
-		return map[string]string{"S0_0": "Test Section"}, nil
-	}
-
-	r := chi.NewRouter()
-	r.Use(authMiddleware("UMGR", "manager", true))
-	r.Post("/items/{id}", UpdateItemHandler(nil))
-
-	body := strings.NewReader("description=Updated+description&status=in+progress")
-	req := httptest.NewRequest("POST", "/items/99", body)
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.AddCookie(sessionCookie())
-	rr := httptest.NewRecorder()
-	r.ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
-	}
-	if capturedID != 99 {
-		t.Errorf("expected item ID 99, got %d", capturedID)
-	}
-	if capturedDesc != "Updated description" {
-		t.Errorf("expected description 'Updated description', got %q", capturedDesc)
-	}
-	if capturedStatus != "in progress" {
-		t.Errorf("expected status 'in progress', got %q", capturedStatus)
-	}
-}
-
-func TestUpdateItem_EmptyDescription(t *testing.T) {
-	restore := saveDeps()
-	defer restore()
-
-	r := chi.NewRouter()
-	r.Use(authMiddleware("UMGR", "manager", true))
-	r.Post("/items/{id}", UpdateItemHandler(nil))
-
-	body := strings.NewReader("description=&status=done")
-	req := httptest.NewRequest("POST", "/items/99", body)
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.AddCookie(sessionCookie())
-	rr := httptest.NewRecorder()
-	r.ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400 for empty description, got %d", rr.Code)
-	}
-}
-
-func TestDeleteItem_Success(t *testing.T) {
-	restore := saveDeps()
-	defer restore()
-
-	var deletedID int64
-	web.DeleteWorkItemByID = func(db *sql.DB, id int64) error {
-		deletedID = id
-		return nil
-	}
-
-	r := chi.NewRouter()
-	r.Use(authMiddleware("UMGR", "manager", true))
-	r.Delete("/items/{id}", DeleteItemHandler(nil))
-
-	req := httptest.NewRequest("DELETE", "/items/55", nil)
-	req.AddCookie(sessionCookie())
-	rr := httptest.NewRecorder()
-	r.ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
-	}
-	if deletedID != 55 {
-		t.Errorf("expected deleted ID 55, got %d", deletedID)
-	}
-}
-
-func TestDeleteItem_NonManagerForbidden(t *testing.T) {
-	restore := saveDeps()
-	defer restore()
-
-	r := chi.NewRouter()
-	r.Use(authMiddleware("UDEV1", "dev", false))
-	r.Use(mw.RequireManager)
-	r.Delete("/items/{id}", DeleteItemHandler(nil))
-
-	req := httptest.NewRequest("DELETE", "/items/55", nil)
-	req.AddCookie(sessionCookie())
-	rr := httptest.NewRecorder()
-	r.ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusForbidden {
-		t.Fatalf("expected 403 for non-manager, got %d", rr.Code)
-	}
-}
-
-func TestPreviewMarkdown_TeamMode(t *testing.T) {
-	restore := saveDeps()
-	defer restore()
-
-	web.GetItemsByDateRange = func(db *sql.DB, from, to time.Time) ([]web.WorkItem, error) {
-		return []web.WorkItem{
-			{ID: 1, Description: "Test item", Author: "Alice", Source: "slack", Status: "done"},
-		}, nil
-	}
-	web.GetRecentCorrections = func(db *sql.DB, since time.Time, limit int) ([]web.ClassificationCorrection, error) {
-		return nil, nil
-	}
-	web.GetClassifiedItemsWithSections = func(db *sql.DB, since time.Time, limit int) ([]domain.HistoricalItem, error) {
-		return nil, nil
-	}
-	web.BuildReportsFromLast = func(cfg web.Config, items []web.WorkItem, reportDate time.Time, corrections []web.ClassificationCorrection, historicalItems []domain.HistoricalItem) (web.BuildResult, error) {
-		return web.BuildResult{
-			Template: &report.ReportTemplate{},
-		}, nil
-	}
-	var capturedMode string
-	web.RenderMarkdownByMode = func(t *web.ReportTemplate, mode string) string {
-		capturedMode = mode
-		return "# Team Report\n- Test item (done)"
-	}
-	web.ReportWeekRange = func(cfg web.Config, now time.Time) (time.Time, time.Time) {
-		monday := time.Date(2026, 3, 16, 0, 0, 0, 0, time.UTC)
-		return monday, monday.AddDate(0, 0, 7)
-	}
-
-	cfg := testConfig()
-	r := chi.NewRouter()
-	r.Use(authMiddleware("UMGR", "manager", true))
-	r.Get("/preview", PreviewMarkdown(cfg, nil))
-
-	req := httptest.NewRequest("GET", "/preview?mode=team&week=2026-03-16", nil)
-	req.AddCookie(sessionCookie())
-	rr := httptest.NewRecorder()
-	r.ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", rr.Code)
-	}
-	if capturedMode != "team" {
-		t.Errorf("expected mode 'team', got %q", capturedMode)
-	}
-	body := rr.Body.String()
-	if !strings.Contains(body, "Team Report") {
-		t.Error("expected rendered markdown to contain 'Team Report'")
-	}
-}
-
-func TestPreviewMarkdown_BossMode(t *testing.T) {
-	restore := saveDeps()
-	defer restore()
-
-	web.GetItemsByDateRange = func(db *sql.DB, from, to time.Time) ([]web.WorkItem, error) {
-		return []web.WorkItem{
-			{ID: 1, Description: "Test item", Author: "Alice", Source: "slack", Status: "done"},
-		}, nil
-	}
-	web.GetRecentCorrections = func(db *sql.DB, since time.Time, limit int) ([]web.ClassificationCorrection, error) {
-		return nil, nil
-	}
-	web.GetClassifiedItemsWithSections = func(db *sql.DB, since time.Time, limit int) ([]domain.HistoricalItem, error) {
-		return nil, nil
-	}
-	web.BuildReportsFromLast = func(cfg web.Config, items []web.WorkItem, reportDate time.Time, corrections []web.ClassificationCorrection, historicalItems []domain.HistoricalItem) (web.BuildResult, error) {
-		return web.BuildResult{
-			Template: &report.ReportTemplate{},
-		}, nil
-	}
-	var capturedMode string
-	web.RenderMarkdownByMode = func(t *web.ReportTemplate, mode string) string {
-		capturedMode = mode
-		return "# Boss Report\n- Summary"
-	}
-	web.ReportWeekRange = func(cfg web.Config, now time.Time) (time.Time, time.Time) {
-		monday := time.Date(2026, 3, 16, 0, 0, 0, 0, time.UTC)
-		return monday, monday.AddDate(0, 0, 7)
-	}
-
-	cfg := testConfig()
-	r := chi.NewRouter()
-	r.Use(authMiddleware("UMGR", "manager", true))
-	r.Get("/preview", PreviewMarkdown(cfg, nil))
-
-	req := httptest.NewRequest("GET", "/preview?mode=boss&week=2026-03-16", nil)
-	req.AddCookie(sessionCookie())
-	rr := httptest.NewRecorder()
-	r.ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", rr.Code)
-	}
-	if capturedMode != "boss" {
-		t.Errorf("expected mode 'boss', got %q", capturedMode)
-	}
-	body := rr.Body.String()
-	if !strings.Contains(body, "Boss Report") {
-		t.Error("expected rendered markdown to contain 'Boss Report'")
-	}
-}
-
-func TestGenerateReport_StartsJob(t *testing.T) {
-	// NOTE: GenerateReport spawns a background goroutine that uses deps.
-	// We must NOT defer restore() before the goroutine completes, or the
-	// goroutine will call real deps with nil db and panic.
-	// Instead, we keep deps overridden for the lifetime of this test.
-	restore := saveDeps()
-	defer restore()
-
-	stubEmptyBuild()
-	web.GetItemsByDateRange = func(db *sql.DB, from, to time.Time) ([]web.WorkItem, error) {
-		return nil, nil
-	}
-	web.GetRecentCorrections = func(db *sql.DB, since time.Time, limit int) ([]web.ClassificationCorrection, error) {
-		return nil, nil
-	}
-	web.GetClassifiedItemsWithSections = func(db *sql.DB, since time.Time, limit int) ([]domain.HistoricalItem, error) {
-		return nil, nil
-	}
-	web.WriteReportFile = func(content, outputDir string, friday time.Time, teamName string) (string, error) {
-		return "/tmp/test_report.md", nil
-	}
-
-	cfg := testConfig()
-	r := chi.NewRouter()
-	r.Use(authMiddleware("UMGR", "manager", true))
-	r.Post("/generate", GenerateReport(cfg, nil))
-
-	req := httptest.NewRequest("POST", "/generate?week=2026-03-16", nil)
-	req.AddCookie(sessionCookie())
-	rr := httptest.NewRecorder()
-	r.ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
-	}
-
-	body := rr.Body.String()
-	// The response should contain a polling div with hx-get for status
-	if !strings.Contains(body, "hx-get") {
-		t.Error("expected response to contain hx-get polling element")
-	}
-	if !strings.Contains(body, "generate-status") {
-		t.Error("expected response to contain generate-status class")
-	}
-	if !strings.Contains(body, "/status") {
-		t.Error("expected response to contain a /status URL for polling")
-	}
-
-	// Wait briefly for background goroutine to complete (it uses stubbed deps, so it's fast)
-	time.Sleep(100 * time.Millisecond)
-}
-
-func TestGenerateReport_PollStatus(t *testing.T) {
-	// Store a job directly in the generateJobs sync.Map
-	jobID := "test-job-123"
-	job := &generateJob{status: "done", message: "Report generated successfully!", path: "/tmp/report.md"}
-	generateJobs.Store(jobID, job)
-	defer generateJobs.Delete(jobID)
-
-	r := chi.NewRouter()
-	r.Use(authMiddleware("UMGR", "manager", true))
-	r.Get("/generate/{jobID}/status", GenerateStatus())
-
-	req := httptest.NewRequest("GET", fmt.Sprintf("/generate/%s/status", jobID), nil)
-	req.AddCookie(sessionCookie())
-	rr := httptest.NewRecorder()
-	r.ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", rr.Code)
-	}
-	body := rr.Body.String()
-	if !strings.Contains(body, "Report generated successfully!") {
-		t.Errorf("expected success message in body, got: %s", body)
-	}
-	if !strings.Contains(body, "flash-success") {
-		t.Error("expected flash-success class in response")
-	}
-
-	// Job should be cleaned up after reading "done" status
-	if _, ok := generateJobs.Load(jobID); ok {
-		t.Error("expected job to be deleted after returning done status")
-	}
-}
-
-func TestGenerateReport_NonManagerForbidden(t *testing.T) {
-	restore := saveDeps()
-	defer restore()
-
-	cfg := testConfig()
-	r := chi.NewRouter()
-	r.Use(authMiddleware("UDEV1", "dev", false))
-	r.Use(mw.RequireManager)
-	r.Post("/generate", GenerateReport(cfg, nil))
-
-	req := httptest.NewRequest("POST", "/generate", nil)
-	req.AddCookie(sessionCookie())
-	rr := httptest.NewRecorder()
-	r.ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusForbidden {
-		t.Fatalf("expected 403 for non-manager, got %d", rr.Code)
-	}
+	expectCode(t, e.do(http.MethodPost, fmt.Sprintf("/taxonomy/nodes/%d/merge", e.sec["Ingest"]), manager, url.Values{"into": {fmt.Sprint(e.sec["Ingest"])}}), http.StatusBadRequest)
+	expectCode(t, e.do(http.MethodPost, fmt.Sprintf("/taxonomy/nodes/%d/merge", e.sec["Ingest"]), manager, url.Values{"into": {fmt.Sprint(e.sec["Query"])}}), http.StatusBadRequest)
 }

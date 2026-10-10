@@ -1,72 +1,86 @@
 package templates
 
-import (
-	"fmt"
-)
-
-func confClass(conf float64) string {
-	if conf >= 0.9 { return "conf conf-high" }
-	if conf >= 0.7 { return "conf conf-med" }
-	return "conf conf-low"
-}
+import "fmt"
 
 func srcClass(source string) string {
 	switch source {
-	case "gitlab": return "src src-gitlab"
-	case "github": return "src src-github"
-	default: return "src src-slack"
+	case "gitlab":
+		return "src src-gitlab"
+	case "github":
+		return "src src-github"
+	case "import":
+		return "src src-import"
+	default:
+		return "src src-slack"
 	}
 }
 
 func srcLabel(source string) string {
 	switch source {
-	case "gitlab": return "GL"
-	case "github": return "GH"
-	default: return "S"
+	case "gitlab":
+		return "GL"
+	case "github":
+		return "GH"
+	case "import":
+		return "IM"
+	default:
+		return "S"
 	}
 }
 
 func statusClass(status string) string {
 	switch status {
-	case "done": return "status status-done"
-	case "in progress": return "status status-progress"
-	case "in review", "in testing": return "status status-review"
-	default: return "status"
+	case "done":
+		return "status status-done"
+	case "in progress":
+		return "status status-progress"
+	case "in testing":
+		return "status status-review"
+	case "blocked":
+		return "status status-blocked"
+	default:
+		return "status"
 	}
 }
 
-templ ItemRow(item ItemData, allSections []SectionData, isManager bool) {
-	<div id={ fmt.Sprintf("item-%d", item.ID) } class={ "item", templ.KV("needs-review", item.Confidence < 0.7) }>
-		<span class={ confClass(item.Confidence) } title={ fmt.Sprintf("%.0f%% confidence", item.Confidence*100) }>
-			{ fmt.Sprintf("%.0f", item.Confidence*100) }
-		</span>
-		<span class={ srcClass(item.Source) }>{ srcLabel(item.Source) }</span>
+func placementText(item ItemData) string {
+	if item.SectionID == 0 {
+		if item.UndeterminedReason != "" {
+			return "Undetermined: " + item.UndeterminedReason
+		}
+		return "Undetermined"
+	}
+	text := "placed by " + item.PlacedBy
+	if item.Confidence != "" {
+		text += " · " + item.Confidence
+	}
+	return text
+}
+
+templ ItemRow(item ItemData) {
+	<div id={ fmt.Sprintf("item-%d", item.ID) } class={ "item", templ.KV("needs-attention", item.Attention != "") }>
+		<span class={ srcClass(item.Source) } title={ item.Source }>{ srcLabel(item.Source) }</span>
 		<div class="item-desc">
 			<div class="text">{ item.Description }</div>
 			<div class="meta">
 				{ item.Author }
-				if item.SourceRef != "" {
-					<span> &middot; </span>
-					<a href={ templ.SafeURL(item.SourceRef) } target="_blank" style="color:#999;">{ item.SourceRef }</a>
-				}
 				if item.TicketIDs != "" {
 					<span> &middot; { item.TicketIDs }</span>
 				}
+				<span> &middot; { placementText(item) }</span>
 			</div>
 		</div>
-		<span class={ statusClass(item.Status) }>{ item.Status }</span>
-		if isManager && item.ID > 0 {
-			<select
-				class="reclassify"
-				hx-post={ fmt.Sprintf("/items/%d/reclassify", item.ID) }
-				hx-target={ fmt.Sprintf("#item-%d", item.ID) }
-				hx-swap="outerHTML"
-				name="section_id"
-			>
-				for _, s := range allSections {
-					<option value={ s.ID } selected?={ s.ID == item.SectionID }>{ s.Name }</option>
-				}
-			</select>
+		if item.Attention != "" {
+			<span class="attention">{ item.Attention }</span>
+		}
+		<span class={ statusClass(item.Status) }>{ item.StatusText }</span>
+		if item.CanEdit {
+			@SectionSelect(item.SectionGroups, item.SectionID, templ.Attributes{
+				"class":     "reclassify",
+				"hx-post":   fmt.Sprintf("/items/%d/move", item.ID),
+				"hx-target": fmt.Sprintf("#item-%d", item.ID),
+				"hx-swap":   "outerHTML",
+			})
 			<div class="item-actions">
 				<button
 					hx-get={ fmt.Sprintf("/items/%d/edit", item.ID) }
@@ -78,10 +92,23 @@ templ ItemRow(item ItemData, allSections []SectionData, isManager bool) {
 					hx-post={ fmt.Sprintf("/items/%d/delete", item.ID) }
 					hx-target={ fmt.Sprintf("#item-%d", item.ID) }
 					hx-swap="delete"
-					hx-confirm="Delete this item?"
+					hx-confirm="Delete this Work Item?"
 					title="Delete"
 				>&times;</button>
 			</div>
 		}
 	</div>
+}
+
+templ SectionSelect(groups []OptionGroup, selected int64, attrs templ.Attributes) {
+	<select name="section_id" { attrs... }>
+		<option value="0" selected?={ selected == 0 }>Undetermined</option>
+		for _, g := range groups {
+			<optgroup label={ g.Label }>
+				for _, o := range g.Options {
+					<option value={ fmt.Sprintf("%d", o.ID) } selected?={ o.ID == selected }>{ o.Name }</option>
+				}
+			</optgroup>
+		}
+	</select>
 }

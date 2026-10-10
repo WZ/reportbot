@@ -54,7 +54,8 @@ func TestNextWeekday(t *testing.T) {
 func TestFormatNudgeItem_AddsLineNumberAndTruncates(t *testing.T) {
 	item := WorkItem{
 		Description: "This is a very long work item description that should be truncated so the primary action can stay aligned with the text row in Slack.",
-		Status:      "resolved in session; root cause analysis in progress",
+		Status:      "in progress",
+		StatusNote:  "resolved in session; root cause analysis in progress",
 		TicketIDs:   "7003001",
 	}
 
@@ -65,7 +66,7 @@ func TestFormatNudgeItem_AddsLineNumberAndTruncates(t *testing.T) {
 	if !strings.Contains(got, "[7003001]") {
 		t.Fatalf("expected ticket prefix, got %q", got)
 	}
-	if !strings.Contains(got, "_(current: resolved in session; root cause analysis in progress)_") {
+	if !strings.Contains(got, "_(current: in progress: resolved in session; root cause analysis in progress)_") {
 		t.Fatalf("expected status suffix, got %q", got)
 	}
 	if !strings.Contains(got, "…") {

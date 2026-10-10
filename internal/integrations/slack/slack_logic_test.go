@@ -1,7 +1,6 @@
 package slackbot
 
 import (
-	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -24,6 +23,17 @@ func TestParseReportItemsSingleAndSharedStatus(t *testing.T) {
 	}
 	if single[0].Description != "Fix login flow" || single[0].Status != "in testing" {
 		t.Fatalf("unexpected single item parse: %+v", single[0])
+	}
+
+	free, err := parseReportItems("[1234567] Fix crash (root cause analysis in progress)\nNo status here", "Alice", loc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if free[0].Status != "" || free[0].StatusNote != "root cause analysis in progress" || free[0].TicketIDs != "1234567" {
+		t.Fatalf("free text leaves Status to the decision model and keeps the note: %+v", free[0])
+	}
+	if free[1].Status != "" || free[1].StatusNote != "" {
+		t.Fatalf("no status text: no default, the model decides: %+v", free[1])
 	}
 
 	multi, err := parseReportItems("Item A\nItem B\n(in progress)", "Bob", loc)
@@ -177,33 +187,6 @@ func TestResolveNudgeTarget(t *testing.T) {
 	}
 }
 
-func TestMapMRStatusAndReportedAt(t *testing.T) {
-	base := time.Date(2026, 2, 20, 10, 0, 0, 0, time.UTC)
-
-	opened := GitLabMR{
-		State:     "opened",
-		UpdatedAt: base.Add(1 * time.Hour),
-		CreatedAt: base,
-	}
-	if got := mapMRStatus(opened); got != "in progress" {
-		t.Fatalf("expected opened MR to map to in progress, got %q", got)
-	}
-	if got := mrReportedAt(opened, time.UTC); !got.Equal(opened.UpdatedAt) {
-		t.Fatalf("expected opened MR to use UpdatedAt, got %v", got)
-	}
-
-	merged := GitLabMR{
-		State:    "merged",
-		MergedAt: base.Add(2 * time.Hour),
-	}
-	if got := mapMRStatus(merged); got != "done" {
-		t.Fatalf("expected merged MR to map to done, got %q", got)
-	}
-	if got := mrReportedAt(merged, time.UTC); !got.Equal(merged.MergedAt) {
-		t.Fatalf("expected merged MR to use MergedAt, got %v", got)
-	}
-}
-
 func TestFormatItemDescriptionForList(t *testing.T) {
 	tests := []struct {
 		name string
@@ -263,6 +246,10 @@ func TestFormatListItemText_AddsLineNumber(t *testing.T) {
 	}
 
 	got := formatListItemText(7, item, " [GitLab]", " _Support Cases_")
+	item.StatusNote = "waiting on vendor"
+	if got := formatListItemText(1, item, "", ""); !strings.Contains(got, "(in progress: waiting on vendor)") {
+		t.Fatalf("expected the Status Note in the list line: %q", got)
+	}
 	want := "7. *Alex Rivera*: [7003001] Tune query timeout for widget pipeline (in progress) [GitLab] _Support Cases_"
 	if got != want {
 		t.Fatalf("formatListItemText() = %q, want %q", got, want)
@@ -314,143 +301,6 @@ func TestMemberReportedThisWeek(t *testing.T) {
 	}
 }
 
-func TestDeriveBossReportFromTeamReport_FileExists(t *testing.T) {
-	dir := t.TempDir()
-	teamName := "TestTeam"
-	friday := time.Date(2026, 2, 20, 0, 0, 0, 0, time.UTC)
-
-	// Create a team report file
-	teamReportContent := `### TestTeam 20260220
-
-#### Engineering
-- **Alice** - Implement feature X (in progress)
-- **Bob** - Fix bug Y (done)
-`
-	teamReportFile := fmt.Sprintf("%s_%s.md", teamName, friday.Format("20060102"))
-	teamReportPath := filepath.Join(dir, teamReportFile)
-	if err := os.WriteFile(teamReportPath, []byte(teamReportContent), 0644); err != nil {
-		t.Fatalf("failed to create team report: %v", err)
-	}
-
-	// Call the helper function
-	filePath, bossReport, err := deriveBossReportFromTeamReport(dir, teamName, friday)
-	if err != nil {
-		t.Fatalf("deriveBossReportFromTeamReport returned error: %v", err)
-	}
-	if filePath == "" {
-		t.Fatal("expected non-empty filePath")
-	}
-	if bossReport == "" {
-		t.Fatal("expected non-empty bossReport")
-	}
-
-	// Verify the boss report was generated
-	if !strings.Contains(bossReport, "Engineering") {
-		t.Errorf("boss report should contain 'Engineering': %s", bossReport)
-	}
-	// Boss report should not have author prefixes in items
-	if strings.Contains(bossReport, "**Alice**") {
-		t.Errorf("boss report should not contain author prefixes: %s", bossReport)
-	}
-
-	// Verify the file was written
-	if _, err := os.Stat(filePath); err != nil {
-		t.Errorf("boss report file was not created: %v", err)
-	}
-}
-
-func TestDeriveBossReportFromTeamReport_FileMissing(t *testing.T) {
-	dir := t.TempDir()
-	teamName := "TestTeam"
-	friday := time.Date(2026, 2, 20, 0, 0, 0, 0, time.UTC)
-
-	// Do not create a team report file
-
-	// Call the helper function
-	filePath, bossReport, err := deriveBossReportFromTeamReport(dir, teamName, friday)
-	if err != nil {
-		t.Fatalf("deriveBossReportFromTeamReport returned error for missing file: %v", err)
-	}
-	if filePath != "" {
-		t.Errorf("expected empty filePath when file missing, got %q", filePath)
-	}
-	if bossReport != "" {
-		t.Errorf("expected empty bossReport when file missing, got %q", bossReport)
-	}
-}
-
-func TestDeriveBossReportFromTeamReport_EmptyFile(t *testing.T) {
-	dir := t.TempDir()
-	teamName := "TestTeam"
-	friday := time.Date(2026, 2, 20, 0, 0, 0, 0, time.UTC)
-
-	// Create an empty team report file
-	teamReportFile := fmt.Sprintf("%s_%s.md", teamName, friday.Format("20060102"))
-	teamReportPath := filepath.Join(dir, teamReportFile)
-	if err := os.WriteFile(teamReportPath, []byte(""), 0644); err != nil {
-		t.Fatalf("failed to create empty team report: %v", err)
-	}
-
-	// Call the helper function
-	filePath, bossReport, err := deriveBossReportFromTeamReport(dir, teamName, friday)
-	if err != nil {
-		t.Fatalf("deriveBossReportFromTeamReport returned error for empty file: %v", err)
-	}
-	if filePath != "" {
-		t.Errorf("expected empty filePath when file empty, got %q", filePath)
-	}
-	if bossReport != "" {
-		t.Errorf("expected empty bossReport when file empty, got %q", bossReport)
-	}
-}
-
-func TestDeriveBossReportFromTeamReport_InvalidTeamName(t *testing.T) {
-	dir := t.TempDir()
-	friday := time.Date(2026, 2, 20, 0, 0, 0, 0, time.UTC)
-
-	// Test with path separators in team name
-	invalidNames := []string{"Team/Name", "Team\\Name", "../Team"}
-	for _, teamName := range invalidNames {
-		filePath, bossReport, err := deriveBossReportFromTeamReport(dir, teamName, friday)
-		if err == nil {
-			t.Errorf("expected error for invalid team name %q, got none", teamName)
-		}
-		if filePath != "" {
-			t.Errorf("expected empty filePath for invalid team name, got %q", filePath)
-		}
-		if bossReport != "" {
-			t.Errorf("expected empty bossReport for invalid team name, got %q", bossReport)
-		}
-	}
-}
-
-func TestDeriveBossReportFromTeamReport_MalformedContent(t *testing.T) {
-	dir := t.TempDir()
-	teamName := "TestTeam"
-	friday := time.Date(2026, 2, 20, 0, 0, 0, 0, time.UTC)
-
-	// Create a team report with malformed content (but non-empty)
-	teamReportContent := "This is not a valid markdown report\nJust some random text\n"
-	teamReportFile := fmt.Sprintf("%s_%s.md", teamName, friday.Format("20060102"))
-	teamReportPath := filepath.Join(dir, teamReportFile)
-	if err := os.WriteFile(teamReportPath, []byte(teamReportContent), 0644); err != nil {
-		t.Fatalf("failed to create malformed team report: %v", err)
-	}
-
-	// Call the helper function - it should still succeed (parseTemplate handles any input)
-	filePath, bossReport, err := deriveBossReportFromTeamReport(dir, teamName, friday)
-	if err != nil {
-		t.Fatalf("deriveBossReportFromTeamReport returned error for malformed content: %v", err)
-	}
-	// Even with malformed content, we should get a file and report (parseTemplate is lenient)
-	if filePath == "" {
-		t.Error("expected non-empty filePath even with malformed content")
-	}
-	if bossReport == "" {
-		t.Error("expected non-empty bossReport even with malformed content")
-	}
-}
-
 func TestFindLatestTeamReportFile(t *testing.T) {
 	dir := t.TempDir()
 	teamName := "Demo Team"
@@ -489,62 +339,5 @@ func TestFindLatestTeamReportFile_NoMatch(t *testing.T) {
 	_, _, err := findLatestTeamReportFile(dir, "Demo Team")
 	if err == nil {
 		t.Fatal("expected error when no matching team report exists")
-	}
-}
-
-func TestTicketExactMatch(t *testing.T) {
-	tests := []struct {
-		name   string
-		item   WorkItem
-		ticket string
-		want   bool
-	}{
-		{"match in ticket_ids single", WorkItem{TicketIDs: "1234"}, "1234", true},
-		{"match in ticket_ids comma-separated", WorkItem{TicketIDs: "5678,1234,9012"}, "1234", true},
-		{"no false positive in ticket_ids", WorkItem{TicketIDs: "12345"}, "1234", false},
-		{"match in description prefix", WorkItem{Description: "[PROJ-1234] Fix bug"}, "PROJ-1234", true},
-		{"no match without bracket", WorkItem{Description: "PROJ-1234 Fix bug"}, "PROJ-1234", false},
-		{"no false positive in description", WorkItem{Description: "[PROJ-12345] Fix bug"}, "PROJ-1234", false},
-		{"no match empty item", WorkItem{}, "1234", false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := ticketExactMatch(tt.item, tt.ticket); got != tt.want {
-				t.Errorf("ticketExactMatch(%+v, %q) = %v, want %v", tt.item, tt.ticket, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestParseReportDupButtonValue(t *testing.T) {
-	tests := []struct {
-		name    string
-		value   string
-		wantOld []int64
-		wantNew []int64
-		wantOK  bool
-	}{
-		{"single IDs", "10|20", []int64{10}, []int64{20}, true},
-		{"multiple IDs", "10,11|20,21,22", []int64{10, 11}, []int64{20, 21, 22}, true},
-		{"missing pipe", "10,11", nil, nil, false},
-		{"invalid ID", "abc|20", nil, nil, false},
-		{"empty", "", nil, nil, false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			oldIDs, newIDs, ok := parseReportDupButtonValue(tt.value)
-			if ok != tt.wantOK {
-				t.Fatalf("ok = %v, want %v", ok, tt.wantOK)
-			}
-			if !ok {
-				return
-			}
-			if fmt.Sprint(oldIDs) != fmt.Sprint(tt.wantOld) {
-				t.Errorf("oldIDs = %v, want %v", oldIDs, tt.wantOld)
-			}
-			if fmt.Sprint(newIDs) != fmt.Sprint(tt.wantNew) {
-				t.Errorf("newIDs = %v, want %v", newIDs, tt.wantNew)
-			}
-		})
 	}
 }

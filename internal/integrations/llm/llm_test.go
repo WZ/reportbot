@@ -2,170 +2,132 @@ package llm
 
 import (
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"reportbot/internal/domain"
 )
 
-func TestLLMBatchConcurrencyLimit(t *testing.T) {
-	tests := []struct {
-		total int
-		want  int
-	}{
-		{total: 0, want: 1},
-		{total: 1, want: 1},
-		{total: 2, want: 2},
-		{total: 4, want: 4},
-		{total: 10, want: 4},
+var testSections = []domain.Section{
+	{ID: 12, Area: "Product A", Category: "Release and Support", Name: "7.6.3"},
+	{ID: 14, Area: "Product A", Category: "Engineering", Name: "Cluster Manager", Description: "Cluster lifecycle and upgrades"},
+	{ID: 20, Area: "Product A", Category: "Infrastructure"},
+}
+
+func TestBuildSectionPrompts(t *testing.T) {
+	items := []PromptItem{{
+		ID: 7, Author: "Dev A", Source: "slack", Text: "Fix rebalance timeout",
+		Similar: []Example{{SectionID: 14, Author: "Dev B", Description: strings.Repeat("x", 50)}},
+	}}
+	corrections := []CorrectionLine{{Description: "Shard move stuck", From: 14, To: 20}}
+	recent := map[int64][]Example{20: {{SectionID: 20, Author: "Dev C", Description: "Rack cabling"}}}
+	system, user := BuildSectionPrompts(testSections, recent, items, corrections, 20)
+
+	for _, want := range []string{
+		"- S12: Product A › Release and Support › 7.6.3\n",
+		"- S14: Product A › Engineering › Cluster Manager — Cluster lifecycle and upgrades\n",
+		"- S20: Product A › Infrastructure\n    recent: Dev C: Rack cabling\n",
+		`use section_id "UND"`,
+	} {
+		if !strings.Contains(system, want) {
+			t.Errorf("system prompt missing %q:\n%s", want, system)
+		}
 	}
-	for _, tt := range tests {
-		if got := llmBatchConcurrencyLimit(tt.total); got != tt.want {
-			t.Fatalf("llmBatchConcurrencyLimit(%d) = %d, want %d", tt.total, got, tt.want)
+	for _, want := range []string{
+		`"Shard move stuck" was filed in S14 (Product A › Engineering › Cluster Manager), moved to S20 (Product A › Infrastructure)`,
+		"Work item 7\n  author: Dev A\n  source: Slack report\n  text: Fix rebalance timeout",
+		"  - S14 | Dev B: " + strings.Repeat("x", 20) + "...\n",
+	} {
+		if !strings.Contains(user, want) {
+			t.Errorf("user prompt missing %q:\n%s", want, user)
 		}
 	}
 }
 
-func TestApplyGlossaryOverrides(t *testing.T) {
-	glossary := &LLMGlossary{
-		Terms: []GlossaryTerm{
-			{Phrase: "tenant pending", Section: "Query Service"},
-		},
-		StatusHints: []GlossaryStatusHint{
-			{Phrase: "in qa", Status: "in testing"},
-		},
+func TestBuildSectionPromptsNoCorrectionsOrExamples(t *testing.T) {
+	_, user := BuildSectionPrompts(testSections, nil, []PromptItem{{ID: 1, Source: "gitlab", Text: "x"}}, nil, 100)
+	if !strings.Contains(user, "Recent corrections by people (the first section was wrong):\nnone\n") {
+		t.Errorf("expected 'none' corrections block:\n%s", user)
 	}
-	options := []sectionOption{
-		{ID: "S0_0", Label: "Infrastructure"},
-		{ID: "S1_0", Label: "Query Service"},
-	}
-	sectionMap := resolveGlossarySectionMap(glossary, options)
-
-	items := []WorkItem{
-		{ID: 1, Description: "Investigate tenant pending issue in QA"},
-	}
-	decisions := map[int64]LLMSectionDecision{
-		1: {SectionID: "S0_0", Confidence: 0.20},
-	}
-
-	overrides := applyGlossaryOverrides(items, decisions, glossary, sectionMap)
-	assignLocalConfidence(decisions, options, overrides)
-	got := decisions[1]
-
-	if got.SectionID != "S1_0" {
-		t.Fatalf("expected glossary to override section to S1_0, got %s", got.SectionID)
-	}
-	if got.NormalizedStatus != "in testing" {
-		t.Fatalf("expected glossary status override to in testing, got %s", got.NormalizedStatus)
-	}
-	if got.Confidence != 0.99 {
-		t.Fatalf("expected glossary override confidence 0.99, got %f", got.Confidence)
+	if !strings.Contains(user, "source: merge request from code hosting") || !strings.Contains(user, "  none\n") {
+		t.Errorf("expected code-change source and no examples:\n%s", user)
 	}
 }
 
-func TestBuildSectionPrompts_UsesExampleLimits(t *testing.T) {
-	cfg := Config{
-		LLMExampleCount:  1,
-		LLMExampleMaxLen: 10,
-	}
-	options := []sectionOption{
-		{ID: "S0_0", Label: "Top Focus"},
-	}
-	items := []WorkItem{
-		{ID: 1, Description: "Current item"},
-	}
-	existing := []existingItemContext{
-		{SectionID: "S0_0", Description: "123456789012345"},
-		{SectionID: "S0_0", Description: "second example"},
-	}
-
-	_, userPrompt := buildSectionPrompts(cfg, options, items, existing, "", nil, nil)
-
-	if !strings.Contains(userPrompt, "EX|S0_0|1234567890...") {
-		t.Fatalf("expected first example to be truncated by max chars, prompt=%s", userPrompt)
-	}
-	if strings.Count(userPrompt, "EX|") != 1 {
-		t.Fatalf("expected only one prompt example due to llm_example_count, prompt=%s", userPrompt)
+func TestSectionSchemaEnumsStableIDs(t *testing.T) {
+	schema := SectionSchema(testSections)
+	b, _ := json.Marshal(schema)
+	if !strings.Contains(string(b), `"enum":["UND","S12","S14","S20"]`) {
+		t.Fatalf("unexpected schema: %s", b)
 	}
 }
 
-func TestBuildSectionPrompts_IncludesTemplateGuidance(t *testing.T) {
-	cfg := Config{
-		LLMExampleCount:  1,
-		LLMExampleMaxLen: 100,
-	}
-	options := []sectionOption{
-		{ID: "S0_0", Label: "Top Focus"},
-	}
-	items := []WorkItem{
-		{ID: 1, Description: "Current item"},
-	}
-
-	systemPrompt, _ := buildSectionPrompts(cfg, options, items, nil, "Rule: prefer query section for database items", nil, nil)
-	if !strings.Contains(systemPrompt, "Template guidance") {
-		t.Fatalf("expected template guidance marker in system prompt")
-	}
-	if !strings.Contains(systemPrompt, "prefer query section for database items") {
-		t.Fatalf("expected template guidance content in system prompt")
-	}
-}
-
-func TestParseSectionClassifiedResponse_AcceptsArrayTicketIDs(t *testing.T) {
-	response := `[
-		{"id": 1, "section_id": "S0_0", "normalized_status": "in progress", "ticket_ids": [], "duplicate_of": ""},
-		{"id": 2, "section_id": "S0_0", "normalized_status": "in progress", "ticket_ids": ["1136790"], "duplicate_of": ""},
-		{"id": 3, "section_id": "S0_0", "normalized_status": "in progress", "ticket_ids": "1247202", "duplicate_of": ""}
-	]`
-
-	got, err := parseSectionClassifiedResponse(response)
+func TestParseSectionResponse(t *testing.T) {
+	text := `Reasoning first... {"items": [{"id": 1, "section_id": "S14"}, {"id": 2, "section_id": "UND"}, {"id": 3, "section_id": "S999"}]}`
+	got, err := ParseSectionResponse(text, testSections)
 	if err != nil {
-		t.Fatalf("parseSectionClassifiedResponse should accept array ticket_ids: %v", err)
+		t.Fatal(err)
 	}
-	if got[1].TicketIDs != "" {
-		t.Fatalf("expected empty ticket IDs for [] , got %q", got[1].TicketIDs)
+	if got[1] != 14 || got[2] != 0 || got[3] != 0 {
+		t.Fatalf("unexpected picks: %v", got)
 	}
-	if got[2].TicketIDs != "1136790" {
-		t.Fatalf("expected single ticket ID from array, got %q", got[2].TicketIDs)
+	if _, ok := got[4]; ok {
+		t.Fatalf("missing items must stay absent")
 	}
-	if got[3].TicketIDs != "1247202" {
-		t.Fatalf("expected ticket ID from string, got %q", got[3].TicketIDs)
-	}
-}
-
-func TestParseTicketIDsField_MixedArray(t *testing.T) {
-	raw := json.RawMessage(`[ "123", 456, "", " 789 " ]`)
-	got := parseTicketIDsField(raw)
-	if got != "123,456,789" {
-		t.Fatalf("unexpected ticket IDs normalization: %q", got)
+	if _, err := ParseSectionResponse("no json here", testSections); err == nil {
+		t.Fatal("expected error for unparsable response")
 	}
 }
 
-func TestAssignLocalConfidence(t *testing.T) {
-	decisions := map[int64]LLMSectionDecision{
-		1: {SectionID: "S0_0"},
-		2: {SectionID: "UND"},
-		3: {SectionID: "S0_0", DuplicateOf: "K2"},
-		4: {SectionID: "UNKNOWN"},
-		5: {SectionID: "und"},
-	}
-	options := []sectionOption{{ID: "S0_0", Label: "Query Service"}}
-	assignLocalConfidence(decisions, options, map[int64]bool{1: true})
+func TestClassifySectionsOpenAIStructured(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/responses" {
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &gotBody)
+		w.Write([]byte(`{"output":[{"type":"message","content":[{"type":"output_text","text":"{\"items\":[{\"id\":5,\"section_id\":\"S20\"}]}"}]}],"usage":{"input_tokens":100,"output_tokens":9}}`))
+	}))
+	defer srv.Close()
 
-	if decisions[1].Confidence != 0.99 {
-		t.Fatalf("expected glossary override confidence, got %v", decisions[1].Confidence)
+	cfg := Config{LLMProvider: "openai", OpenAIAPIKey: "k", OpenAIBaseURL: srv.URL, LLMModel: "m", LLMExampleMaxLen: 100}
+	res, err := ClassifySections(cfg, testSections, nil, []PromptItem{{ID: 5, Text: "Rack power"}}, nil)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if decisions[2].Confidence != 0.40 {
-		t.Fatalf("expected UND confidence, got %v", decisions[2].Confidence)
+	if res.Picks[5] != 20 || res.Usage.InputTokens != 100 || res.Model != "m" {
+		t.Fatalf("unexpected result: %+v", res)
 	}
-	if decisions[3].Confidence != 0.95 {
-		t.Fatalf("expected duplicate confidence, got %v", decisions[3].Confidence)
+	format := gotBody["text"].(map[string]any)["format"].(map[string]any)
+	if format["type"] != "json_schema" || format["strict"] != true {
+		t.Fatalf("expected strict json_schema format, got %v", format)
 	}
-	if decisions[4].Confidence != 0.20 {
-		t.Fatalf("expected invalid section confidence, got %v", decisions[4].Confidence)
+}
+
+func TestClassifySectionsHTTPError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusBadGateway)
+	}))
+	defer srv.Close()
+	cfg := Config{LLMProvider: "openai", OpenAIAPIKey: "k", OpenAIBaseURL: srv.URL}
+	if _, err := ClassifySections(cfg, testSections, nil, []PromptItem{{ID: 1, Text: "x"}}, nil); err == nil {
+		t.Fatal("expected error when the LLM is unreachable")
 	}
-	if decisions[5].Confidence != 0.40 {
-		t.Fatalf("expected lowercase und confidence, got %v", decisions[5].Confidence)
+}
+
+func TestParseRetroResponse(t *testing.T) {
+	text := "```json\n" + `[{"section_id":"S14","title":"t","reasoning":"r","description":"Cluster lifecycle; hardware goes to Infrastructure"},
+	{"section_id":"S99","description":"unknown section"},{"section_id":"S20","description":""}]` + "\n```"
+	got, err := parseRetroResponse(text, testSections)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if decisions[5].SectionID != "UND" {
-		t.Fatalf("expected lowercase und to normalize to UND, got %q", decisions[5].SectionID)
+	if len(got) != 1 || got[0].SectionID != 14 || !strings.HasPrefix(got[0].Description, "Cluster lifecycle") {
+		t.Fatalf("unexpected suggestions: %+v", got)
 	}
 }
 
@@ -251,83 +213,5 @@ func TestExtractResponsesOutputText_ReasoningWithOutputText(t *testing.T) {
 	}
 	if !strings.HasPrefix(got, "[") {
 		t.Fatalf("expected JSON array, got reasoning text: %q", got[:50])
-	}
-}
-
-func TestParseCriticResponse(t *testing.T) {
-	response := `[
-		{"id": 42, "reason": "This is a database task not infra", "suggested_section_id": "S1_0"},
-		{"id": 55, "reason": "Belongs to auth service", "suggested_section_id": "S2_1"}
-	]`
-
-	flagged, err := parseCriticResponse(response)
-	if err != nil {
-		t.Fatalf("parseCriticResponse error: %v", err)
-	}
-	if len(flagged) != 2 {
-		t.Fatalf("expected 2 flagged items, got %d", len(flagged))
-	}
-	if flagged[0].ID != 42 || flagged[0].SuggestedSectionID != "S1_0" {
-		t.Fatalf("unexpected first flagged item: %+v", flagged[0])
-	}
-	if flagged[1].ID != 55 || flagged[1].SuggestedSectionID != "S2_1" {
-		t.Fatalf("unexpected second flagged item: %+v", flagged[1])
-	}
-}
-
-func TestParseCriticResponse_Empty(t *testing.T) {
-	flagged, err := parseCriticResponse("[]")
-	if err != nil {
-		t.Fatalf("parseCriticResponse error on empty: %v", err)
-	}
-	if len(flagged) != 0 {
-		t.Fatalf("expected 0 flagged items, got %d", len(flagged))
-	}
-}
-
-func TestExtractJSONArray(t *testing.T) {
-	tests := []struct {
-		name  string
-		input string
-		want  string
-		ok    bool
-	}{
-		{"pure array", `[{"id":1}]`, `[{"id":1}]`, true},
-		{"reasoning prefix", `Let me think about this.\n[{"id":1}]`, `[{"id":1}]`, true},
-		{"reasoning both sides", `Some reasoning\n[{"id":1}]\nDone.`, `[{"id":1}]`, true},
-		{"no array", `No JSON here`, "", false},
-		{"only open bracket", `text [ but no close`, "", false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, ok := extractJSONArray(tt.input)
-			if ok != tt.ok {
-				t.Fatalf("extractJSONArray ok=%v, want %v", ok, tt.ok)
-			}
-			if got != tt.want {
-				t.Fatalf("extractJSONArray=%q, want %q", got, tt.want)
-			}
-		})
-	}
-}
-
-func TestParseSectionClassifiedResponse_WithReasoning(t *testing.T) {
-	// Simulate a model that dumps chain-of-thought before JSON
-	reasoning := `We need to classify these items. Let me think...
-ID 228 goes to S7_0. ID 237 is UND.
-[{"id":228,"section_id":"S7_0","normalized_status":"in progress","ticket_ids":[],"duplicate_of":""},{"id":237,"section_id":"UND","normalized_status":"done","ticket_ids":[],"duplicate_of":""}]
-That should be correct.`
-	decisions, err := parseSectionClassifiedResponse(reasoning)
-	if err != nil {
-		t.Fatalf("parseSectionClassifiedResponse with reasoning: %v", err)
-	}
-	if len(decisions) != 2 {
-		t.Fatalf("expected 2 decisions, got %d", len(decisions))
-	}
-	if decisions[228].SectionID != "S7_0" {
-		t.Errorf("expected S7_0, got %q", decisions[228].SectionID)
-	}
-	if decisions[237].SectionID != "UND" {
-		t.Errorf("expected UND, got %q", decisions[237].SectionID)
 	}
 }
