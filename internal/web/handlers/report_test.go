@@ -224,12 +224,21 @@ func TestItemRoutes_Permissions(t *testing.T) {
 		t.Error("expected the owner's edit to be saved")
 	}
 
-	// No author ID: the signed-in name owns it.
+	// No author ID: a display name never grants edits, even one that matches the author.
 	carolForm := url.Values{"description": {"Tune query cache"}, "status": {"blocked"}, "status_note": {"waiting on infra"}}
-	expectCode(t, e.do(http.MethodPost, itemPath(e.items["carol"], ""), carol, carolForm), http.StatusOK)
-	if it := e.item("carol"); it.Status != domain.StatusBlocked || it.StatusNote != "waiting on infra" {
-		t.Errorf("expected carol's edit saved, got %+v", it)
+	expectCode(t, e.do(http.MethodGet, itemPath(e.items["carol"], "/edit"), carol, nil), http.StatusForbidden)
+	expectCode(t, e.do(http.MethodPost, itemPath(e.items["carol"], ""), carol, carolForm), http.StatusForbidden)
+	expectCode(t, e.do(http.MethodPost, itemPath(e.items["carol"], "/move"), carol, url.Values{"section_id": {"0"}}), http.StatusForbidden)
+	expectCode(t, e.do(http.MethodPost, itemPath(e.items["carol"], "/delete"), carol, nil), http.StatusForbidden)
+	if it := e.item("carol"); it.Status != domain.StatusInTesting || it.SectionID != e.sec["Query"] {
+		t.Fatalf("a name match must not change the item: %+v", it)
 	}
+	expectCode(t, e.do(http.MethodPost, itemPath(e.items["carol"], ""), manager, carolForm), http.StatusOK)
+	if it := e.item("carol"); it.Status != domain.StatusBlocked || it.StatusNote != "waiting on infra" {
+		t.Errorf("expected the manager's edit saved, got %+v", it)
+	}
+	expectCode(t, e.do(http.MethodPost, itemPath(e.items["carol"], "/move"), manager, url.Values{"section_id": {"0"}}), http.StatusOK)
+	expectCode(t, e.do(http.MethodPost, itemPath(e.items["alice"], "/move"), alice, url.Values{"section_id": {"0"}}), http.StatusOK)
 
 	managerForm := url.Values{"description": {"Mystery task"}, "status": {"in testing"}}
 	expectCode(t, e.do(http.MethodPost, itemPath(e.items["bob"], ""), manager, managerForm), http.StatusOK)

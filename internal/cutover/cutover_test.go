@@ -126,8 +126,13 @@ func TestRunImportsPromotesAndIsIdempotent(t *testing.T) {
 	loc := time.FixedZone("PDT", -7*3600)
 	opts := Options{LatestReport: latest, Location: loc, Now: time.Date(2026, 9, 28, 9, 0, 0, 0, loc),
 		ResolveUser: func(name string) string {
-			if name == "Dev C" {
+			switch name {
+			case "Dev C":
 				return "UDEVC"
+			case "Dev A":
+				return "UDEVA"
+			case "Dev E":
+				return "UDEVE"
 			}
 			return ""
 		}}
@@ -153,7 +158,7 @@ func TestRunImportsPromotesAndIsIdempotent(t *testing.T) {
 	shard, _ := sqlite.GetWorkItemByID(db, 1)
 	cm := tax.Sections()[1].ID
 	if shard.SectionID != cm || shard.PlacedBy != domain.PlacedByPerson || shard.Status != domain.StatusInProgress ||
-		shard.StatusNote != "root cause analysis in progress" || !shard.DoneAt.IsZero() {
+		shard.StatusNote != "root cause analysis in progress" || !shard.DoneAt.IsZero() || shard.AuthorID != "UDEVA" {
 		t.Fatalf("unexpected matched row: %+v", shard)
 	}
 	// An older row seen in an older report is promoted as done history in its Section.
@@ -182,11 +187,11 @@ func TestRunImportsPromotesAndIsIdempotent(t *testing.T) {
 	for _, o := range open {
 		byAuthor[o.Author] = o
 	}
-	if g := byAuthor["Dev G"]; g.SectionID == 0 || g.Status != domain.StatusBlocked || g.Source != importSource || g.PlacedBy != domain.PlacedByPerson {
+	if g := byAuthor["Dev G"]; g.AuthorID != "" || g.SectionID == 0 || g.Status != domain.StatusBlocked || g.Source != importSource || g.PlacedBy != domain.PlacedByPerson {
 		t.Fatalf("unexpected imported Category-level line: %+v", g)
 	}
 	// A Category with Sections is not fileable, so its own lines wait in Undetermined.
-	if e := byAuthor["Dev E"]; e.SectionID != 0 {
+	if e := byAuthor["Dev E"]; e.SectionID != 0 || e.AuthorID != "UDEVE" {
 		t.Fatalf("expected Undetermined: %+v", e)
 	}
 

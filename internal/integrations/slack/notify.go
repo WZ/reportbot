@@ -231,13 +231,9 @@ func parsePair(value string) (int64, int64, bool) {
 	return x, y, err1 == nil && err2 == nil
 }
 
-// canActOn: managers act on every item, others on their own.
-func canActOn(api *slack.Client, cfg Config, userID string, item WorkItem) bool {
-	if cfg.IsManagerID(userID) {
-		return true
-	}
-	user, _ := api.GetUserInfo(userID)
-	return itemBelongsToViewer(item, userID, user)
+// canActOn: managers act on every item, others on items whose Slack user ID is theirs.
+func canActOn(cfg Config, userID string, item WorkItem) bool {
+	return canManageItem(item, cfg.IsManagerID(userID), userID)
 }
 
 // slackLine is the report line in Slack's mrkdwn, where bold is a single asterisk.
@@ -256,7 +252,7 @@ func handlePlacePick(api *slack.Client, db *sql.DB, cfg Config, cb slack.Interac
 		replyToAction(api, cb, "That item no longer exists.")
 		return
 	}
-	if !canActOn(api, cfg, cb.User.ID, item) {
+	if !canActOn(cfg, cb.User.ID, item) {
 		replyToAction(api, cb, "You can only file your own items.")
 		return
 	}
@@ -293,7 +289,7 @@ func handleUpdateConfirm(api *slack.Client, db *sql.DB, cfg Config, cb slack.Int
 		replyToAction(api, cb, "The earlier item no longer exists; the report stays a new item.")
 		return
 	}
-	if !canActOn(api, cfg, cb.User.ID, newItem) || !canActOn(api, cfg, cb.User.ID, existing) {
+	if !canActOn(cfg, cb.User.ID, newItem) || !canActOn(cfg, cb.User.ID, existing) {
 		replyToAction(api, cb, "You can only update your own items.")
 		return
 	}
@@ -383,7 +379,7 @@ func handlePlacementUndo(api *slack.Client, db *sql.DB, cfg Config, cb slack.Int
 		replyToAction(api, cb, "That item no longer exists.")
 		return
 	}
-	if !canActOn(api, cfg, cb.User.ID, item) {
+	if !canActOn(cfg, cb.User.ID, item) {
 		return
 	}
 	if item.SectionID != ev.ToSection {

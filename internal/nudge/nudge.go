@@ -298,19 +298,10 @@ func matchUserItems(items []WorkItem, userID string, user *slack.User) []WorkIte
 	return matched
 }
 
-func itemBelongsToUser(item WorkItem, userID string, user *slack.User) bool {
-	if strings.TrimSpace(item.AuthorID) != "" {
-		return strings.TrimSpace(item.AuthorID) == strings.TrimSpace(userID)
-	}
-	if user == nil {
-		return false
-	}
-	for _, candidate := range userNameCandidates(user) {
-		if strings.EqualFold(strings.TrimSpace(item.Author), candidate) || nameMatches(item.Author, candidate) || nameMatches(candidate, item.Author) {
-			return true
-		}
-	}
-	return false
+// itemBelongsToUser matches by Slack user ID only: the DM's buttons change the item.
+func itemBelongsToUser(item WorkItem, userID string, _ *slack.User) bool {
+	id := strings.TrimSpace(item.AuthorID)
+	return id != "" && id == strings.TrimSpace(userID)
 }
 
 func userNameCandidates(user *slack.User) []string {

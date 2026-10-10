@@ -158,11 +158,8 @@ func canEdit(r *http.Request, item web.WorkItem) bool {
 	if middleware.IsManager(r) {
 		return true
 	}
-	if item.AuthorID != "" {
-		return item.AuthorID == middleware.UserID(r)
-	}
-	name := strings.TrimSpace(middleware.UserName(r))
-	return name != "" && strings.EqualFold(strings.TrimSpace(item.Author), name)
+	// Only the Slack user ID counts: display names are user-editable. Items without one are manager-only.
+	return item.AuthorID != "" && item.AuthorID == middleware.UserID(r)
 }
 
 // loadEditableItem resolves {id} and writes the error response when the viewer may not edit it.

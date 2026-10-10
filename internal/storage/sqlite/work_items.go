@@ -3,6 +3,7 @@ package sqlite
 import (
 	"database/sql"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -180,19 +181,25 @@ func GetItemsNeedingRetry(db *sql.DB, staleBefore time.Time) ([]WorkItem, error)
 	)
 }
 
+var ticketIDRe = regexp.MustCompile(`^[0-9]+$`)
+
+// ValidTicketID reports whether s has the ticket format (digits only).
+func ValidTicketID(s string) bool { return ticketIDRe.MatchString(s) }
+
 // FindOpenItemsByTicket returns Open Work Items whose ticket list contains ticket exactly.
+// A match auto-links Code Changes, so the ticket is validated and compared with instr(), not LIKE.
 func FindOpenItemsByTicket(db *sql.DB, ticket string) ([]WorkItem, error) {
 	ticket = strings.TrimSpace(ticket)
-	if ticket == "" {
+	if !ValidTicketID(ticket) {
 		return nil, nil
 	}
-	items, err := queryWorkItems(db,
+	return queryWorkItems(db,
 		`SELECT `+workItemColumns+` FROM work_items
-		 WHERE done_at IS NULL AND status <> 'done' AND (',' || replace(ticket_ids, ' ', '') || ',') LIKE ?
+		 WHERE done_at IS NULL AND status <> 'done'
+		   AND instr(',' || replace(ticket_ids, ' ', '') || ',', ',' || ? || ',') > 0
 		 ORDER BY reported_at DESC, id DESC`,
-		"%,"+ticket+",%",
+		ticket,
 	)
-	return items, err
 }
 
 func GetSlackAuthorIDsByDateRange(db *sql.DB, from, to time.Time) (map[string]bool, error) {

@@ -308,3 +308,34 @@ func TestPublishWarnsAboutUndetermined(t *testing.T) {
 }
 
 func itoa(i int64) string { return strconv.FormatInt(i, 10) }
+
+// The fake users.info returns display name "Dev A" for everyone, so a name match is always available.
+func TestItemsWithoutAuthorIDAreManagerOnly(t *testing.T) {
+	db := newTestDB(t)
+	api, _ := newSlackRecorder(t)
+	cm, infra := seedSections(t, db)
+	cfg := Config{Location: time.UTC, ManagerSlackIDs: []string{"UMGR"}}
+	id, _ := sqlitedb.InsertWorkItem(db, domain.WorkItem{Description: "imported line", Author: "Dev A", Source: "import",
+		Status: domain.StatusInProgress, ReportedAt: time.Now(), SectionID: cm, FilingState: domain.FilingFiled, PlacedBy: domain.PlacedByPerson})
+
+	handleBlockActions(api, db, cfg, interaction("U1", actionPlacePick, itoa(id)+":"+itoa(infra), ""))
+	if err := sqlitedb.SetPlacement(db, id, sqlitedb.Placement{SectionID: infra, PlacedBy: domain.PlacedByModel, HistoryNote: sqlitedb.ReasonReclassify}); err != nil {
+		t.Fatal(err)
+	}
+	ev, _ := sqlitedb.LatestPlacementEventID(db, id)
+	handleBlockActions(api, db, cfg, interaction("U1", actionPlacementUndo, itoa(ev), ""))
+	handleBlockActions(api, db, cfg, interaction("U1", actionNudgeDone, "done|U1|"+itoa(id)+"|0", ""))
+	deleteItemAction(api, db, cfg, "C1", "U1", id, listScopeMine)
+	it, err := sqlitedb.GetWorkItemByID(db, id)
+	if err != nil || it.SectionID != infra || it.Status != domain.StatusInProgress {
+		t.Fatalf("a display-name match must not change the item: %+v err=%v", it, err)
+	}
+
+	handleBlockActions(api, db, cfg, interaction("UMGR", actionPlacementUndo, itoa(ev), ""))
+	if it, _ := sqlitedb.GetWorkItemByID(db, id); it.SectionID != cm {
+		t.Fatalf("a manager may act on items without an author ID: %+v", it)
+	}
+	if canManageItem(it, false, "U1") || !canManageItem(domain.WorkItem{AuthorID: "U1"}, false, "U1") {
+		t.Fatal("ownership is by Slack user ID only")
+	}
+}

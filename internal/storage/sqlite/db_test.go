@@ -349,3 +349,19 @@ func TestPublishedReportReplace(t *testing.T) {
 		t.Fatalf("expected one published week, got %v", weeks)
 	}
 }
+
+func TestFindOpenItemsByTicketIsExact(t *testing.T) {
+	db := newTestDB(t)
+	if _, err := InsertWorkItem(db, WorkItem{Description: "x", Author: "A", Source: "slack", Status: domain.StatusInProgress,
+		TicketIDs: "123, 456", ReportedAt: time.Now(), FilingState: domain.FilingFiled}); err != nil {
+		t.Fatal(err)
+	}
+	for _, ticket := range []string{"1_3", "%", "12%", "_", "456 OR 1=1", ""} {
+		if items, err := FindOpenItemsByTicket(db, ticket); err != nil || len(items) != 0 {
+			t.Fatalf("ticket %q must match nothing, got %d (err=%v)", ticket, len(items), err)
+		}
+	}
+	if items, _ := FindOpenItemsByTicket(db, "456"); len(items) != 1 {
+		t.Fatal("an exact ticket must match")
+	}
+}

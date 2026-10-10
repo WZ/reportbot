@@ -163,6 +163,9 @@ func TestRenderNudgeForUser_PaginatesAndUsesAllSources(t *testing.T) {
 
 	insert := func(item sqlitedb.WorkItem) {
 		t.Helper()
+		if item.AuthorID == "" {
+			item.AuthorID = "U_MEMBER"
+		}
 		if _, err := sqlitedb.InsertWorkItem(db, item); err != nil {
 			t.Fatalf("insert work item: %v", err)
 		}
@@ -218,6 +221,12 @@ func TestRenderNudgeForUser_PaginatesAndUsesAllSources(t *testing.T) {
 		})
 	}
 
+	// Matching only by name never puts an item (and its buttons) in someone's DM.
+	if _, err := sqlitedb.InsertWorkItem(db, sqlitedb.WorkItem{Description: "Name-only task", Author: "Pat", Source: "import",
+		Status: "in progress", ReportedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+
 	cfg := Config{Location: time.UTC}
 	firstPage, err := RenderNudgeForUser(api, db, cfg, "U_MEMBER", "", now, 0, false)
 	if err != nil {
@@ -225,6 +234,9 @@ func TestRenderNudgeForUser_PaginatesAndUsesAllSources(t *testing.T) {
 	}
 	if !strings.Contains(firstPage.Text, "Showing 1-10 of 13 active items") {
 		t.Fatalf("expected first-page summary, got %q", firstPage.Text)
+	}
+	if strings.Contains(firstPage.Text, "Name-only task") {
+		t.Fatalf("items without the member's Slack user ID must not be listed: %q", firstPage.Text)
 	}
 	if !strings.Contains(firstPage.Text, "GitLab task") || !strings.Contains(firstPage.Text, "GitHub task") {
 		t.Fatalf("expected all-source active items in rendered text, got %q", firstPage.Text)

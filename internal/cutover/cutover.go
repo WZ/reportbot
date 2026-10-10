@@ -222,12 +222,18 @@ func Run(db *sql.DB, dbPath string, o Options) (Summary, error) {
 			if section == 0 {
 				placedBy = ""
 			}
+			// The author's Slack user ID decides who may edit the item; names are never trusted.
+			authorID := ""
+			if o.ResolveUser != nil {
+				authorID = o.ResolveUser(l.Author)
+			}
 			if ids := byNorm[NormalizeDescription(l.Description)]; len(ids) > 0 && !claimed[ids[0]] {
 				id := ids[0]
 				claimed[id] = true
 				if _, err := tx.Exec(`UPDATE work_items SET status = ?, status_note = ?, ticket_ids = CASE WHEN ? <> '' THEN ? ELSE ticket_ids END,
+					author_id = CASE WHEN COALESCE(author_id, '') = '' THEN ? ELSE author_id END,
 					done_at = NULL, section_id = ?, placed_by = ?, filing_state = 'filed', undetermined_reason = '', import_key = ?, updated_at = ? WHERE id = ?`,
-					status, note, l.TicketIDs, l.TicketIDs, nullID(section), placedBy, importKey(l), o.Now, id); err != nil {
+					status, note, l.TicketIDs, l.TicketIDs, authorID, nullID(section), placedBy, importKey(l), o.Now, id); err != nil {
 					return err
 				}
 				if err := recordImport(tx, id, section, placedBy, o.Now); err != nil {
@@ -235,10 +241,6 @@ func Run(db *sql.DB, dbPath string, o Options) (Summary, error) {
 				}
 				sum.ImportedExisting++
 				continue
-			}
-			authorID := ""
-			if o.ResolveUser != nil {
-				authorID = o.ResolveUser(l.Author)
 			}
 			res, err := tx.Exec(`INSERT INTO work_items (description, author, author_id, source, status, status_note, ticket_ids, reported_at, created_at,
 					section_id, placed_by, filing_state, undetermined_reason, import_key, updated_at)

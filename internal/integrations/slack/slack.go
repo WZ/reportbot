@@ -698,7 +698,7 @@ func renderListItems(api *slack.Client, db *sql.DB, cfg Config, channelID, userI
 	if scope == listScopeMine {
 		filtered := make([]WorkItem, 0, len(items))
 		for _, item := range items {
-			if itemBelongsToViewer(item, userID, user) {
+			if listedAsMine(item, userID, user) {
 				filtered = append(filtered, item)
 			}
 		}
@@ -753,7 +753,7 @@ func renderListItems(api *slack.Client, db *sql.DB, cfg Config, channelID, userI
 		),
 	)}
 	for idx, item := range items[start:end] {
-		blocks = appendListItemBlock(blocks, start+idx+1, item, sectionLabel(tax, item), scope, isManager, userID, user)
+		blocks = appendListItemBlock(blocks, start+idx+1, item, sectionLabel(tax, item), scope, isManager, userID)
 	}
 
 	if len(items) > listItemsPageSize {
@@ -790,7 +790,7 @@ func sectionLabel(tax domain.Taxonomy, item WorkItem) string {
 	return report.UndeterminedHeading
 }
 
-func appendListItemBlock(blocks []slack.Block, lineNumber int, item WorkItem, section, scope string, isManager bool, userID string, user *slack.User) []slack.Block {
+func appendListItemBlock(blocks []slack.Block, lineNumber int, item WorkItem, section, scope string, isManager bool, userID string) []slack.Block {
 	source := ""
 	switch item.Source {
 	case "gitlab":
@@ -799,7 +799,7 @@ func appendListItemBlock(blocks []slack.Block, lineNumber int, item WorkItem, se
 		source = " [GitHub]"
 	}
 	text := formatListItemText(lineNumber, item, source, fmt.Sprintf(" _%s_", section))
-	if canManageItem(item, isManager, userID, user) {
+	if canManageItem(item, isManager, userID) {
 		editOpt := slack.NewOptionBlockObject(
 			fmt.Sprintf("edit:%s:%d", scope, item.ID),
 			slack.NewTextBlockObject(slack.PlainTextType, "Edit", false, false),
@@ -1207,8 +1207,7 @@ func handleViewSubmission(api *slack.Client, db *sql.DB, cfg Config, cb slack.In
 		return
 	}
 	isManager, _ := isManagerUser(api, cfg, userID)
-	user, _ := api.GetUserInfo(userID)
-	if !canManageItem(item, isManager, userID, user) || description == "" {
+	if !canManageItem(item, isManager, userID) || description == "" {
 		return
 	}
 	if channelID == "" {
@@ -1254,8 +1253,7 @@ func deleteItemAction(api *slack.Client, db *sql.DB, cfg Config, channelID, user
 	}
 
 	isManager, _ := isManagerUser(api, cfg, userID)
-	user, _ := api.GetUserInfo(userID)
-	if !canManageItem(item, isManager, userID, user) {
+	if !canManageItem(item, isManager, userID) {
 		postEphemeralTo(api, channelID, userID, "You are not allowed to delete this item.")
 		return
 	}
@@ -1280,8 +1278,7 @@ func openEditModal(api *slack.Client, db *sql.DB, cfg Config, triggerID, channel
 	}
 
 	isManager, _ := isManagerUser(api, cfg, userID)
-	user, _ := api.GetUserInfo(userID)
-	if !canManageItem(item, isManager, userID, user) {
+	if !canManageItem(item, isManager, userID) {
 		postEphemeralTo(api, channelID, userID, "You are not allowed to edit this item.")
 		return
 	}
@@ -1322,8 +1319,7 @@ func openDeleteModal(api *slack.Client, db *sql.DB, cfg Config, triggerID, chann
 		return
 	}
 	isManager, _ := isManagerUser(api, cfg, userID)
-	user, _ := api.GetUserInfo(userID)
-	if !canManageItem(item, isManager, userID, user) {
+	if !canManageItem(item, isManager, userID) {
 		postEphemeralTo(api, channelID, userID, "You are not allowed to delete this item.")
 		return
 	}
@@ -1477,35 +1473,28 @@ func canonicalTicketList(ticketIDs string) string {
 	return strings.Join(cleaned, ",")
 }
 
-func canManageItem(item WorkItem, isManager bool, userID string, user *slack.User) bool {
-	if isManager {
-		return true
-	}
-	return itemBelongsToViewer(item, userID, user)
+// canManageItem: managers manage every item; others only items whose Slack user ID is
+// theirs. Names are never trusted for this, since users can change their display name.
+func canManageItem(item WorkItem, isManager bool, userID string) bool {
+	return isManager || ownsItem(item, userID)
 }
 
-func itemBelongsToViewer(item WorkItem, userID string, user *slack.User) bool {
-	if strings.TrimSpace(item.AuthorID) != "" && strings.TrimSpace(item.AuthorID) == strings.TrimSpace(userID) {
+func ownsItem(item WorkItem, userID string) bool {
+	id := strings.TrimSpace(item.AuthorID)
+	return id != "" && id == strings.TrimSpace(userID)
+}
+
+// listedAsMine decides what "/list" shows as the viewer's items. It also matches by name,
+// because it only filters a view; it never grants a change.
+func listedAsMine(item WorkItem, userID string, user *slack.User) bool {
+	if ownsItem(item, userID) {
 		return true
 	}
-	if user == nil {
+	if item.AuthorID != "" || user == nil {
 		return false
 	}
-	// Prefer immutable Slack user ID when available.
-	if item.AuthorID != "" {
-		return user.ID == item.AuthorID
-	}
-	// Fallback: fuzzy name matching for legacy items without AuthorID.
-	candidates := []string{
-		strings.TrimSpace(user.Profile.DisplayName),
-		strings.TrimSpace(user.RealName),
-		strings.TrimSpace(user.Name),
-	}
-	for _, c := range candidates {
-		if c == "" {
-			continue
-		}
-		if strings.EqualFold(strings.TrimSpace(item.Author), c) || nameMatches(c, item.Author) || nameMatches(item.Author, c) {
+	for _, c := range []string{user.Profile.DisplayName, user.RealName, user.Name} {
+		if c = strings.TrimSpace(c); c != "" && (strings.EqualFold(strings.TrimSpace(item.Author), c) || nameMatches(c, item.Author) || nameMatches(item.Author, c)) {
 			return true
 		}
 	}
@@ -1610,7 +1599,7 @@ func handleNudgeDoneAction(api *slack.Client, db *sql.DB, cfg Config, cb slack.I
 	if !authorizeNudgeAction(api, cb, targetUserID) {
 		return
 	}
-	if !canActOnNudgeItem(api, db, itemID, targetUserID) {
+	if !canActOnNudgeItem(db, itemID, targetUserID) {
 		log.Printf("nudge done denied item=%d target=%s", itemID, targetUserID)
 		return
 	}
@@ -1634,7 +1623,7 @@ func handleNudgeMoreAction(api *slack.Client, db *sql.DB, cfg Config, cb slack.I
 	if !authorizeNudgeAction(api, cb, targetUserID) {
 		return
 	}
-	if !canActOnNudgeItem(api, db, itemID, targetUserID) {
+	if !canActOnNudgeItem(db, itemID, targetUserID) {
 		log.Printf("nudge status denied item=%d target=%s", itemID, targetUserID)
 		return
 	}
@@ -1669,31 +1658,13 @@ func authorizeNudgeAction(api *slack.Client, cb slack.InteractionCallback, targe
 	return true
 }
 
-func canActOnNudgeItem(api *slack.Client, db *sql.DB, itemID int64, targetUserID string) bool {
+func canActOnNudgeItem(db *sql.DB, itemID int64, targetUserID string) bool {
 	item, err := GetWorkItemByID(db, itemID)
 	if err != nil {
 		log.Printf("canActOnNudgeItem: failed to get work item id=%d: %v", itemID, err)
 		return false
 	}
-	if strings.TrimSpace(item.AuthorID) != "" {
-		return strings.EqualFold(strings.TrimSpace(item.AuthorID), strings.TrimSpace(targetUserID))
-	}
-
-	user, err := api.GetUserInfo(targetUserID)
-	if err != nil {
-		return false
-	}
-	candidates := []string{user.Profile.DisplayName, user.RealName, user.Name}
-	for _, candidate := range candidates {
-		candidate = strings.TrimSpace(candidate)
-		if candidate == "" {
-			continue
-		}
-		if strings.EqualFold(strings.TrimSpace(item.Author), candidate) || nameMatches(item.Author, candidate) || nameMatches(candidate, item.Author) {
-			return true
-		}
-	}
-	return false
+	return ownsItem(item, targetUserID)
 }
 
 func refreshNudgeMessage(api *slack.Client, db *sql.DB, cfg Config, cb slack.InteractionCallback, targetUserID string, page int, updated bool) {

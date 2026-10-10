@@ -383,7 +383,7 @@ Managers and members can use `/list all` to see the full team list:
 ```
 
 `/list` now includes inline actions:
-- Members can edit/delete only their own items.
+- Members can edit/delete only their own items, matched by Slack user ID (never by name). Items without an author ID, such as imported lines whose author could not be resolved, are manager-only.
 - Managers can edit/delete all items.
 - Delete uses a confirmation modal.
 - Edit opens a modal with the description, Status, Status Note and Section. Choosing a Section is a person Placement; changing only the text files the item again.

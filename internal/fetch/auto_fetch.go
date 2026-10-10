@@ -179,7 +179,10 @@ func importCodeChanges(db *sql.DB, changes []fetched, hooks Hooks, result *Fetch
 // exactTicketMatch returns the newest Open Work Item sharing a ticket ID, or 0.
 func exactTicketMatch(db *sql.DB, tickets string) int64 {
 	for _, t := range strings.Split(tickets, ",") {
-		items, err := sqlite.FindOpenItemsByTicket(db, strings.TrimSpace(t))
+		if t = strings.TrimSpace(t); !sqlite.ValidTicketID(t) {
+			continue
+		}
+		items, err := sqlite.FindOpenItemsByTicket(db, t)
 		if err == nil && len(items) > 0 {
 			return items[0].ID
 		}
