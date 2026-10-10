@@ -23,16 +23,9 @@ github_repos: []  # optional: limit to specific repos, e.g. ["org/repo1", "org/r
 # supported values: anthropic, openai
 llm_provider: "anthropic"
 llm_model: "" # optional; uses provider default when empty
-llm_batch_size: 20
-llm_confidence_threshold: 0.70
-llm_example_count: 8
-llm_example_max_chars: 100
-
-# Optional glossary memory file for phrase/status hints
-llm_glossary_path: "./llm_glossary.yaml"
-
-# Enable generator-critic loop (second LLM pass to catch misclassifications)
-llm_critic_enabled: false
+llm_batch_size: 20        # items per LLM call when re-classifying Open Work Items after a Taxonomy edit
+llm_example_count: 20     # similar past Work Items shown to the LLM with their Sections
+llm_example_max_chars: 140
 
 # LLM API keys (set the one that matches llm_provider)
 anthropic_api_key: "sk-ant-your-key"
@@ -40,6 +33,14 @@ openai_api_key: ""
 # Optional base URL for OpenAI-compatible endpoints.
 # Leave default for api.openai.com, or point to a lab-hosted endpoint such as gpt-oss.
 openai_base_url: "https://api.openai.com/v1"
+
+# Decision model (System One protocol) that checks the LLM's Section and answers Status,
+# ticket and Update questions with calibrated probabilities.
+decision_model_url: "https://api.compat.example"
+decision_model_api_key: ""
+decision_model_name: ""
+# Section-check probability needed to file without asking "Where does this go?"
+decision_model_confidence: 0.70
 
 # Data and output paths
 db_path: "./reportbot.db"
