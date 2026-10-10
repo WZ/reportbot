@@ -32,9 +32,11 @@ type Options struct {
 	HistoryDir   string // folder of published reports, NAME_YYYYMMDD.md; defaults to LatestReport's folder
 	DropV1       bool   // drop V1 tables and columns, after a fresh backup
 	DryRun       bool   // parse and count, write nothing
-	ResolveUser  func(name string) string
-	Now          time.Time
-	Location     *time.Location
+	// ResolveUser binds an author name to a Slack user ID within the trusted roster,
+	// or returns "" and the reason it stayed unbound.
+	ResolveUser func(name string) (string, string)
+	Now         time.Time
+	Location    *time.Location
 }
 
 // Summary counts what each step did.
@@ -50,6 +52,14 @@ type Summary struct {
 	Backup           string
 	Dropped          bool
 	Skipped          []string
+	Bindings         []Binding
+}
+
+// Binding is how one author name of the imported lines was bound, for review before --drop-v1.
+type Binding struct {
+	Author string
+	ID     string
+	Reason string // why it stayed unbound
 }
 
 func (s Summary) String() string {
@@ -65,6 +75,16 @@ func (s Summary) String() string {
 	fmt.Fprintf(b, "V1 tables/columns dropped: %v\n", s.Dropped)
 	for _, sk := range s.Skipped {
 		fmt.Fprintf(b, "skipped: %s\n", sk)
+	}
+	if len(s.Bindings) > 0 {
+		b.WriteString("author bindings (review before --drop-v1):\n")
+		for _, bd := range s.Bindings {
+			if bd.ID != "" {
+				fmt.Fprintf(b, "  %s -> %s\n", bd.Author, bd.ID)
+			} else {
+				fmt.Fprintf(b, "  %s -> unbound (%s)\n", bd.Author, bd.Reason)
+			}
+		}
 	}
 	return b.String()
 }
@@ -174,6 +194,18 @@ func Run(db *sql.DB, dbPath string, o Options) (Summary, error) {
 		}
 	}
 	sum.OpenLines = len(open)
+	bound := map[string]string{}
+	for _, l := range open {
+		if _, done := bound[l.Author]; done {
+			continue
+		}
+		bd := Binding{Author: l.Author, Reason: "no roster resolver"}
+		if o.ResolveUser != nil {
+			bd.ID, bd.Reason = o.ResolveUser(l.Author)
+		}
+		bound[l.Author] = bd.ID
+		sum.Bindings = append(sum.Bindings, bd)
+	}
 	if o.DryRun {
 		return sum, nil
 	}
@@ -223,10 +255,7 @@ func Run(db *sql.DB, dbPath string, o Options) (Summary, error) {
 				placedBy = ""
 			}
 			// The author's Slack user ID decides who may edit the item; names are never trusted.
-			authorID := ""
-			if o.ResolveUser != nil {
-				authorID = o.ResolveUser(l.Author)
-			}
+			authorID := bound[l.Author]
 			if ids := byNorm[NormalizeDescription(l.Description)]; len(ids) > 0 && !claimed[ids[0]] {
 				id := ids[0]
 				claimed[id] = true

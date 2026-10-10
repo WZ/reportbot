@@ -70,10 +70,7 @@ func Main() {
 	queue.Start(ctx)
 
 	nudge.StartNudgeScheduler(cfg, db, api)
-	fetch.StartAutoFetchScheduler(cfg, db, api, fetch.Hooks{
-		ResolveAuthorID: func(name string) string { return slackbot.ResolveUserID(api, name) },
-		Wake:            queue.Wake,
-	})
+	fetch.StartAutoFetchScheduler(cfg, db, api, fetch.Hooks{ResolveAuthorID: slackbot.NewRoster(api, cfg).ID, Wake: queue.Wake})
 
 	// Start web UI if enabled — verify bind before proceeding
 	var webSrv *http.Server
@@ -143,7 +140,7 @@ func migrateV2(args []string) {
 		HistoryDir:   *history,
 		DropV1:       *dropV1,
 		DryRun:       *dryRun,
-		ResolveUser:  func(name string) string { return slackbot.ResolveUserID(api, name) },
+		ResolveUser:  slackbot.NewRoster(api, cfg).Bind,
 		Location:     cfg.Location,
 	})
 	fmt.Print(sum.String())

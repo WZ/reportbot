@@ -109,10 +109,12 @@ decision_model_confidence: 0.70  # Section-check probability needed to file with
 manager_slack_ids:
   - "U01ABC123"
 
-# Team members (Slack full names) - used by /check and scheduled nudge
+# Team members - used by /check, scheduled nudge and author binding.
+# Use Slack user IDs: only IDs listed here or in manager_slack_ids are used to bind MR/PR authors,
+# imported report lines and delegated /report {Name} items to a person (who may then edit them).
 team_members:
-  - "Member One"
-  - "Member Two"
+  - "U02MEMBER1"
+  - "U02MEMBER2"
 
 # Automatic MR/PR fetching (cron expression, empty to disable)
 auto_fetch_schedule: "0 9 * * 1-5"  # weekdays at 9am
@@ -208,6 +210,8 @@ Run once against the existing database, with the latest published team report:
 ./reportbot migrate-v2 --report reports/TEAM_20260925.md             # seed Taxonomy, import open lines, promote rows
 ./reportbot migrate-v2 --report reports/TEAM_20260925.md --drop-v1   # back up the DB, then drop V1 tables/columns
 ```
+
+It prints an author-binding report (name → Slack user ID, or unbound with the reason); review it before `--drop-v1`. Authors are bound only to a unique exact match among `manager_slack_ids` and the Slack user IDs in `team_members`; unbound items are manager-only.
 
 Each step is idempotent. It seeds the Taxonomy from the report's headings, imports its open authored lines as Work Items with a person Placement, promotes existing rows that match a published line (Placement from the latest report showing them), queues rows reported after that report for filing, and records fetched MRs/PRs as Code Changes. `--drop-v1` refuses to run until those steps are done, and only after writing `<db>.<timestamp>.backup`.
 

@@ -27,21 +27,9 @@ func NewNotifier(api *slack.Client, db *sql.DB, cfg Config) *Notifier {
 	return &Notifier{API: api, DB: db, Cfg: cfg}
 }
 
-// FetchHooks lets fetching resolve Code Change authors to Slack users and wake filing.
-func FetchHooks(api *slack.Client) fetch.Hooks {
-	return fetch.Hooks{ResolveAuthorID: func(name string) string { return ResolveUserID(api, name) }, Wake: func() { wakeFiling() }}
-}
-
-// ResolveUserID returns the Slack user ID for a display/real/user name, or "".
-func ResolveUserID(api *slack.Client, name string) string {
-	if strings.TrimSpace(name) == "" {
-		return ""
-	}
-	ids, _, err := resolveUserIDs(api, []string{name})
-	if err != nil || len(ids) != 1 {
-		return ""
-	}
-	return ids[0]
+// FetchHooks binds Code Change authors within the roster and wakes filing.
+func FetchHooks(api *slack.Client, cfg Config) fetch.Hooks {
+	return fetch.Hooks{ResolveAuthorID: NewRoster(api, cfg).ID, Wake: func() { wakeFiling() }}
 }
 
 func liveReportLink(cfg Config) string {
