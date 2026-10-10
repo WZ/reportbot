@@ -33,7 +33,7 @@ The team sees the live Weekly Report in the web UI; managers publish it to Slack
 - **Taxonomy edits** (web UI) re-classify Open Work Items; confident moves happen automatically and a person whose choice was overridden gets an Undo button.
 - **Never lost**: if a model is unreachable, the item is filed as Undetermined and a sweep retries it.
 
-## Quick Start
+See [docs/agentic-features-overview.md](docs/agentic-features-overview.md) for a detailed overview.
 
 ## Quick Start
 
