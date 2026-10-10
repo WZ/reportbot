@@ -108,6 +108,7 @@ type GitLabMR struct {
 	Title       string
 	Author      string // username
 	AuthorName  string // display name
+	AuthorID    int64  // immutable numeric account ID; the only thing that binds an owner
 	WebURL      string
 	TicketIDs   string // comma-separated ticket IDs parsed from configured MR field
 	MergedAt    time.Time
@@ -121,6 +122,7 @@ type GitLabMR struct {
 type GitHubPR struct {
 	Title        string
 	Author       string // GitHub login (username)
+	AuthorID     int64  // immutable numeric account ID; the only thing that binds an owner
 	AuthorName   string // same as Author (Search API doesn't return display name)
 	HTMLURL      string // PR web URL, used as source_ref for dedup
 	MergedAt     time.Time

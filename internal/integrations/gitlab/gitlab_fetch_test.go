@@ -40,6 +40,7 @@ func TestFetchMRsFiltersByStateAndWeekRange(t *testing.T) {
 				"created_at": createdAt,
 				"state":      "merged",
 				"author": map[string]any{
+					"id":       4242,
 					"username": "alice",
 					"name":     "Alice",
 				},
@@ -116,6 +117,15 @@ func TestFetchMRsFiltersByStateAndWeekRange(t *testing.T) {
 		t.Fatalf("expected 2 MRs after filtering, got %d", len(mrs))
 	}
 
+	var aliceID int64
+	for _, mr := range mrs {
+		if mr.Author == "alice" {
+			aliceID = mr.AuthorID
+		}
+	}
+	if aliceID != 4242 {
+		t.Fatalf("expected the numeric author ID parsed, got %d", aliceID)
+	}
 	titles := []string{mrs[0].Title, mrs[1].Title}
 	joined := strings.Join(titles, "|")
 	if !strings.Contains(joined, "Merged in range") || !strings.Contains(joined, "Open in range") {

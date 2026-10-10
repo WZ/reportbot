@@ -18,6 +18,8 @@ import (
 	"reportbot/internal/filing"
 	"reportbot/internal/httpx"
 	"reportbot/internal/integrations/decision"
+	"reportbot/internal/integrations/github"
+	"reportbot/internal/integrations/gitlab"
 	"reportbot/internal/integrations/llm"
 	slackbot "reportbot/internal/integrations/slack"
 	"reportbot/internal/nudge"
@@ -70,7 +72,7 @@ func Main() {
 	queue.Start(ctx)
 
 	nudge.StartNudgeScheduler(cfg, db, api)
-	fetch.StartAutoFetchScheduler(cfg, db, api, fetch.Hooks{ResolveAuthorID: cfg.AuthorID, Wake: queue.Wake})
+	fetch.StartAutoFetchScheduler(cfg, db, api, fetch.Hooks{ResolveAccount: cfg.AccountAuthorID, Wake: queue.Wake})
 
 	// Start web UI if enabled — verify bind before proceeding
 	var webSrv *http.Server
@@ -134,7 +136,11 @@ func migrateV2(args []string) {
 		if err != nil {
 			log.Fatalf("migrate-v2: %v", err)
 		}
-		out, err := slackbot.SuggestAuthorIDs(cfg, authors, slack.New(cfg.SlackBotToken).GetUserInfo)
+		accounts, err := recentAccounts(cfg)
+		if err != nil {
+			log.Fatalf("migrate-v2: no suggestions: %v", err)
+		}
+		out, err := slackbot.SuggestAuthorIDs(cfg, authors, accounts, slack.New(cfg.SlackBotToken).GetUserInfo)
 		if err != nil {
 			log.Fatalf("migrate-v2: no suggestions: %v", err)
 		}
@@ -159,4 +165,30 @@ func migrateV2(args []string) {
 	if err != nil {
 		log.Fatalf("migrate-v2: %v", err)
 	}
+}
+
+// recentAccounts lists the authors of the last four weeks' MRs/PRs for author_ids suggestions.
+func recentAccounts(cfg config.Config) ([]slackbot.Account, error) {
+	to := time.Now().In(cfg.Location)
+	from := to.AddDate(0, 0, -28)
+	var out []slackbot.Account
+	if cfg.GitLabConfigured() {
+		mrs, err := gitlab.FetchMRs(cfg, from, to)
+		if err != nil {
+			return nil, fmt.Errorf("fetching GitLab MRs: %w", err)
+		}
+		for _, mr := range mrs {
+			out = append(out, slackbot.Account{Host: "gitlab", ID: mr.AuthorID, Username: mr.Author, Name: mr.AuthorName})
+		}
+	}
+	if cfg.GitHubConfigured() {
+		prs, err := github.FetchGitHubPRs(cfg, from, to)
+		if err != nil {
+			return nil, fmt.Errorf("fetching GitHub PRs: %w", err)
+		}
+		for _, pr := range prs {
+			out = append(out, slackbot.Account{Host: "github", ID: pr.AuthorID, Username: pr.Author, Name: pr.AuthorName})
+		}
+	}
+	return out, nil
 }

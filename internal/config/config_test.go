@@ -245,4 +245,20 @@ func TestNormalizeAuthorIDs(t *testing.T) {
 	if got, err := normalizeAuthorIDs(map[string]string{" A ": "U0123ABCD"}); err != nil || got["a"] != "U0123ABCD" {
 		t.Fatalf("unexpected %v %v", got, err)
 	}
+	for _, bad := range []string{"gitlab:dlee", "github:", "gitlab:12a"} {
+		if _, err := normalizeAuthorIDs(map[string]string{bad: "U0123ABCD"}); err == nil {
+			t.Fatalf("%q must be rejected", bad)
+		}
+	}
+	got, err := normalizeAuthorIDs(map[string]string{"GitLab:42": "U0123ABCD", "github:7": "U0777ABCD"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := Config{AuthorIDs: got}
+	if c.AccountAuthorID("gitlab", 42) != "U0123ABCD" || c.AccountAuthorID("github", 7) != "U0777ABCD" || c.AccountAuthorID("github", 42) != "" {
+		t.Fatal("account keys bind by host and numeric ID")
+	}
+	if c.AuthorID("gitlab:42") != "" {
+		t.Fatal("a report name never reaches an account key")
+	}
 }

@@ -30,6 +30,7 @@ type githubPRItem struct {
 }
 
 type githubUser struct {
+	ID    int64  `json:"id"`
 	Login string `json:"login"`
 }
 
@@ -172,6 +173,7 @@ func convertGitHubItem(item githubPRItem, derivedState string) GitHubPR {
 	return GitHubPR{
 		Title:        item.Title,
 		Author:       item.User.Login,
+		AuthorID:     item.User.ID,
 		AuthorName:   item.User.Login, // Search API doesn't return display name
 		HTMLURL:      item.HTMLURL,
 		MergedAt:     mergedAt,

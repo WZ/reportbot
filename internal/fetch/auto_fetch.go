@@ -28,8 +28,10 @@ type FetchResult struct {
 
 // Hooks connect fetching to the rest of the bot without importing it.
 type Hooks struct {
-	ResolveAuthorID func(name string) string // Slack user ID configured for an author string, "" if none
-	Wake            func()                   // start filing new Work Items now
+	// ResolveAccount returns the Slack user ID configured for a code-hosting account
+	// ("gitlab" or "github", numeric account ID), "" if none. Names never bind an owner.
+	ResolveAccount func(host string, accountID int64) string
+	Wake           func() // start filing new Work Items now
 }
 
 // FetchAndImportMRs fetches GitLab MRs and/or GitHub PRs for the current report
@@ -55,6 +57,7 @@ func FetchAndImportMRs(cfg Config, db *sql.DB, hooks Hooks) (FetchResult, error)
 			log.Printf("auto-fetch gitlab fetched=%d", len(mrs))
 			result.TotalFetched += len(mrs)
 			for _, mr := range mrs {
+				// A filter only: it decides what is imported, never who owns it.
 				if len(cfg.TeamMembers) > 0 && !anyNameMatches(cfg.TeamMembers, mr.AuthorName) && !anyNameMatches(cfg.TeamMembers, mr.Author) {
 					log.Printf("auto-fetch skipped non-team gitlab author=%s username=%s", mr.AuthorName, mr.Author)
 					result.SkippedNonTeam++
@@ -62,7 +65,7 @@ func FetchAndImportMRs(cfg Config, db *sql.DB, hooks Hooks) (FetchResult, error)
 				}
 				changes = append(changes, fetched{cc: domain.CodeChange{Source: "gitlab", SourceRef: mr.WebURL, Title: mr.Title,
 					Author: mr.AuthorName, TicketIDs: mr.TicketIDs, State: codeChangeState(mr.State), MergedAt: mr.MergedAt},
-					username: mr.Author, reportedAt: mrReportedAt(mr, cfg.Location)})
+					host: "gitlab", accountID: mr.AuthorID, reportedAt: mrReportedAt(mr, cfg.Location)})
 			}
 		}
 	}
@@ -76,6 +79,7 @@ func FetchAndImportMRs(cfg Config, db *sql.DB, hooks Hooks) (FetchResult, error)
 			log.Printf("auto-fetch github fetched=%d", len(prs))
 			result.TotalFetched += len(prs)
 			for _, pr := range prs {
+				// A filter only: it decides what is imported, never who owns it.
 				if len(cfg.TeamMembers) > 0 && !anyNameMatches(cfg.TeamMembers, pr.AuthorName) && !anyNameMatches(cfg.TeamMembers, pr.Author) {
 					log.Printf("auto-fetch skipped non-team github author=%s", pr.Author)
 					result.SkippedNonTeam++
@@ -83,7 +87,7 @@ func FetchAndImportMRs(cfg Config, db *sql.DB, hooks Hooks) (FetchResult, error)
 				}
 				changes = append(changes, fetched{cc: domain.CodeChange{Source: "github", SourceRef: pr.HTMLURL, Title: pr.Title,
 					Author: pr.AuthorName, State: codeChangeState(pr.State), MergedAt: pr.MergedAt},
-					username: pr.Author, reportedAt: prReportedAt(pr, cfg.Location)})
+					host: "github", accountID: pr.AuthorID, reportedAt: prReportedAt(pr, cfg.Location)})
 			}
 		}
 	}
@@ -102,7 +106,8 @@ func FetchAndImportMRs(cfg Config, db *sql.DB, hooks Hooks) (FetchResult, error)
 
 type fetched struct {
 	cc         domain.CodeChange
-	username   string // code-hosting login, an alternative author_ids key
+	host       string // "gitlab" | "github"
+	accountID  int64
 	reportedAt time.Time
 }
 
@@ -151,10 +156,8 @@ func importCodeChanges(db *sql.DB, changes []fetched, hooks Hooks, result *Fetch
 			result.SkippedClosed++
 			continue
 		}
-		if hooks.ResolveAuthorID != nil {
-			if cc.AuthorID = hooks.ResolveAuthorID(cc.Author); cc.AuthorID == "" {
-				cc.AuthorID = hooks.ResolveAuthorID(f.username)
-			}
+		if hooks.ResolveAccount != nil {
+			cc.AuthorID = hooks.ResolveAccount(f.host, f.accountID)
 		}
 		if target := exactTicketMatch(db, cc.TicketIDs); target != 0 {
 			cc.WorkItemID = target

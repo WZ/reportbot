@@ -68,7 +68,7 @@ func TestConvertGitHubItem(t *testing.T) {
 			Title:       "Fix login bug",
 			HTMLURL:     "https://github.com/myorg/myrepo/pull/42",
 			State:       "closed",
-			User:        githubUser{Login: "alice"},
+			User:        githubUser{ID: 5151, Login: "alice"},
 			Labels:      []githubLabel{{Name: "bugfix"}, {Name: "urgent"}},
 			PullRequest: &githubPRLinks{
 				// Search Issues API doesn't include merged_at, so we omit it here
@@ -87,6 +87,9 @@ func TestConvertGitHubItem(t *testing.T) {
 		}
 		if pr.Author != "alice" {
 			t.Errorf("Author = %q, want %q", pr.Author, "alice")
+		}
+		if pr.AuthorID != 5151 {
+			t.Errorf("AuthorID = %d, want the numeric account ID", pr.AuthorID)
 		}
 		if pr.AuthorName != "alice" {
 			t.Errorf("AuthorName = %q, want %q", pr.AuthorName, "alice")

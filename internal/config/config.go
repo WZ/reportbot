@@ -52,8 +52,9 @@ type Config struct {
 	TLSSkipVerify              bool   `yaml:"tls_skip_verify"`
 
 	ManagerSlackIDs []string `yaml:"manager_slack_ids"`
-	// AuthorIDs maps author strings (report author names, code-hosting usernames) to Slack
-	// user IDs. It is the only way a fetched or imported Work Item gets an owner.
+	// AuthorIDs maps owners to Slack user IDs; it is the only way a fetched or imported Work
+	// Item gets an owner. Plain keys are report author names (migrate-v2 import only);
+	// "gitlab:<id>" / "github:<id>" keys are numeric code-hosting account IDs (fetch only).
 	AuthorIDs         map[string]string `yaml:"author_ids"`
 	TeamMembers       []string          `yaml:"team_members"`
 	NudgeDay          string            `yaml:"nudge_day"`
@@ -361,7 +362,10 @@ func (c Config) IsManagerID(userID string) bool {
 	return false
 }
 
-var slackUserIDRe = regexp.MustCompile(`^[UW][A-Z0-9]{8,}$`)
+var (
+	slackUserIDRe = regexp.MustCompile(`^[UW][A-Z0-9]{8,}$`)
+	accountKeyRe  = regexp.MustCompile(`^(gitlab|github):[0-9]+$`)
+)
 
 func IsSlackUserID(s string) bool { return slackUserIDRe.MatchString(s) }
 
@@ -375,6 +379,9 @@ func normalizeAuthorIDs(in map[string]string) (map[string]string, error) {
 		if key == "" {
 			return nil, fmt.Errorf("empty author name")
 		}
+		if isAccountKey(key) && !accountKeyRe.MatchString(key) {
+			return nil, fmt.Errorf("%q: account keys are gitlab:<numeric id> or github:<numeric id>", name)
+		}
 		if !IsSlackUserID(id) {
 			return nil, fmt.Errorf("%q maps to %q, which is not a Slack user ID", name, id)
 		}
@@ -386,9 +393,27 @@ func normalizeAuthorIDs(in map[string]string) (map[string]string, error) {
 	return out, nil
 }
 
-// AuthorID returns the Slack user ID configured for an author string, or "".
+func isAccountKey(key string) bool {
+	return strings.HasPrefix(key, "gitlab:") || strings.HasPrefix(key, "github:")
+}
+
+// AuthorID returns the Slack user ID configured for a report author name, or "".
+// Account keys never match here, so a name cannot be used to reach them.
 func (c Config) AuthorID(name string) string {
-	return c.AuthorIDs[authorKey(name)]
+	key := authorKey(name)
+	if isAccountKey(key) {
+		return ""
+	}
+	return c.AuthorIDs[key]
+}
+
+// AccountAuthorID returns the Slack user ID configured for a code-hosting account
+// ("gitlab" or "github") by its immutable numeric ID, or "".
+func (c Config) AccountAuthorID(host string, accountID int64) string {
+	if accountID <= 0 {
+		return ""
+	}
+	return c.AuthorIDs[fmt.Sprintf("%s:%d", host, accountID)]
 }
 
 func (c Config) GitLabConfigured() bool {

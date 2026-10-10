@@ -108,11 +108,11 @@ func TestImportCodeChangesLinkMergeAndOwnItems(t *testing.T) {
 	now := time.Now()
 	changes := []fetched{
 		{cc: domain.CodeChange{Source: "gitlab", SourceRef: "https://git.example/mr/1", Title: "fix shard timeout", Author: "Dev A", TicketIDs: "1234567", State: "open"}, reportedAt: now},
-		{cc: domain.CodeChange{Source: "gitlab", SourceRef: "https://git.example/mr/2", Title: "new exporter", Author: "Dev B", State: "merged"}, username: "devb", reportedAt: now},
+		{cc: domain.CodeChange{Source: "gitlab", SourceRef: "https://git.example/mr/2", Title: "new exporter", Author: "Dev B", State: "merged"}, host: "gitlab", accountID: 42, reportedAt: now},
 		{cc: domain.CodeChange{Source: "github", SourceRef: "https://git.example/pr/3", Title: "abandoned", Author: "Dev B", State: "closed"}, reportedAt: now},
 	}
-	cfg := config.Config{AuthorIDs: map[string]string{"devb": "UDEVB0001"}}
-	hooks := Hooks{ResolveAuthorID: cfg.AuthorID}
+	cfg := config.Config{AuthorIDs: map[string]string{"gitlab:42": "UDEVB0001"}}
+	hooks := Hooks{ResolveAccount: cfg.AccountAuthorID}
 	var res FetchResult
 	if err := importCodeChanges(db, changes, hooks, &res); err != nil {
 		t.Fatal(err)
@@ -136,5 +136,36 @@ func TestImportCodeChangesLinkMergeAndOwnItems(t *testing.T) {
 	}
 	if it, _ := sqlite.GetWorkItemByID(db, open); it.Status != domain.StatusInTesting || res.MovedToTesting != 1 || res.AlreadyTracked != 1 {
 		t.Fatalf("expected in testing after merge: %+v %+v", it, res)
+	}
+}
+
+func TestCodeChangeOwnersBindOnlyByAccountID(t *testing.T) {
+	db, err := sqlite.InitDB(filepath.Join(t.TempDir(), "bind.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	// Plain keys are report names; a code-hosting display name or username equal to one must not bind.
+	cfg := config.Config{AuthorIDs: map[string]string{"dana lee": "UDANA0001", "dlee": "UDANA0001",
+		"gitlab:7": "UREAL0007", "github:9": "UREAL0009"}}
+	now := time.Now()
+	changes := []fetched{
+		{cc: domain.CodeChange{Source: "gitlab", SourceRef: "https://git.example/mr/a", Title: "a", Author: "Dana Lee", State: "open"}, host: "gitlab", accountID: 100, reportedAt: now},
+		{cc: domain.CodeChange{Source: "gitlab", SourceRef: "https://git.example/mr/b", Title: "b", Author: "dlee", State: "open"}, host: "gitlab", accountID: 101, reportedAt: now},
+		{cc: domain.CodeChange{Source: "gitlab", SourceRef: "https://git.example/mr/c", Title: "c", Author: "Anyone", State: "open"}, host: "gitlab", accountID: 7, reportedAt: now},
+		{cc: domain.CodeChange{Source: "github", SourceRef: "https://git.example/pr/d", Title: "d", Author: "Dana Lee", State: "open"}, host: "github", accountID: 7, reportedAt: now},
+		{cc: domain.CodeChange{Source: "github", SourceRef: "https://git.example/pr/e", Title: "e", Author: "dlee", State: "open"}, host: "github", accountID: 9, reportedAt: now},
+	}
+	var res FetchResult
+	if err := importCodeChanges(db, changes, Hooks{ResolveAccount: cfg.AccountAuthorID}, &res); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"a": "", "b": "", "c": "UREAL0007", "d": "", "e": "UREAL0009"}
+	for _, f := range changes {
+		cc, _, _ := sqlite.GetCodeChangeByRef(db, f.cc.Source, f.cc.SourceRef)
+		it, _ := sqlite.GetWorkItemByID(db, cc.WorkItemID)
+		if it.AuthorID != want[f.cc.Title] {
+			t.Errorf("%s: author_id %q, want %q", f.cc.Title, it.AuthorID, want[f.cc.Title])
+		}
 	}
 }

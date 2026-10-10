@@ -35,11 +35,13 @@ func TestSuggestAuthorIDs(t *testing.T) {
 		"UOUTSIDE01": user("UOUTSIDE01", "Taylor Kim", "Taylor"),
 	}
 	cfg := Config{ManagerSlackIDs: []string{"UROSTER001"}, TeamMembers: []string{"UROSTER002", "UROSTER003", "Some Name"}}
-	out, err := SuggestAuthorIDs(cfg, []string{"Dana Lee", "Sam", "Taylor", "dana lee"}, lookup(workspace))
+	accounts := []Account{{Host: "gitlab", ID: 42, Username: "dlee", Name: "Dana Lee"}, {Host: "github", ID: 9, Username: "tkim", Name: "tkim"}}
+	out, err := SuggestAuthorIDs(cfg, []string{"Dana Lee", "Sam", "Taylor", "dana lee"}, accounts, lookup(workspace))
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"unverified", `"Dana Lee": "UROSTER001"`, `# "Sam": several roster members`, `# "Taylor": no roster member`} {
+	for _, want := range []string{"unverified", `"Dana Lee": "UROSTER001"`, `# "Sam": several roster members`, `# "Taylor": no roster member`,
+		`"gitlab:42": "UROSTER001"  # dlee, Dana Lee`, `# "github:9": no roster member has this exact name  # tkim, tkim`} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in:\n%s", want, out)
 		}
@@ -49,7 +51,7 @@ func TestSuggestAuthorIDs(t *testing.T) {
 	}
 
 	cfg.TeamMembers = append(cfg.TeamMembers, "UMISSING01")
-	if out, err := SuggestAuthorIDs(cfg, []string{"Dana Lee"}, lookup(workspace)); err == nil || out != "" {
+	if out, err := SuggestAuthorIDs(cfg, []string{"Dana Lee"}, accounts, lookup(workspace)); err == nil || out != "" {
 		t.Fatalf("a failed roster lookup must give no suggestions: %q %v", out, err)
 	}
 }
@@ -71,7 +73,7 @@ func TestDelegatedReportBindsOnlyViaAuthorIDs(t *testing.T) {
 	if got["Dev A"] != "" || got["Dev B"] != "UDEVB0001" {
 		t.Fatalf("unexpected bindings: %v", got)
 	}
-	if hooks := FetchHooks(cfg); hooks.ResolveAuthorID("Dev A") != "" || hooks.ResolveAuthorID(" dev b ") != "UDEVB0001" {
-		t.Fatal("fetch uses the same author_ids mapping")
+	if hooks := FetchHooks(cfg); hooks.ResolveAccount("gitlab", 1) != "" {
+		t.Fatal("fetch binds only gitlab:/github: account keys")
 	}
 }

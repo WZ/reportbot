@@ -11,7 +11,7 @@ import (
 // SuggestAuthorIDs proposes author_ids entries for the owner to review; it grants nothing.
 // It matches each author exactly against the names of the roster (manager_slack_ids plus
 // team_members given as Slack user IDs) and fails closed if any roster lookup fails.
-func SuggestAuthorIDs(cfg Config, authors []string, getUser func(id string) (*slack.User, error)) (string, error) {
+func SuggestAuthorIDs(cfg Config, authors []string, accounts []Account, getUser func(id string) (*slack.User, error)) (string, error) {
 	seen := map[string]bool{}
 	var users []slack.User
 	for _, id := range append(append([]string{}, cfg.ManagerSlackIDs...), cfg.TeamMembers...) {
@@ -30,6 +30,32 @@ func SuggestAuthorIDs(cfg Config, authors []string, getUser func(id string) (*sl
 		return "", fmt.Errorf("no Slack user IDs in manager_slack_ids or team_members")
 	}
 
+	match := func(names ...string) []string {
+		var ids []string
+		for _, u := range users {
+		user:
+			for _, n := range []string{u.RealName, u.Profile.RealName, u.Profile.DisplayName, u.Name} {
+				for _, want := range names {
+					if want = strings.TrimSpace(want); want != "" && strings.EqualFold(strings.TrimSpace(n), want) {
+						ids = append(ids, u.ID)
+						break user
+					}
+				}
+			}
+		}
+		return ids
+	}
+	line := func(b *strings.Builder, key, note string, ids []string) {
+		switch len(ids) {
+		case 1:
+			fmt.Fprintf(b, "  %q: %q%s\n", key, ids[0], note)
+		case 0:
+			fmt.Fprintf(b, "  # %q: no roster member has this exact name%s\n", key, note)
+		default:
+			fmt.Fprintf(b, "  # %q: several roster members have this name (%s)%s\n", key, strings.Join(ids, ", "), note)
+		}
+	}
+
 	uniq := map[string]bool{}
 	var names []string
 	for _, a := range authors {
@@ -42,24 +68,27 @@ func SuggestAuthorIDs(cfg Config, authors []string, getUser func(id string) (*sl
 
 	var b strings.Builder
 	b.WriteString("# Suggested author_ids — unverified, check every line before use.\nauthor_ids:\n")
+	b.WriteString("  # report author names (used by the migrate-v2 import)\n")
 	for _, name := range names {
-		var matches []string
-		for _, u := range users {
-			for _, n := range []string{u.RealName, u.Profile.RealName, u.Profile.DisplayName, u.Name} {
-				if strings.EqualFold(strings.TrimSpace(n), name) {
-					matches = append(matches, u.ID)
-					break
-				}
-			}
+		line(&b, name, "", match(name))
+	}
+	b.WriteString("  # code-hosting accounts by numeric ID (used by fetch)\n")
+	seenAcct := map[string]bool{}
+	for _, a := range accounts {
+		key := fmt.Sprintf("%s:%d", a.Host, a.ID)
+		if a.ID <= 0 || seenAcct[key] {
+			continue
 		}
-		switch len(matches) {
-		case 1:
-			fmt.Fprintf(&b, "  %q: %q\n", name, matches[0])
-		case 0:
-			fmt.Fprintf(&b, "  # %q: no roster member has this exact name\n", name)
-		default:
-			fmt.Fprintf(&b, "  # %q: several roster members have this name (%s)\n", name, strings.Join(matches, ", "))
-		}
+		seenAcct[key] = true
+		line(&b, key, fmt.Sprintf("  # %s, %s", a.Username, a.Name), match(a.Name, a.Username))
 	}
 	return b.String(), nil
+}
+
+// Account is a code-hosting account seen on a recent MR/PR.
+type Account struct {
+	Host     string // "gitlab" | "github"
+	ID       int64
+	Username string
+	Name     string
 }
