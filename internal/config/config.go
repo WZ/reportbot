@@ -161,7 +161,7 @@ func LoadConfig() Config {
 		cfg.LLMBatchSize = 50
 	}
 	if cfg.DecisionModelConfidence == 0 {
-		cfg.DecisionModelConfidence = 0.70
+		cfg.DecisionModelConfidence = 0.95
 	}
 	if cfg.LLMExampleCount == 0 {
 		cfg.LLMExampleCount = 20

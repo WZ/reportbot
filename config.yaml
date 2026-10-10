@@ -41,8 +41,9 @@ openai_base_url: "https://api.openai.com/v1"
 decision_model_url: "https://api.compat.example"
 decision_model_api_key: ""
 decision_model_name: ""
-# Section-check probability needed to file without asking "Where does this go?"
-decision_model_confidence: 0.70
+# Section-check probability needed to file without asking "Where does this go?".
+# 0.95 auto-filed about 43% of items in the ship-gate eval; revisit with /stats after a few weeks.
+decision_model_confidence: 0.95
 
 # Data and output paths
 db_path: "./reportbot.db"

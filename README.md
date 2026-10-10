@@ -103,7 +103,7 @@ openai_base_url: "https://api.openai.com/v1"  # optional: OpenAI-compatible base
 decision_model_url: "https://api.compat.example"
 decision_model_api_key: "..."
 decision_model_name: "..."
-decision_model_confidence: 0.70  # Section-check probability needed to file without asking
+decision_model_confidence: 0.95  # Section-check probability needed to file without asking
 
 # Permissions (Slack user IDs)
 manager_slack_ids:
@@ -171,7 +171,7 @@ export LLM_REASONING_EFFORT=low                 # Optional (openai provider): lo
 export DECISION_MODEL_URL=https://api.compat.example
 export DECISION_MODEL_API_KEY=...
 export DECISION_MODEL_NAME=...
-export DECISION_MODEL_CONFIDENCE=0.70           # Optional: default 0.70
+export DECISION_MODEL_CONFIDENCE=0.95           # Optional: default 0.95
 export MANAGER_SLACK_IDS="U01ABC123,U02DEF456"  # Comma-separated Slack user IDs
 export AUTHOR_IDS='{"Member One": "U02MEMBER1", "gitlab:1234": "U02MEMBER1"}'  # JSON: report name or gitlab:/github:<numeric id> -> Slack user ID
 export REPORT_CHANNEL_ID=C01234567
@@ -202,7 +202,19 @@ When `llm_provider=openai`, the Section pick uses the OpenAI-compatible `respons
 Set `llm_example_count` / `llm_example_max_chars` to tune prompt context, and `llm_batch_size` for re-classification after Taxonomy edits.
 Set `openai_base_url` / `OPENAI_BASE_URL` when `llm_provider=openai` and you want an OpenAI-compatible endpoint instead of `api.openai.com`.
 Set `llm_reasoning_effort` / `LLM_REASONING_EFFORT` (`low`, `medium`, `high`) to send a reasoning effort to an OpenAI-compatible reasoning model; empty sends none.
-Set `decision_model_url`, `decision_model_api_key` and `decision_model_name` (or `DECISION_MODEL_*`) for the decision model; requests go to `{decision_model_url}/v1/systemone`. `decision_model_confidence` is the Section-check probability needed to file without asking; the ship-gate eval measured about 93% accuracy among items filed at 0.70.
+Set `decision_model_url`, `decision_model_api_key` and `decision_model_name` (or `DECISION_MODEL_*`) for the decision model; requests go to `{decision_model_url}/v1/systemone`. `decision_model_confidence` is the Section-check probability needed to file without asking.
+
+Evaluated production settings (ship-gate eval on 592 past items):
+
+```yaml
+llm_provider: "openai"
+llm_model: "glm-5.3"
+llm_reasoning_effort: "low"
+decision_model_name: "clef"
+decision_model_confidence: 0.95
+```
+
+At 0.95 about 43% of items were filed automatically, at about 81% accuracy against an answer key derived from the previous reports; the rest got "Where does this go?". Watch `/stats` and revisit the threshold after a few weeks of real corrections.
 Set `external_http_timeout_seconds` / `EXTERNAL_HTTP_TIMEOUT_SECONDS` to tune timeout limits for GitLab/GitHub/LLM API requests.
 Set `tls_skip_verify` / `TLS_SKIP_VERIFY` to skip TLS certificate verification when connecting to internal or corporate API servers with self-signed or internal CA certificates.
 Set `web_enabled` / `WEB_ENABLED` to serve the report editor web UI alongside the Slack bot. Configure `web_client_id`, `web_client_secret` with your Slack app's OAuth credentials and set `web_session_secret` to a random 32-byte hex string for cookie signing. The web UI uses Slack OAuth for authentication and the same `manager_slack_ids` for permissions.

@@ -55,7 +55,7 @@ func TestLoadConfigFromEnvWithDefaults(t *testing.T) {
 	if cfg.GitLabRefTicketLabel != "" {
 		t.Fatalf("unexpected gitlab ref ticket label default: %q", cfg.GitLabRefTicketLabel)
 	}
-	if cfg.DecisionModelConfidence != 0.70 {
+	if cfg.DecisionModelConfidence != 0.95 {
 		t.Fatalf("unexpected decision model confidence default: %v", cfg.DecisionModelConfidence)
 	}
 	if cfg.DecisionModelURL != "https://api.compat.example" || cfg.DecisionModelName != "test-model" || cfg.DecisionModelAPIKey != "dm-test" {
