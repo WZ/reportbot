@@ -32,11 +32,10 @@ type Options struct {
 	HistoryDir   string // folder of published reports, NAME_YYYYMMDD.md; defaults to LatestReport's folder
 	DropV1       bool   // drop V1 tables and columns, after a fresh backup
 	DryRun       bool   // parse and count, write nothing
-	// ResolveUser binds an author name to a Slack user ID within the trusted roster,
-	// or returns "" and the reason it stayed unbound.
-	ResolveUser func(name string) (string, string)
-	Now         time.Time
-	Location    *time.Location
+	// AuthorID maps an author name to a Slack user ID through the author_ids config; "" when unmapped.
+	AuthorID func(name string) string
+	Now      time.Time
+	Location *time.Location
 }
 
 // Summary counts what each step did.
@@ -58,8 +57,7 @@ type Summary struct {
 // Binding is how one author name of the imported lines was bound, for review before --drop-v1.
 type Binding struct {
 	Author string
-	ID     string
-	Reason string // why it stayed unbound
+	ID     string // "" when author_ids has no entry
 }
 
 func (s Summary) String() string {
@@ -82,7 +80,7 @@ func (s Summary) String() string {
 			if bd.ID != "" {
 				fmt.Fprintf(b, "  %s -> %s\n", bd.Author, bd.ID)
 			} else {
-				fmt.Fprintf(b, "  %s -> unbound (%s)\n", bd.Author, bd.Reason)
+				fmt.Fprintf(b, "  %s -> unmapped\n", bd.Author)
 			}
 		}
 	}
@@ -152,6 +150,19 @@ func sectionFor(tax domain.Taxonomy, l Line) int64 {
 	return 0
 }
 
+// ReportAuthors lists the authors of a report's lines, for suggesting author_ids.
+func ReportAuthors(path string) ([]string, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, l := range Parse(string(b)).Lines {
+		out = append(out, l.Author)
+	}
+	return out, nil
+}
+
 // Run performs the cut-over steps that have not run yet.
 func Run(db *sql.DB, dbPath string, o Options) (Summary, error) {
 	var sum Summary
@@ -199,9 +210,9 @@ func Run(db *sql.DB, dbPath string, o Options) (Summary, error) {
 		if _, done := bound[l.Author]; done {
 			continue
 		}
-		bd := Binding{Author: l.Author, Reason: "no roster resolver"}
-		if o.ResolveUser != nil {
-			bd.ID, bd.Reason = o.ResolveUser(l.Author)
+		bd := Binding{Author: l.Author}
+		if o.AuthorID != nil {
+			bd.ID = o.AuthorID(l.Author)
 		}
 		bound[l.Author] = bd.ID
 		sum.Bindings = append(sum.Bindings, bd)

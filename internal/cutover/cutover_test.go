@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"reportbot/internal/config"
 	"reportbot/internal/domain"
 	"reportbot/internal/storage/sqlite"
 )
@@ -125,17 +126,7 @@ func TestRunImportsPromotesAndIsIdempotent(t *testing.T) {
 	dbPath, latest, db := setupV1(t)
 	loc := time.FixedZone("PDT", -7*3600)
 	opts := Options{LatestReport: latest, Location: loc, Now: time.Date(2026, 9, 28, 9, 0, 0, 0, loc),
-		ResolveUser: func(name string) (string, string) {
-			switch name {
-			case "Dev C":
-				return "UDEVC", ""
-			case "Dev A":
-				return "UDEVA", ""
-			case "Dev E":
-				return "UDEVE", ""
-			}
-			return "", "no roster member has this name"
-		}}
+		AuthorID: config.Config{AuthorIDs: map[string]string{"dev c": "UDEVC", "dev a": "UDEVA", "dev e": "UDEVE"}}.AuthorID}
 
 	sum, err := Run(db, dbPath, opts)
 	if err != nil {
@@ -146,10 +137,10 @@ func TestRunImportsPromotesAndIsIdempotent(t *testing.T) {
 	}
 
 	report := sum.String()
-	if !strings.Contains(report, "Dev A -> UDEVA") || !strings.Contains(report, "Dev G -> unbound (no roster member has this name)") {
+	if !strings.Contains(report, "Dev A -> UDEVA") || !strings.Contains(report, "Dev G -> unmapped") {
 		t.Fatalf("expected a binding report:\n%s", report)
 	}
-	dry, err := Run(db, dbPath, Options{LatestReport: latest, Location: loc, DryRun: true, ResolveUser: opts.ResolveUser})
+	dry, err := Run(db, dbPath, Options{LatestReport: latest, Location: loc, DryRun: true, AuthorID: opts.AuthorID})
 	if err != nil || len(dry.Bindings) != len(sum.Bindings) {
 		t.Fatalf("--dry-run must include the binding report: %+v err=%v", dry.Bindings, err)
 	}

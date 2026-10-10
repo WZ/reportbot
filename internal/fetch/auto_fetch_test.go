@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"reportbot/internal/config"
 	"reportbot/internal/domain"
 	"reportbot/internal/storage/sqlite"
 )
@@ -107,10 +108,11 @@ func TestImportCodeChangesLinkMergeAndOwnItems(t *testing.T) {
 	now := time.Now()
 	changes := []fetched{
 		{cc: domain.CodeChange{Source: "gitlab", SourceRef: "https://git.example/mr/1", Title: "fix shard timeout", Author: "Dev A", TicketIDs: "1234567", State: "open"}, reportedAt: now},
-		{cc: domain.CodeChange{Source: "gitlab", SourceRef: "https://git.example/mr/2", Title: "new exporter", Author: "Dev B", State: "merged"}, reportedAt: now},
+		{cc: domain.CodeChange{Source: "gitlab", SourceRef: "https://git.example/mr/2", Title: "new exporter", Author: "Dev B", State: "merged"}, username: "devb", reportedAt: now},
 		{cc: domain.CodeChange{Source: "github", SourceRef: "https://git.example/pr/3", Title: "abandoned", Author: "Dev B", State: "closed"}, reportedAt: now},
 	}
-	hooks := Hooks{ResolveAuthorID: func(name string) string { return "U-" + name }}
+	cfg := config.Config{AuthorIDs: map[string]string{"devb": "UDEVB0001"}}
+	hooks := Hooks{ResolveAuthorID: cfg.AuthorID}
 	var res FetchResult
 	if err := importCodeChanges(db, changes, hooks, &res); err != nil {
 		t.Fatal(err)
@@ -122,7 +124,7 @@ func TestImportCodeChangesLinkMergeAndOwnItems(t *testing.T) {
 	// The exporter became its own Work Item: merged means in testing, never done.
 	cc, ok, _ := sqlite.GetCodeChangeByRef(db, "gitlab", "https://git.example/mr/2")
 	own, _ := sqlite.GetWorkItemByID(db, cc.WorkItemID)
-	if !ok || cc.LinkKind != domain.LinkOwn || own.Status != domain.StatusInTesting || own.FilingState != domain.FilingPending || own.AuthorID != "U-Dev B" {
+	if !ok || cc.LinkKind != domain.LinkOwn || own.Status != domain.StatusInTesting || own.FilingState != domain.FilingPending || own.AuthorID != "UDEVB0001" {
 		t.Fatalf("unexpected own Work Item: %+v %+v", cc, own)
 	}
 

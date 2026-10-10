@@ -92,6 +92,7 @@ external_http_timeout_seconds: 75
 	t.Setenv("DECISION_MODEL_NAME", "test-model")
 	t.Setenv("DECISION_MODEL_CONFIDENCE", "0.55")
 	t.Setenv("LLM_REASONING_EFFORT", "low")
+	t.Setenv("AUTHOR_IDS", `{" Dana Lee ": "U0123ABCD", "dana.lee": "U0123ABCD"}`)
 	t.Setenv("LLM_PROVIDER", "openai")
 	t.Setenv("OPENAI_API_KEY", "sk-env")
 	t.Setenv("OPENAI_BASE_URL", "https://api.compat.example/v1/")
@@ -125,6 +126,9 @@ external_http_timeout_seconds: 75
 	}
 	if cfg.GitLabRefTicketLabel != "Jira" {
 		t.Fatalf("expected ticket field label from env override, got %q", cfg.GitLabRefTicketLabel)
+	}
+	if cfg.AuthorID("dana lee") != "U0123ABCD" || cfg.AuthorID("DANA.LEE") != "U0123ABCD" || cfg.AuthorID("Dana") != "" {
+		t.Fatalf("author_ids lookup is exact after trimming and case-folding: %v", cfg.AuthorIDs)
 	}
 	if cfg.LLMReasoningEffort != "low" {
 		t.Fatalf("expected reasoning effort from env override, got %q", cfg.LLMReasoningEffort)
@@ -205,6 +209,7 @@ func TestLoadConfigFatalCases(t *testing.T) {
 		_ = os.Setenv("TIMEZONE", os.Getenv("TEST_FATAL_TZ"))
 		_ = os.Setenv("DECISION_MODEL_CONFIDENCE", os.Getenv("TEST_FATAL_CONFIDENCE"))
 		_ = os.Setenv("LLM_REASONING_EFFORT", os.Getenv("TEST_FATAL_EFFORT"))
+		_ = os.Setenv("AUTHOR_IDS", os.Getenv("TEST_FATAL_AUTHOR_IDS"))
 		if os.Getenv("TEST_FATAL_DROP_DECISION_URL") == "1" {
 			_ = os.Unsetenv("DECISION_MODEL_URL")
 		}
@@ -227,5 +232,17 @@ func TestLoadConfigFatalCases(t *testing.T) {
 		if !errors.As(err, &exitErr) {
 			t.Fatalf("%s: expected ExitError, got: %v", name, err)
 		}
+	}
+}
+
+func TestNormalizeAuthorIDs(t *testing.T) {
+	if _, err := normalizeAuthorIDs(map[string]string{"a": "u0123abcd"}); err == nil {
+		t.Fatal("lower-case values are not Slack user IDs")
+	}
+	if _, err := normalizeAuthorIDs(map[string]string{"A": "U0123ABCD", "a": "U9999ZZZZ"}); err == nil {
+		t.Fatal("one author cannot map to two IDs")
+	}
+	if got, err := normalizeAuthorIDs(map[string]string{" A ": "U0123ABCD"}); err != nil || got["a"] != "U0123ABCD" {
+		t.Fatalf("unexpected %v %v", got, err)
 	}
 }

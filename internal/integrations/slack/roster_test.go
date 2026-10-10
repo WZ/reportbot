@@ -2,9 +2,11 @@ package slackbot
 
 import (
 	"fmt"
+	"strings"
 	"testing"
+	"time"
 
-	"reportbot/internal/fetch"
+	sqlitedb "reportbot/internal/storage/sqlite"
 
 	"github.com/slack-go/slack"
 )
@@ -15,56 +17,61 @@ func user(id, real, display string) slack.User {
 	return u
 }
 
-func testRoster(cfg Config, workspace map[string]slack.User) *Roster {
-	r := NewRoster(slack.New("x"), cfg)
-	r.getUser = func(id string) (*slack.User, error) {
+func lookup(workspace map[string]slack.User) func(string) (*slack.User, error) {
+	return func(id string) (*slack.User, error) {
 		u, ok := workspace[id]
 		if !ok {
 			return nil, fmt.Errorf("user_not_found")
 		}
 		return &u, nil
 	}
-	return r
 }
 
-func TestRosterBindsOnlyUniqueRosterMembers(t *testing.T) {
+func TestSuggestAuthorIDs(t *testing.T) {
 	workspace := map[string]slack.User{
 		"UROSTER001": user("UROSTER001", "Dana Lee", "Dana"),
 		"UROSTER002": user("UROSTER002", "Sam Park", "Sam"),
-		"UROSTER003": user("UROSTER003", "Robin Hale", "Sam"), // renamed to copy a colleague
-		"UOUTSIDE01": user("UOUTSIDE01", "Taylor Kim", "Dana Lee"),
+		"UROSTER003": user("UROSTER003", "Robin Hale", "Sam"),
+		"UOUTSIDE01": user("UOUTSIDE01", "Taylor Kim", "Taylor"),
 	}
 	cfg := Config{ManagerSlackIDs: []string{"UROSTER001"}, TeamMembers: []string{"UROSTER002", "UROSTER003", "Some Name"}}
-	r := testRoster(cfg, workspace)
+	out, err := SuggestAuthorIDs(cfg, []string{"Dana Lee", "Sam", "Taylor", "dana lee"}, lookup(workspace))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"unverified", `"Dana Lee": "UROSTER001"`, `# "Sam": several roster members`, `# "Taylor": no roster member`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "UOUTSIDE01") {
+		t.Fatal("users outside the roster are never suggested")
+	}
 
-	if id, _ := r.Bind("dana lee"); id != "UROSTER001" {
-		t.Fatalf("a unique roster match binds, got %q", id)
-	}
-	if id, why := r.Bind("Taylor Kim"); id != "" || why != "no roster member has this name" {
-		t.Fatalf("a workspace user outside the roster is never bound: %q %q", id, why)
-	}
-	if id, why := r.Bind("Sam"); id != "" || why != "several roster members have this name" {
-		t.Fatalf("two roster members with the same name stay unbound: %q %q", id, why)
-	}
-	if id, _ := r.Bind("Dana Le"); id != "" {
-		t.Fatal("matching is exact")
-	}
-	if id, why := testRoster(Config{TeamMembers: []string{"Dana Lee"}}, workspace).Bind("Dana Lee"); id != "" || why == "" {
-		t.Fatalf("team_members given as names give no roster: %q %q", id, why)
+	cfg.TeamMembers = append(cfg.TeamMembers, "UMISSING01")
+	if out, err := SuggestAuthorIDs(cfg, []string{"Dana Lee"}, lookup(workspace)); err == nil || out != "" {
+		t.Fatalf("a failed roster lookup must give no suggestions: %q %v", out, err)
 	}
 }
 
-func TestFetchHooksUseTheRoster(t *testing.T) {
-	workspace := map[string]slack.User{
-		"UROSTER001": user("UROSTER001", "Dana Lee", "Dana"),
-		"UOUTSIDE01": user("UOUTSIDE01", "Taylor Kim", "Taylor"),
+// The mock users.info would match "Dev A" by display name; only author_ids may bind.
+func TestDelegatedReportBindsOnlyViaAuthorIDs(t *testing.T) {
+	db := newTestDB(t)
+	api, _ := newSlackRecorder(t)
+	cfg := Config{Location: time.UTC, ManagerSlackIDs: []string{"UMGR"}, TeamMembers: []string{"Dev A", "Dev B"},
+		AuthorIDs: map[string]string{"dev b": "UDEVB0001"}}
+	for _, text := range []string{"{Dev A} unmapped work (done)", "{Dev B} mapped work (done)"} {
+		handleReport(api, db, cfg, slack.SlashCommand{Command: "/report", UserID: "UMGR", ChannelID: "C1", Text: text})
 	}
-	r := testRoster(Config{TeamMembers: []string{"UROSTER001"}}, workspace)
-	hooks := fetch.Hooks{ResolveAuthorID: r.ID}
-	if got := hooks.ResolveAuthorID("Dana Lee"); got != "UROSTER001" {
-		t.Fatalf("expected the roster member, got %q", got)
+	items, _ := sqlitedb.GetItemsByDateRange(db, time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
+	got := map[string]string{}
+	for _, it := range items {
+		got[it.Author] = it.AuthorID
 	}
-	if got := hooks.ResolveAuthorID("Taylor"); got != "" {
-		t.Fatalf("an author outside the roster stays unbound, got %q", got)
+	if got["Dev A"] != "" || got["Dev B"] != "UDEVB0001" {
+		t.Fatalf("unexpected bindings: %v", got)
+	}
+	if hooks := FetchHooks(cfg); hooks.ResolveAuthorID("Dev A") != "" || hooks.ResolveAuthorID(" dev b ") != "UDEVB0001" {
+		t.Fatal("fetch uses the same author_ids mapping")
 	}
 }

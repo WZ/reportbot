@@ -109,12 +109,16 @@ decision_model_confidence: 0.70  # Section-check probability needed to file with
 manager_slack_ids:
   - "U01ABC123"
 
-# Team members - used by /check, scheduled nudge and author binding.
-# Use Slack user IDs: only IDs listed here or in manager_slack_ids are used to bind MR/PR authors,
-# imported report lines and delegated /report {Name} items to a person (who may then edit them).
+# Team members (Slack full names or user IDs) - used by /check and scheduled nudge
 team_members:
-  - "U02MEMBER1"
-  - "U02MEMBER2"
+  - "Member One"
+  - "Member Two"
+
+# Owners of fetched and imported items: author name or code-hosting username -> Slack user ID.
+# Unmapped items are manager-only. Suggest a starting point with migrate-v2 --suggest-author-ids.
+author_ids:
+  "Member One": "U02MEMBER1"
+  "member.one": "U02MEMBER1"
 
 # Automatic MR/PR fetching (cron expression, empty to disable)
 auto_fetch_schedule: "0 9 * * 1-5"  # weekdays at 9am
@@ -168,6 +172,7 @@ export DECISION_MODEL_API_KEY=...
 export DECISION_MODEL_NAME=...
 export DECISION_MODEL_CONFIDENCE=0.70           # Optional: default 0.70
 export MANAGER_SLACK_IDS="U01ABC123,U02DEF456"  # Comma-separated Slack user IDs
+export AUTHOR_IDS='{"Member One": "U02MEMBER1"}'  # JSON: author name or username -> Slack user ID
 export REPORT_CHANNEL_ID=C01234567
 export EXTERNAL_HTTP_TIMEOUT_SECONDS=90          # Optional: timeout for external API HTTP calls
 export TLS_SKIP_VERIFY=true                      # Optional: skip TLS cert verification
@@ -211,7 +216,7 @@ Run once against the existing database, with the latest published team report:
 ./reportbot migrate-v2 --report reports/TEAM_20260925.md --drop-v1   # back up the DB, then drop V1 tables/columns
 ```
 
-It prints an author-binding report (name → Slack user ID, or unbound with the reason); review it before `--drop-v1`. Authors are bound only to a unique exact match among `manager_slack_ids` and the Slack user IDs in `team_members`; unbound items are manager-only.
+Imported lines get an owner only through `author_ids`. The run prints a binding report (author → Slack user ID, or "unmapped"); review it before `--drop-v1`. To draft `author_ids`, run `./reportbot migrate-v2 --report <latest.md> --suggest-author-ids`: it prints a YAML block of exact name matches among `manager_slack_ids` and the Slack user IDs in `team_members`, marked unverified, with unmatched authors commented out. It writes nothing, and prints no suggestions if any roster lookup fails.
 
 Each step is idempotent. It seeds the Taxonomy from the report's headings, imports its open authored lines as Work Items with a person Placement, promotes existing rows that match a published line (Placement from the latest report showing them), queues rows reported after that report for filing, and records fetched MRs/PRs as Code Changes. `--drop-v1` refuses to run until those steps are done, and only after writing `<db>.<timestamp>.backup`.
 
@@ -390,7 +395,7 @@ Managers and members can use `/list all` to see the full team list:
 ```
 
 `/list` now includes inline actions:
-- Members can edit/delete only their own items, matched by Slack user ID (never by name). Items without an author ID, such as imported lines whose author could not be resolved, are manager-only.
+- Members can edit/delete only their own items, matched by Slack user ID (never by name). Fetched and imported items get an owner only through `author_ids`; items without one are manager-only.
 - Managers can edit/delete all items.
 - Delete uses a confirmation modal.
 - Edit opens a modal with the description, Status, Status Note and Section. Choosing a Section is a person Placement; changing only the text files the item again.

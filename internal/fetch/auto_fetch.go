@@ -28,7 +28,7 @@ type FetchResult struct {
 
 // Hooks connect fetching to the rest of the bot without importing it.
 type Hooks struct {
-	ResolveAuthorID func(name string) string // Slack user ID for a Code Change author, "" if unknown
+	ResolveAuthorID func(name string) string // Slack user ID configured for an author string, "" if none
 	Wake            func()                   // start filing new Work Items now
 }
 
@@ -62,7 +62,7 @@ func FetchAndImportMRs(cfg Config, db *sql.DB, hooks Hooks) (FetchResult, error)
 				}
 				changes = append(changes, fetched{cc: domain.CodeChange{Source: "gitlab", SourceRef: mr.WebURL, Title: mr.Title,
 					Author: mr.AuthorName, TicketIDs: mr.TicketIDs, State: codeChangeState(mr.State), MergedAt: mr.MergedAt},
-					reportedAt: mrReportedAt(mr, cfg.Location)})
+					username: mr.Author, reportedAt: mrReportedAt(mr, cfg.Location)})
 			}
 		}
 	}
@@ -83,7 +83,7 @@ func FetchAndImportMRs(cfg Config, db *sql.DB, hooks Hooks) (FetchResult, error)
 				}
 				changes = append(changes, fetched{cc: domain.CodeChange{Source: "github", SourceRef: pr.HTMLURL, Title: pr.Title,
 					Author: pr.AuthorName, State: codeChangeState(pr.State), MergedAt: pr.MergedAt},
-					reportedAt: prReportedAt(pr, cfg.Location)})
+					username: pr.Author, reportedAt: prReportedAt(pr, cfg.Location)})
 			}
 		}
 	}
@@ -102,6 +102,7 @@ func FetchAndImportMRs(cfg Config, db *sql.DB, hooks Hooks) (FetchResult, error)
 
 type fetched struct {
 	cc         domain.CodeChange
+	username   string // code-hosting login, an alternative author_ids key
 	reportedAt time.Time
 }
 
@@ -151,7 +152,9 @@ func importCodeChanges(db *sql.DB, changes []fetched, hooks Hooks, result *Fetch
 			continue
 		}
 		if hooks.ResolveAuthorID != nil {
-			cc.AuthorID = hooks.ResolveAuthorID(cc.Author)
+			if cc.AuthorID = hooks.ResolveAuthorID(cc.Author); cc.AuthorID == "" {
+				cc.AuthorID = hooks.ResolveAuthorID(f.username)
+			}
 		}
 		if target := exactTicketMatch(db, cc.TicketIDs); target != 0 {
 			cc.WorkItemID = target

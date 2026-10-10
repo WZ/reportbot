@@ -58,6 +58,15 @@ report_channel_id: "C01234567"
 manager_slack_ids:
   - "U01ABC123"
 
+# Author owners: maps report author names and GitLab/GitHub usernames to Slack user IDs.
+# This is the only way a fetched or imported Work Item gets an owner who may edit it and
+# receives its DMs; unmapped items are manager-only. Generate a reviewed starting point
+# with: reportbot migrate-v2 --report <latest.md> --suggest-author-ids
+# Env override: AUTHOR_IDS='{"Alice Smith": "U01ALICE00"}'
+author_ids:
+  "Alice Smith": "U01ALICE00"
+  "asmith": "U01ALICE00"
+
 # Team member full names (as shown in Slack)
 team_members:
   - "Alice Smith"

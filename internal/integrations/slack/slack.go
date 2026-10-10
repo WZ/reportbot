@@ -197,18 +197,16 @@ func handleReport(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashComm
 			delegated := strings.TrimSpace(match[1])
 			remaining := strings.TrimSpace(text[len(match[0]):])
 			if delegated != "" && remaining != "" {
-				// A unique roster member binds the item to their Slack ID; otherwise the
-				// item keeps only the team_members name and stays manager-editable.
-				if u, ok := NewRoster(api, cfg).User(delegated); ok {
-					author, authorID = displayName(u), u.ID
-				} else {
-					resolvedAuthor, ok := resolveDelegatedAuthorName(delegated, cfg.TeamMembers)
-					if !ok || isLikelySlackID(resolvedAuthor) {
-						postEphemeral(api, cmd, fmt.Sprintf("Could not resolve delegated member %q to exactly one team member.", delegated))
-						log.Printf("report delegated author unresolved manager=%s delegated=%q", cmd.UserID, delegated)
-						return
-					}
-					author, authorID = resolvedAuthor, ""
+				resolvedAuthor, ok := resolveDelegatedAuthorName(delegated, cfg.TeamMembers)
+				if !ok {
+					postEphemeral(api, cmd, fmt.Sprintf("Could not resolve delegated member %q to exactly one team member.", delegated))
+					log.Printf("report delegated author unresolved manager=%s delegated=%q", cmd.UserID, delegated)
+					return
+				}
+				// Only author_ids binds an owner; otherwise the item stays manager-editable.
+				author, authorID = resolvedAuthor, cfg.AuthorID(resolvedAuthor)
+				if isLikelySlackID(resolvedAuthor) {
+					authorID = resolvedAuthor
 				}
 				reportText = remaining
 			}
@@ -379,7 +377,7 @@ func handleFetchMRs(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashCo
 		strings.Join(sources, " + "),
 		monday.Format("Jan 2"), nextMonday.AddDate(0, 0, -1).Format("Jan 2")))
 
-	result, err := FetchAndImportMRs(cfg, db, FetchHooks(api, cfg))
+	result, err := FetchAndImportMRs(cfg, db, FetchHooks(cfg))
 	if err != nil {
 		postEphemeral(api, cmd, fmt.Sprintf("Error: %v", err))
 		log.Printf("fetch error: %v", err)

@@ -27,9 +27,9 @@ func NewNotifier(api *slack.Client, db *sql.DB, cfg Config) *Notifier {
 	return &Notifier{API: api, DB: db, Cfg: cfg}
 }
 
-// FetchHooks binds Code Change authors within the roster and wakes filing.
-func FetchHooks(api *slack.Client, cfg Config) fetch.Hooks {
-	return fetch.Hooks{ResolveAuthorID: NewRoster(api, cfg).ID, Wake: func() { wakeFiling() }}
+// FetchHooks binds Code Change authors through author_ids only, and wakes filing.
+func FetchHooks(cfg Config) fetch.Hooks {
+	return fetch.Hooks{ResolveAuthorID: cfg.AuthorID, Wake: func() { wakeFiling() }}
 }
 
 func liveReportLink(cfg Config) string {

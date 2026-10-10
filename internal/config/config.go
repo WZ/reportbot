@@ -1,9 +1,11 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -49,14 +51,17 @@ type Config struct {
 	ExternalHTTPTimeoutSeconds int    `yaml:"external_http_timeout_seconds"`
 	TLSSkipVerify              bool   `yaml:"tls_skip_verify"`
 
-	ManagerSlackIDs   []string `yaml:"manager_slack_ids"`
-	TeamMembers       []string `yaml:"team_members"`
-	NudgeDay          string   `yaml:"nudge_day"`
-	NudgeTime         string   `yaml:"nudge_time"`
-	AutoFetchSchedule string   `yaml:"auto_fetch_schedule"`
-	MondayCutoffTime  string   `yaml:"monday_cutoff_time"`
-	Timezone          string   `yaml:"timezone"`
-	TeamName          string   `yaml:"team_name"`
+	ManagerSlackIDs []string `yaml:"manager_slack_ids"`
+	// AuthorIDs maps author strings (report author names, code-hosting usernames) to Slack
+	// user IDs. It is the only way a fetched or imported Work Item gets an owner.
+	AuthorIDs         map[string]string `yaml:"author_ids"`
+	TeamMembers       []string          `yaml:"team_members"`
+	NudgeDay          string            `yaml:"nudge_day"`
+	NudgeTime         string            `yaml:"nudge_time"`
+	AutoFetchSchedule string            `yaml:"auto_fetch_schedule"`
+	MondayCutoffTime  string            `yaml:"monday_cutoff_time"`
+	Timezone          string            `yaml:"timezone"`
+	TeamName          string            `yaml:"team_name"`
 
 	// Web UI
 	WebEnabled       bool   `yaml:"web_enabled"`
@@ -130,6 +135,13 @@ func LoadConfig() Config {
 	envOverride(&cfg.WebClientSecret, "WEB_CLIENT_SECRET")
 	envOverride(&cfg.WebSessionSecret, "WEB_SESSION_SECRET")
 	envOverride(&cfg.WebBaseURL, "WEB_BASE_URL")
+
+	if raw := os.Getenv("AUTHOR_IDS"); raw != "" {
+		cfg.AuthorIDs = nil
+		if err := json.Unmarshal([]byte(raw), &cfg.AuthorIDs); err != nil {
+			log.Fatalf("invalid AUTHOR_IDS (want a JSON object of name to Slack user ID): %v", err)
+		}
+	}
 
 	if ids := os.Getenv("MANAGER_SLACK_IDS"); ids != "" {
 		cfg.ManagerSlackIDs = nil
@@ -280,6 +292,12 @@ func LoadConfig() Config {
 	if cfg.LLMExampleMaxLen < 20 {
 		log.Fatalf("invalid llm_example_max_chars '%d': must be >= 20", cfg.LLMExampleMaxLen)
 	}
+	authorIDs, err := normalizeAuthorIDs(cfg.AuthorIDs)
+	if err != nil {
+		log.Fatalf("invalid author_ids: %v", err)
+	}
+	cfg.AuthorIDs = authorIDs
+
 	switch cfg.LLMReasoningEffort {
 	case "", "low", "medium", "high":
 	default:
@@ -341,6 +359,36 @@ func (c Config) IsManagerID(userID string) bool {
 		}
 	}
 	return false
+}
+
+var slackUserIDRe = regexp.MustCompile(`^[UW][A-Z0-9]{8,}$`)
+
+func IsSlackUserID(s string) bool { return slackUserIDRe.MatchString(s) }
+
+func authorKey(name string) string { return strings.ToLower(strings.TrimSpace(name)) }
+
+// normalizeAuthorIDs folds keys for lookup and rejects values that are not Slack user IDs.
+func normalizeAuthorIDs(in map[string]string) (map[string]string, error) {
+	out := make(map[string]string, len(in))
+	for name, id := range in {
+		key, id := authorKey(name), strings.TrimSpace(id)
+		if key == "" {
+			return nil, fmt.Errorf("empty author name")
+		}
+		if !IsSlackUserID(id) {
+			return nil, fmt.Errorf("%q maps to %q, which is not a Slack user ID", name, id)
+		}
+		if prev, ok := out[key]; ok && prev != id {
+			return nil, fmt.Errorf("%q maps to two Slack user IDs", name)
+		}
+		out[key] = id
+	}
+	return out, nil
+}
+
+// AuthorID returns the Slack user ID configured for an author string, or "".
+func (c Config) AuthorID(name string) string {
+	return c.AuthorIDs[authorKey(name)]
 }
 
 func (c Config) GitLabConfigured() bool {

@@ -70,7 +70,7 @@ func Main() {
 	queue.Start(ctx)
 
 	nudge.StartNudgeScheduler(cfg, db, api)
-	fetch.StartAutoFetchScheduler(cfg, db, api, fetch.Hooks{ResolveAuthorID: slackbot.NewRoster(api, cfg).ID, Wake: queue.Wake})
+	fetch.StartAutoFetchScheduler(cfg, db, api, fetch.Hooks{ResolveAuthorID: cfg.AuthorID, Wake: queue.Wake})
 
 	// Start web UI if enabled — verify bind before proceeding
 	var webSrv *http.Server
@@ -120,6 +120,7 @@ func migrateV2(args []string) {
 	history := fs.String("history", "", "folder of published reports used to promote existing rows (default: the --report folder)")
 	dropV1 := fs.Bool("drop-v1", false, "after the import, back up the database and drop V1 tables and columns")
 	dryRun := fs.Bool("dry-run", false, "parse and count only; write nothing")
+	suggest := fs.Bool("suggest-author-ids", false, "print a suggested author_ids block from roster names; write nothing")
 	_ = fs.Parse(args)
 	if *latest == "" {
 		fs.Usage()
@@ -128,19 +129,30 @@ func migrateV2(args []string) {
 
 	cfg := config.LoadConfig()
 	httpx.ConfigureExternalHTTPClient(cfg.ExternalHTTPTimeoutSeconds, cfg.TLSSkipVerify)
+	if *suggest {
+		authors, err := cutover.ReportAuthors(*latest)
+		if err != nil {
+			log.Fatalf("migrate-v2: %v", err)
+		}
+		out, err := slackbot.SuggestAuthorIDs(cfg, authors, slack.New(cfg.SlackBotToken).GetUserInfo)
+		if err != nil {
+			log.Fatalf("migrate-v2: no suggestions: %v", err)
+		}
+		fmt.Print(out)
+		return
+	}
 	db, err := sqlite.InitDB(cfg.DBPath)
 	if err != nil {
 		log.Fatalf("Failed to init database: %v", err)
 	}
 	defer db.Close()
 
-	api := slack.New(cfg.SlackBotToken)
 	sum, err := cutover.Run(db, cfg.DBPath, cutover.Options{
 		LatestReport: *latest,
 		HistoryDir:   *history,
 		DropV1:       *dropV1,
 		DryRun:       *dryRun,
-		ResolveUser:  slackbot.NewRoster(api, cfg).Bind,
+		AuthorID:     cfg.AuthorID,
 		Location:     cfg.Location,
 	})
 	fmt.Print(sum.String())
