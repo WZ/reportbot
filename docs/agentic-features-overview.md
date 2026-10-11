@@ -59,12 +59,12 @@ The first version classified everything in one batch at report time. Confidence 
 
 ### Feature 3: Ask Instead of Guess
 
-**What it does:** When the Section confidence is below `decision_model_confidence` (default 0.91), the Work Item waits in Undetermined and the reporter gets "Where does this go?" buttons for the decision model's three most likely Sections, plus Other….
+**What it does:** When the Section confidence is below `decision_model_confidence` (default 0.85), the Work Item waits in Undetermined and the reporter gets "Where does this go?" buttons for the decision model's three most likely Sections, plus Other….
 
 **Why it matters:** The system acts alone only where it is reliable and hands the rest to the person who knows the answer. One click from the reporter is a person-decided Placement.
 
 **How it works:**
-- At 0.91, about 27% of items filed themselves at about 91% accuracy in the evaluation; for 88% of items the right Section is among the three buttons
+- At 0.85, about 43% of items filed themselves at about 84% accuracy in the evaluation (0.91 reached 90% with 27% filed); for 88% of items the right Section is among the three buttons
 - Likely Updates are always confirmed: "Looks like an update to …" [Update it] [It's new]
 - A likely link between an MR and an Open Work Item is confirmed by the MR author by DM; only an exact ticket match links automatically
 
@@ -157,7 +157,7 @@ flowchart TB
 
     subgraph Place["Placement"]
         direction LR
-        AUTO["Filed<br>(confidence ≥ 0.91)"]
+        AUTO["Filed<br>(confidence ≥ 0.85)"]
         ASK["Where does this go?<br>(reporter decides)"]
     end
 

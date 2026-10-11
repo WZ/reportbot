@@ -92,7 +92,7 @@ gitlab_ref_ticket_label: "Jira"   # optional: parse ticket IDs from "Jira:" fiel
 decision_model_url: "https://api.compat.example"
 decision_model_api_key: "..."
 decision_model_name: "..."
-decision_model_confidence: 0.91  # Section confidence needed to file without asking
+decision_model_confidence: 0.85  # Section confidence needed to file without asking
 similar_item_count: 30           # optional: similar past Work Items the decision model sees
 
 # Optional LLM, only for /retrospect (Section description drafts); leave llm_provider empty to skip
@@ -160,7 +160,7 @@ export GITLAB_REF_TICKET_LABEL=Jira            # Optional: field label used for 
 export DECISION_MODEL_URL=https://api.compat.example
 export DECISION_MODEL_API_KEY=...
 export DECISION_MODEL_NAME=...
-export DECISION_MODEL_CONFIDENCE=0.91           # Optional: default 0.91
+export DECISION_MODEL_CONFIDENCE=0.85           # Optional: default 0.85
 export SIMILAR_ITEM_COUNT=30                    # Optional: similar past Work Items the decision model sees
 export LLM_PROVIDER=anthropic                   # Optional: only /retrospect uses the LLM
 export ANTHROPIC_API_KEY=sk-ant-...
@@ -202,11 +202,11 @@ Evaluated production settings (ship-gate eval on 592 past items):
 
 ```yaml
 decision_model_name: "clef"
-decision_model_confidence: 0.91
+decision_model_confidence: 0.85
 similar_item_count: 30
 ```
 
-At 0.91, about 27% of items were filed automatically, at about 91% accuracy (95% CI 87–96%) against an answer key derived from the previous reports; the rest got "Where does this go?", whose three buttons contained the right Section for 88% of items. Watch `/stats` and revisit the threshold after a few weeks of real corrections.
+At 0.85, about 43% of items were filed automatically, at about 84% accuracy (95% CI 79–89%) against an answer key derived from the previous reports; 0.91 is the lowest setting that reached 90% (27% filed). The rest get "Where does this go?", whose three buttons contained the right Section for 88% of items. Watch `/stats` and revisit the threshold after a few weeks of real corrections.
 Set `external_http_timeout_seconds` / `EXTERNAL_HTTP_TIMEOUT_SECONDS` to tune timeout limits for GitLab/GitHub/LLM API requests.
 Set `tls_skip_verify` / `TLS_SKIP_VERIFY` to skip TLS certificate verification when connecting to internal or corporate API servers with self-signed or internal CA certificates.
 Set `web_enabled` / `WEB_ENABLED` to serve the report editor web UI alongside the Slack bot. Configure `web_client_id`, `web_client_secret` with your Slack app's OAuth credentials and set `web_session_secret` to a random 32-byte hex string for cookie signing. The web UI uses Slack OAuth for authentication and the same `manager_slack_ids` for permissions.

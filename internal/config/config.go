@@ -153,7 +153,7 @@ func LoadConfig() Config {
 	}
 
 	if cfg.DecisionModelConfidence == 0 {
-		cfg.DecisionModelConfidence = 0.91
+		cfg.DecisionModelConfidence = 0.85
 	}
 	if cfg.SimilarItemCount == 0 {
 		cfg.SimilarItemCount = 30
