@@ -254,6 +254,7 @@ type WeekStats struct {
 	ItemsThisWeek     int
 	FiledByModel      int // check passed, filed without asking
 	Asked             int // check failed: the reporter was asked
+	FiledByAssistant  int // asked, then filed by the assistant's Second Opinion
 	FailedFiling      int
 	Undetermined      int
 	PersonCorrections map[int64]int // model-picked Section -> corrections away from it
@@ -267,11 +268,12 @@ func GetWeekStats(db *sql.DB, monday, nextMonday time.Time) (WeekStats, error) {
 		    COALESCE(SUM(EXISTS (SELECT 1 FROM placement_history h WHERE h.work_item_id = w.id AND h.reason IN ('arrival','reclassify') AND h.placed_by = 'model' AND h.to_section IS NOT NULL)), 0),
 		    COALESCE(SUM(EXISTS (SELECT 1 FROM model_judgments j WHERE j.work_item_id = w.id AND j.kind = 'section_choice')
 		         AND NOT EXISTS (SELECT 1 FROM placement_history h WHERE h.work_item_id = w.id AND h.placed_by = 'model' AND h.to_section IS NOT NULL)), 0),
-		    COALESCE(SUM(w.filing_state = 'failed'), 0)
+		    COALESCE(SUM(w.filing_state = 'failed'), 0),
+		    COALESCE(SUM(EXISTS (SELECT 1 FROM placement_history h WHERE h.work_item_id = w.id AND h.placed_by = 'assistant' AND h.to_section IS NOT NULL)), 0)
 		 FROM work_items w
 		 WHERE julianday(w.reported_at) >= julianday(?) AND julianday(w.reported_at) < julianday(?) AND w.source <> 'import'`,
 		monday, nextMonday,
-	).Scan(&s.ItemsThisWeek, &s.FiledByModel, &s.Asked, &s.FailedFiling)
+	).Scan(&s.ItemsThisWeek, &s.FiledByModel, &s.Asked, &s.FailedFiling, &s.FiledByAssistant)
 	if err != nil {
 		return s, err
 	}

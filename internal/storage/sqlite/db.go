@@ -34,6 +34,7 @@ var migrations = []migration{
 	{4, migrateSupportTables},
 	{5, migrateFailureNotified},
 	{6, migrateModelSectionColumn},
+	{7, migrateLearning},
 }
 
 func InitDB(path string) (*sql.DB, error) {

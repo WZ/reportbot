@@ -10,7 +10,7 @@ import (
 )
 
 func LoadTaxonomy(db *sql.DB) (domain.Taxonomy, error) {
-	rows, err := db.Query(`SELECT id, parent_id, level, name, description, sort_order, retired_at IS NOT NULL FROM taxonomy_nodes ORDER BY sort_order, id`)
+	rows, err := db.Query(`SELECT id, parent_id, level, name, description, learned_notes, sort_order, retired_at IS NOT NULL FROM taxonomy_nodes ORDER BY sort_order, id`)
 	if err != nil {
 		return domain.Taxonomy{}, err
 	}
@@ -19,7 +19,7 @@ func LoadTaxonomy(db *sql.DB) (domain.Taxonomy, error) {
 	for rows.Next() {
 		var n domain.TaxonomyNode
 		var parent sql.NullInt64
-		if err := rows.Scan(&n.ID, &parent, &n.Level, &n.Name, &n.Description, &n.SortOrder, &n.Retired); err != nil {
+		if err := rows.Scan(&n.ID, &parent, &n.Level, &n.Name, &n.Description, &n.LearnedNotes, &n.SortOrder, &n.Retired); err != nil {
 			return t, err
 		}
 		n.ParentID = parent.Int64
@@ -136,12 +136,54 @@ func MoveTaxonomyNode(db *sql.DB, id int64, delta int) error {
 // RetireTaxonomyNode retires a node and its descendants. Their Work Items keep the
 // Section until re-classification moves them.
 func RetireTaxonomyNode(db *sql.DB, id int64) error {
-	_, err := db.Exec(
+	return retireNode(db, id)
+}
+
+func retireNode(q querier, id int64) error {
+	_, err := q.Exec(
 		`WITH RECURSIVE sub(id) AS (SELECT ? UNION ALL SELECT t.id FROM taxonomy_nodes t JOIN sub ON t.parent_id = sub.id)
 		 UPDATE taxonomy_nodes SET retired_at = ?, updated_at = ? WHERE id IN (SELECT id FROM sub) AND retired_at IS NULL`,
 		id, time.Now(), time.Now(),
 	)
 	return err
+}
+
+// NewSection is a Section to create by a split.
+type NewSection struct {
+	Name, Description string
+}
+
+// SplitSection: a Section gets new siblings and is retired; a Category-as-Section gets
+// child Sections and is not retired, since retiring it would retire the new children too.
+func SplitSection(db *sql.DB, id int64, parts []NewSection) error {
+	if len(parts) == 0 {
+		return fmt.Errorf("at least one new Section name is required")
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var level string
+	var parent sql.NullInt64
+	if err := tx.QueryRow(`SELECT level, parent_id FROM taxonomy_nodes WHERE id = ?`, id).Scan(&level, &parent); err != nil {
+		return err
+	}
+	under := parent.Int64
+	if level == domain.LevelCategory {
+		under = id
+	}
+	for _, p := range parts {
+		if _, err := insertNode(tx, under, domain.LevelSection, p.Name, p.Description); err != nil {
+			return err
+		}
+	}
+	if level == domain.LevelSection {
+		if err := retireNode(tx, id); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // MergeSections moves every Work Item in from into into, decided by the manager, and retires from.

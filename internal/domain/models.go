@@ -29,8 +29,9 @@ func StatusRank(status string) int {
 func IsStatus(status string) bool { return StatusRank(status) < len(Statuses) }
 
 const (
-	PlacedByModel  = "model"
-	PlacedByPerson = "person"
+	PlacedByModel     = "model"
+	PlacedByPerson    = "person"
+	PlacedByAssistant = "assistant" // the LLM's Second Opinion on an unsure Placement
 )
 
 // Filing states of a Work Item's Placement.
