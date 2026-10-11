@@ -131,7 +131,8 @@ func (idx *Index) TopK(query string, k int, keep func(domain.PlacedItem) bool) [
 		if keep != nil && !keep(idx.items[i]) {
 			continue
 		}
-		if sim := cosineSim(qvec, dvec); sim > 0 {
+		// Rounded so map-order float noise cannot reorder ties: identical requests stay identical.
+		if sim := math.Round(cosineSim(qvec, dvec)*1e9) / 1e9; sim > 0 {
 			results = append(results, scored{i, sim})
 		}
 	}

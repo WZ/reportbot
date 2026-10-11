@@ -152,12 +152,20 @@ func BuildRequest(in RequestInput) (map[string]any, map[string]decision.Question
 	return state, qs
 }
 
-// SectionOption is how the decision model sees a Section: its path and any manager-written description.
+// SectionOption is how the decision model sees a Section: its path, the manager-written
+// description, then the Learned Notes.
 func SectionOption(s domain.Section) string {
-	if d := strings.TrimSpace(s.Description); d != "" {
-		return s.Path() + " — " + d
+	text := strings.TrimSpace(s.Description)
+	if n := strings.TrimSpace(s.LearnedNotes); n != "" {
+		if text != "" && !strings.HasSuffix(text, ".") {
+			text += "."
+		}
+		text = strings.TrimSpace(text + " " + n)
 	}
-	return s.Path()
+	if text == "" {
+		return s.Path()
+	}
+	return s.Path() + " — " + text
 }
 
 // TicketFromChoice maps the ticket answer back to a number; "" for none.

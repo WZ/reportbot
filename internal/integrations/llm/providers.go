@@ -48,10 +48,10 @@ func ModelName(cfg Config) string {
 
 // --- Anthropic ---
 
-func callAnthropic(apiKey, model, systemPrompt, userPrompt string) (string, LLMUsage, error) {
+func callAnthropic(ctx context.Context, apiKey, model, systemPrompt, userPrompt string) (string, LLMUsage, error) {
 	client := anthropic.NewClient(option.WithAPIKey(apiKey))
 
-	message, err := client.Messages.New(context.Background(), anthropic.MessageNewParams{
+	message, err := client.Messages.New(ctx, anthropic.MessageNewParams{
 		Model:     anthropic.Model(model),
 		MaxTokens: 4096,
 		System: []anthropic.TextBlockParam{
@@ -146,13 +146,13 @@ func buildResponsesInput(systemPrompt, userPrompt string) string {
 	}
 }
 
-func doOpenAIResponsesRequest(apiKey, baseURL string, reqBody openAIResponsesRequest) (string, LLMUsage, error) {
+func doOpenAIResponsesRequest(ctx context.Context, apiKey, baseURL string, reqBody openAIResponsesRequest) (string, LLMUsage, error) {
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
 		return "", LLMUsage{}, fmt.Errorf("marshaling responses request: %w", err)
 	}
 
-	req, err := http.NewRequest("POST", strings.TrimRight(baseURL, "/")+"/responses", bytes.NewReader(bodyBytes))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(baseURL, "/")+"/responses", bytes.NewReader(bodyBytes))
 	if err != nil {
 		return "", LLMUsage{}, fmt.Errorf("creating responses request: %w", err)
 	}
@@ -233,8 +233,8 @@ func extractResponsesOutputText(resp openAIResponsesResponse) (string, error) {
 	return "", fmt.Errorf("no structured text content in OpenAI Responses payload")
 }
 
-func callOpenAI(apiKey, baseURL, model, effort, systemPrompt, userPrompt string) (string, LLMUsage, error) {
-	responseText, usage, err := doOpenAIResponsesRequest(apiKey, baseURL, openAIResponsesRequest{
+func callOpenAI(ctx context.Context, apiKey, baseURL, model, effort, systemPrompt, userPrompt string) (string, LLMUsage, error) {
+	responseText, usage, err := doOpenAIResponsesRequest(ctx, apiKey, baseURL, openAIResponsesRequest{
 		Model:     model,
 		Input:     buildResponsesInput(systemPrompt, userPrompt),
 		Reasoning: reasoningParam(effort),
@@ -244,4 +244,13 @@ func callOpenAI(apiKey, baseURL, model, effort, systemPrompt, userPrompt string)
 	}
 	log.Printf("llm openai responses size=%d tokens_in=%d tokens_out=%d", len(responseText), usage.InputTokens, usage.OutputTokens)
 	return responseText, usage, nil
+}
+
+// Complete sends one system+user prompt to the configured LLM and returns its text.
+func Complete(ctx context.Context, cfg Config, system, user string) (string, LLMUsage, error) {
+	model := ModelName(cfg)
+	if cfg.LLMProvider == "openai" {
+		return callOpenAI(ctx, cfg.OpenAIAPIKey, cfg.OpenAIBaseURL, model, cfg.LLMReasoningEffort, system, user)
+	}
+	return callAnthropic(ctx, cfg.AnthropicAPIKey, model, system, user)
 }
