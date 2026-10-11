@@ -4,9 +4,9 @@ A Slack bot that collects a development team's work items and files each one int
 
 Developers report work via slash commands. The bot also pulls merged/open GitLab MRs and GitHub PRs (manually or on a cron schedule). Every Work Item is filed into the report's Taxonomy (Area → Category → Section, kept in the database) right away:
 
-1. A generative LLM (Anthropic Claude or an OpenAI-compatible endpoint) picks the Section.
-2. A decision model (System One protocol) checks that pick and answers the narrow questions — Status, ticket ID, whether a report is an Update to an existing Work Item — with calibrated probabilities.
-3. Confident picks are filed silently; doubtful ones ask the reporter "Where does this go?" with a few buttons.
+1. A decision model (System One protocol) picks the Section in one request, and in the same request answers the narrow questions code cannot decide — Status, ticket ID, whether a report is an Update to an existing Work Item — with calibrated probabilities.
+2. Confident picks are filed silently; doubtful ones ask the reporter "Where does this go?" with the model's top three Sections.
+3. An optional LLM (Anthropic Claude or an OpenAI-compatible endpoint) is used only by `/retrospect`, to draft Section descriptions.
 
 The team sees the live Weekly Report in the web UI; managers publish it to Slack as markdown and an email draft. See `CONTEXT.md` for the domain terms and `docs/adr/` for the design decisions.
 
@@ -25,13 +25,12 @@ The team sees the live Weekly Report in the web UI; managers publish it to Slack
 
 ### Filing on arrival
 
-- **One LLM call per Work Item** picks the Section, given the Section list (with manager-written descriptions), the most similar past Work Items and where they were filed (TF-IDF), and recent corrections.
-- **One decision-model request per Work Item** checks the pick (its probability is the Placement confidence) and, when code cannot decide, asks for the Status, the ticket ID among several candidate numbers, and whether the report updates an Open Work Item.
-- **Below `decision_model_confidence`** the item waits in Undetermined and the reporter gets "Where does this go?" buttons; a click is a person Placement.
+- **One decision-model request per Work Item** picks the Section — a Choice over the active Sections (path plus any manager-written description), given the most similar past Work Items and where they were filed (TF-IDF) — and, when code cannot decide, asks for the Status, the ticket ID among several candidate numbers, and whether the report updates an Open Work Item. The Choice's confidence is the Placement confidence.
+- **Below `decision_model_confidence`** the item waits in Undetermined and the reporter gets "Where does this go?" buttons for the model's three most likely Sections; a click is a person Placement.
 - **Updates** are always confirmed by the reporter ("Looks like an update to …" [Update it] [It's new]).
 - **Code Changes** link to an Open Work Item on an exact ticket match; a merge moves an `in progress` Work Item to `in testing`. Unlinked ones become their own Work Items (`in testing` once merged — `done` is always a person's decision).
-- **Taxonomy edits** (web UI) re-classify Open Work Items; confident moves happen automatically and a person whose choice was overridden gets an Undo button.
-- **Never lost**: if a model is unreachable, the item is filed as Undetermined and a sweep retries it.
+- **Taxonomy edits** (web UI) re-file Open Work Items; confident moves happen automatically and a person whose choice was overridden gets an Undo button.
+- **Never lost**: if the decision model is unreachable, the item is filed as Undetermined and a sweep retries it.
 
 See [docs/agentic-features-overview.md](docs/agentic-features-overview.md) for a detailed overview.
 
@@ -89,21 +88,19 @@ gitlab_token: "glpat-..."
 gitlab_group_id: "my-team"
 gitlab_ref_ticket_label: "Jira"   # optional: parse ticket IDs from "Jira:" field in GitLab MR description; empty disables parsing
 
-# LLM
+# Decision model (System One protocol): files every Work Item
+decision_model_url: "https://api.compat.example"
+decision_model_api_key: "..."
+decision_model_name: "..."
+decision_model_confidence: 0.91  # Section confidence needed to file without asking
+similar_item_count: 30           # optional: similar past Work Items the decision model sees
+
+# Optional LLM, only for /retrospect (Section description drafts); leave llm_provider empty to skip
 llm_provider: "anthropic"       # "anthropic" or "openai"
-llm_batch_size: 50              # optional: items per LLM call when re-classifying after a Taxonomy edit
-llm_example_count: 20           # optional: similar past Work Items shown to the LLM
-llm_example_max_chars: 140      # optional: max chars per example snippet
 llm_reasoning_effort: ""        # optional (openai provider): low, medium or high; empty sends none
 anthropic_api_key: "sk-ant-..."
 openai_api_key: ""
 openai_base_url: "https://api.openai.com/v1"  # optional: OpenAI-compatible base URL
-
-# Decision model (System One protocol)
-decision_model_url: "https://api.compat.example"
-decision_model_api_key: "..."
-decision_model_name: "..."
-decision_model_confidence: 0.95  # Section-check probability needed to file without asking
 
 # Permissions (Slack user IDs)
 manager_slack_ids:
@@ -137,7 +134,7 @@ team_name: "Example Team"
 
 # Report channel (Slack channel ID for reminders)
 report_channel_id: "C01234567"
-external_http_timeout_seconds: 90  # optional: timeout for GitLab/GitHub/LLM HTTP calls
+external_http_timeout_seconds: 90  # optional: timeout for GitLab/GitHub/model HTTP calls
 tls_skip_verify: false             # optional: skip TLS cert verification for internal/corporate CAs
 
 # Web UI (optional)
@@ -160,18 +157,16 @@ export GITLAB_URL=https://gitlab.example.com
 export GITLAB_TOKEN=glpat-...
 export GITLAB_GROUP_ID=my-team
 export GITLAB_REF_TICKET_LABEL=Jira            # Optional: field label used for GitLab MR ticket parsing
-export LLM_PROVIDER=anthropic
-export ANTHROPIC_API_KEY=sk-ant-...
-export OPENAI_API_KEY=
-export OPENAI_BASE_URL=https://api.openai.com/v1
-export LLM_BATCH_SIZE=50
-export LLM_EXAMPLE_COUNT=20
-export LLM_EXAMPLE_MAX_CHARS=140
-export LLM_REASONING_EFFORT=low                 # Optional (openai provider): low, medium or high
 export DECISION_MODEL_URL=https://api.compat.example
 export DECISION_MODEL_API_KEY=...
 export DECISION_MODEL_NAME=...
-export DECISION_MODEL_CONFIDENCE=0.95           # Optional: default 0.95
+export DECISION_MODEL_CONFIDENCE=0.91           # Optional: default 0.91
+export SIMILAR_ITEM_COUNT=30                    # Optional: similar past Work Items the decision model sees
+export LLM_PROVIDER=anthropic                   # Optional: only /retrospect uses the LLM
+export ANTHROPIC_API_KEY=sk-ant-...
+export OPENAI_API_KEY=
+export OPENAI_BASE_URL=https://api.openai.com/v1
+export LLM_REASONING_EFFORT=low                 # Optional (openai provider): low, medium or high
 export MANAGER_SLACK_IDS="U01ABC123,U02DEF456"  # Comma-separated Slack user IDs
 export AUTHOR_IDS='{"Member One": "U02MEMBER1", "gitlab:1234": "U02MEMBER1"}'  # JSON: report name or gitlab:/github:<numeric id> -> Slack user ID
 export REPORT_CHANNEL_ID=C01234567
@@ -190,31 +185,28 @@ export TIMEZONE=America/Los_Angeles
 
 Note: the Taxonomy lives in the database and is edited in the web UI (`/taxonomy`); published `.md` files are output only.
 
-#### LLM Provider Defaults
+#### LLM (optional, `/retrospect` only)
 
 | Provider | Default Model |
 |---|---|
 | `anthropic` | `claude-sonnet-4-5-20250929` |
 | `openai` | `gpt-4o-mini` |
 
-Set `llm_model` in YAML or `LLM_MODEL` env var to override.
-When `llm_provider=openai`, the Section pick uses the OpenAI-compatible `responses` API with schema-constrained JSON output (`section_id` only).
-Set `llm_example_count` / `llm_example_max_chars` to tune prompt context, and `llm_batch_size` for re-classification after Taxonomy edits.
+Set `llm_model` in YAML or `LLM_MODEL` env var to override. Without `llm_provider`, everything works except `/retrospect`, which says the LLM isn't configured.
+When `llm_provider=openai`, `/retrospect` uses the OpenAI-compatible `responses` API.
 Set `openai_base_url` / `OPENAI_BASE_URL` when `llm_provider=openai` and you want an OpenAI-compatible endpoint instead of `api.openai.com`.
 Set `llm_reasoning_effort` / `LLM_REASONING_EFFORT` (`low`, `medium`, `high`) to send a reasoning effort to an OpenAI-compatible reasoning model; empty sends none.
-Set `decision_model_url`, `decision_model_api_key` and `decision_model_name` (or `DECISION_MODEL_*`) for the decision model; requests go to `{decision_model_url}/v1/systemone`. `decision_model_confidence` is the Section-check probability needed to file without asking.
+Set `decision_model_url`, `decision_model_api_key` and `decision_model_name` (or `DECISION_MODEL_*`) for the decision model; requests go to `{decision_model_url}/v1/systemone`. `decision_model_confidence` is the Section Choice confidence needed to file without asking; `similar_item_count` sets how many similar past Work Items the decision model sees.
 
 Evaluated production settings (ship-gate eval on 592 past items):
 
 ```yaml
-llm_provider: "openai"
-llm_model: "glm-5.3"
-llm_reasoning_effort: "low"
 decision_model_name: "clef"
-decision_model_confidence: 0.95
+decision_model_confidence: 0.91
+similar_item_count: 30
 ```
 
-At 0.95 about 43% of items were filed automatically, at about 81% accuracy against an answer key derived from the previous reports; the rest got "Where does this go?". Watch `/stats` and revisit the threshold after a few weeks of real corrections.
+At 0.91, about 27% of items were filed automatically, at about 91% accuracy (95% CI 87–96%) against an answer key derived from the previous reports; the rest got "Where does this go?", whose three buttons contained the right Section for 88% of items. Watch `/stats` and revisit the threshold after a few weeks of real corrections.
 Set `external_http_timeout_seconds` / `EXTERNAL_HTTP_TIMEOUT_SECONDS` to tune timeout limits for GitLab/GitHub/LLM API requests.
 Set `tls_skip_verify` / `TLS_SKIP_VERIFY` to skip TLS certificate verification when connecting to internal or corporate API servers with self-signed or internal CA certificates.
 Set `web_enabled` / `WEB_ENABLED` to serve the report editor web UI alongside the Slack bot. Configure `web_client_id`, `web_client_secret` with your Slack app's OAuth credentials and set `web_session_secret` to a random 32-byte hex string for cookie signing. The web UI uses Slack OAuth for authentication and the same `manager_slack_ids` for permissions.

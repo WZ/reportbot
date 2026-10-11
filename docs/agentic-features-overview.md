@@ -25,7 +25,7 @@ The first version classified everything in one batch at report time. Confidence 
 ### What Makes It "Agentic"?
 
 1. **Memory** — every Placement, by the models or by a person, is kept and reused as context
-2. **Self-evaluation** — a second model judges the first model's answer before anything is filed
+2. **Self-evaluation** — every Section pick comes with a calibrated confidence that decides whether it is filed
 3. **Knowing what it doesn't know** — below a confidence level it asks a person instead of guessing
 4. **Self-improvement** — person decisions and corrections feed the next filing, and `/retrospect` proposes clearer Section descriptions
 
@@ -44,28 +44,27 @@ The first version classified everything in one batch at report time. Confidence 
 
 ---
 
-### Feature 2: Pick and Check (Two Models)
+### Feature 2: One Calibrated Decision per Work Item
 
-**What it does:** An LLM picks the Section. A decision model (System One protocol) then answers one narrow question: *does this Work Item belong in that Section?* Its probability is the Placement's confidence.
+**What it does:** A decision model (System One protocol) picks the Section as a Choice over the active Sections, and in the same request answers the narrow questions code cannot decide. The Choice's confidence is the Placement's confidence.
 
-**Why it matters:** An LLM's own confidence cannot be trusted to gate anything. A model trained for calibrated yes/no answers can — so the system files on its own only when a second, independent judgment agrees.
+**Why it matters:** The decision model returns calibrated probabilities, so its confidence can gate what is filed without a person. On 592 past Work Items this filed about three times as many items at ≥ 90% accuracy as an LLM pick checked by the same model, with the same overall accuracy and half the calls.
 
 **How it works:**
-- One LLM call per Work Item: Section list (with descriptions), the most similar past Work Items and where they were filed, up to 30 recent items per Section, recent corrections
-- One decision-model request per Work Item, sent after the LLM answers: the Section check plus, only when code cannot decide, the Status, the ticket ID among several candidate numbers, and whether the report updates an Open Work Item
-- The check sees the 30 most similar past Work Items and the author's 10 most recent ones
-- Raw answers and probabilities are stored (`model_judgments`), so the threshold can be re-tuned without calling the models again
+- One request per Work Item: the `section` Choice (criteria = each Section's path plus any manager-written description), with the 30 most similar past Work Items and where they were filed in `state`
+- In the same request, only when code cannot decide: the Status, the ticket ID among several candidate numbers, and whether the report updates an Open Work Item
+- Raw answers and probabilities are stored (`model_judgments`), so the threshold can be re-tuned without calling the model again
 
 ---
 
 ### Feature 3: Ask Instead of Guess
 
-**What it does:** When the check's probability is below `decision_model_confidence` (default 0.95), the Work Item waits in Undetermined and the reporter gets "Where does this go?" buttons: the LLM's pick plus the two Sections most similar items were filed under.
+**What it does:** When the Section confidence is below `decision_model_confidence` (default 0.91), the Work Item waits in Undetermined and the reporter gets "Where does this go?" buttons for the decision model's three most likely Sections, plus Other….
 
 **Why it matters:** The system acts alone only where it is reliable and hands the rest to the person who knows the answer. One click from the reporter is a person-decided Placement.
 
 **How it works:**
-- At 0.95, about 43% of items filed themselves in the evaluation; the rest were asked
+- At 0.91, about 27% of items filed themselves at about 91% accuracy in the evaluation; for 88% of items the right Section is among the three buttons
 - Likely Updates are always confirmed: "Looks like an update to …" [Update it] [It's new]
 - A likely link between an MR and an Open Work Item is confirmed by the MR author by DM; only an exact ticket match links automatically
 
@@ -73,7 +72,7 @@ The first version classified everything in one batch at report time. Confidence 
 
 ### Feature 4: Memory That Comes From People
 
-**What it does:** Every Placement change is recorded in `placement_history` with who decided it — a model, the reporter, or a manager. Person decisions become the similar-item examples for future filing, and overrides of a model Placement become the corrections shown to the LLM.
+**What it does:** Every Placement change is recorded in `placement_history` with who decided it — a model, the reporter, or a manager. Person decisions become the similar-item examples for future filing, and overrides of a model Placement are the corrections `/retrospect` studies.
 
 **Why it matters:** The system learns the team's filing conventions from ordinary use — no retraining, no separate labelling step.
 
@@ -86,14 +85,14 @@ The first version classified everything in one batch at report time. Confidence 
 **Why it matters:** Renaming "7.4.5 release" to "7.4.6 release" no longer breaks history, and new Sections take effect immediately.
 
 **How it works:**
-- Every Taxonomy edit queues one re-classification of Open Work Items: the LLM picks in batches, the decision model checks changed picks, and passing items move
+- Every Taxonomy edit queues one re-filing of Open Work Items: the decision model picks again for each, and confident changes move
 - If a person's choice is overridden, that person gets a DM with an Undo button
 
 ---
 
 ### Feature 6: Retrospective → Section Descriptions
 
-**What it does:** `/retrospect` (manager-only) has the LLM study recent corrections and suggest a clearer one-line description for the Sections people keep correcting. Apply writes it to the Taxonomy; both models see it on the next filing.
+**What it does:** `/retrospect` (manager-only) has the LLM study recent corrections and suggest a clearer one-line description for the Sections people keep correcting. Apply writes it to the Taxonomy; the decision model sees it on the next filing. This is the only use of an LLM, and it is optional.
 
 **Why it matters:** Most mistakes happen between neighbouring Sections (e.g. two engineering areas whose items look alike). A precise description is the cheapest fix, and it is reviewed by a manager before it takes effect.
 
@@ -111,7 +110,7 @@ The first version classified everything in one batch at report time. Confidence 
 
 ### Human-in-the-Loop by Default
 
-- Nothing is filed silently unless the independent check is confident
+- Nothing is filed silently unless the decision model is confident
 - Updates and MR links are confirmed by a person; only exact ticket matches link automatically
 - `done` is always a person's decision — a merged MR moves a Work Item to `in testing`, not `done`
 - `/retrospect` suggestions take effect only when a manager applies them
@@ -120,7 +119,7 @@ The first version classified everything in one batch at report time. Confidence 
 ### Graceful Degradation
 
 - The Slack reply never waits for a model
-- If either model is unreachable, the Work Item is Undetermined with a reason and retried; it is never lost
+- If the decision model is unreachable, the Work Item is Undetermined with a reason and retried; it is never lost
 - Publishing calls no model; it renders what is already filed and warns about Undetermined items
 
 ### Trust and Identity
@@ -131,9 +130,9 @@ The first version classified everything in one batch at report time. Confidence 
 
 ### Privacy and Cost
 
-- Both models are reached through configurable endpoints, so they can stay behind an internal gateway
+- The models are reached through configurable endpoints, so they can stay behind an internal gateway
 - Similar-item retrieval is in-memory TF-IDF — no extra model calls
-- Each Work Item costs one LLM call and one decision-model request; publishing costs none
+- Each Work Item costs one decision-model request; publishing costs none
 
 ---
 
@@ -151,17 +150,14 @@ flowchart TB
 
     subgraph File["File on arrival"]
         direction LR
-        MEM["Memory<br>───<br>Taxonomy + descriptions<br>Similar past items<br>Corrections"]
-        LLM["LLM<br>picks the Section"]
-        DM["Decision model<br>checks the pick<br>(+ Status, ticket, Update)"]
-        MEM -.->|context| LLM
-        LLM --> DM
+        MEM["Memory<br>───<br>Taxonomy + descriptions<br>Similar past items"]
+        DM["Decision model picks the Section<br>(+ Status, ticket, Update)"]
         MEM -.->|context| DM
     end
 
     subgraph Place["Placement"]
         direction LR
-        AUTO["Filed<br>(confidence ≥ 0.95)"]
+        AUTO["Filed<br>(confidence ≥ 0.91)"]
         ASK["Where does this go?<br>(reporter decides)"]
     end
 
@@ -176,7 +172,7 @@ flowchart TB
 
     DEV --> Q
     CC --> Q
-    Q --> LLM
+    Q --> DM
     DM -->|"confident"| AUTO
     DM -->|"unsure"| ASK
     AUTO --> LIVE
@@ -194,7 +190,7 @@ flowchart TB
     style MGR fill:#f96,stroke:#333,color:#000
 ```
 
-Two loops close the system. The **reporter loop**: whenever the check is unsure, the reporter decides, and that decision becomes memory for the next item. The **manager loop**: moves, Taxonomy edits and `/retrospect` descriptions sharpen the context both models see. The decision model sits between the LLM and the report so that only confident answers are filed without a person.
+Two loops close the system. The **reporter loop**: whenever the decision model is unsure, the reporter decides, and that decision becomes memory for the next item. The **manager loop**: moves, Taxonomy edits and `/retrospect` descriptions sharpen the context the decision model sees. Only confident answers are filed without a person.
 
 ---
 
@@ -202,7 +198,7 @@ Two loops close the system. The **reporter loop**: whenever the check is unsure,
 
 ```
 Week 1:  Many items are asked ("Where does this go?") — reporters click once each
-Week 2:  Those clicks are now similar-item examples → more checks pass → fewer questions
+Week 2:  Those clicks are now similar-item examples → more confident picks → fewer questions
 Week 3:  /retrospect suggests descriptions for the two most-corrected Sections → manager applies
 Week 4:  /stats shows real auto-filed accuracy → threshold re-tuned from production data
 ```
@@ -215,5 +211,5 @@ Week 4:  /stats shows real auto-filed accuracy → threshold re-tuned from produ
 |------|-------|--------|
 | **Re-tune the threshold** from 2–3 weeks of `/stats` corrections | More items filed without a question | Low |
 | **Manager-written descriptions** for the most confused Sections | Fewer neighbouring-Section mistakes | Low |
-| **Faster decision-model serving** (batching on the gateway) | Faster bulk re-classification | Medium |
-| **Semantic embeddings** instead of TF-IDF for similar items | Better context for both models | Medium |
+| **Faster decision-model serving** (batching on the gateway) | Faster bulk re-filing | Medium |
+| **Semantic embeddings** instead of TF-IDF for similar items | Better context for the decision model | Medium |
