@@ -27,8 +27,20 @@ The holding place for Work Items that could not be confidently filed into a Sect
 _Avoid_: UND, uncategorized
 
 **Placement**:
-The Section a Work Item is filed under, together with who decided it (the models or a person) and how likely the decision model judged that Section to be right.
+The Section a Work Item is filed under, together with who decided it (the decision model, the assistant's Second Opinion, or a person) and how likely the decision model judged that Section to be right.
 _Avoid_: classification, category (for the item's filing)
+
+**Learned Notes**:
+A short note on a Section, at most about two sentences, saying what belongs there and what goes to a neighbouring Section instead. It is drafted by the LLM from people's disagreements with the decision model and applied only when a replay of recent person decisions shows it helps. It is kept apart from the manager-written description; managers can edit, clear or undo it.
+_Avoid_: glossary, hints, auto-description
+
+**Structure Proposal**:
+A change to the Taxonomy (a new Section, a split, or a retirement) that the LLM suggests from the week's Work Items and that a manager approves or rejects. A rejected change is not proposed again for 8 weeks.
+_Avoid_: suggestion, auto-taxonomy
+
+**Second Opinion**:
+The assistant (the LLM) choosing one of the decision model's three most likely Sections for an unsure Work Item that nobody placed within 24 hours, or that is still Undetermined when the report is published. The reporter is told and can change it.
+_Avoid_: fallback classification, LLM pick
 
 ### Work
 

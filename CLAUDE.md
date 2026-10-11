@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-ReportBot is a Slack bot that collects Work Items from developers and files each one into the weekly report **as it arrives**, then publishes the report. Sources: `/report` slash commands, and fetched GitLab MRs and/or GitHub PRs (Code Changes). A decision model (System One protocol) picks the Section and answers Status, ticket and Update questions with calibrated probabilities, in one request per Work Item; an optional LLM only drafts Section descriptions for `/retrospect`. Domain terms are defined in `CONTEXT.md`; decisions in `docs/adr/`.
+ReportBot is a Slack bot that collects Work Items from developers and files each one into the weekly report **as it arrives**, then publishes the report. Sources: `/report` slash commands, and fetched GitLab MRs and/or GitHub PRs (Code Changes). A decision model (System One protocol) picks the Section and answers Status, ticket and Update questions with calibrated probabilities, in one request per Work Item; an optional LLM runs the learning loops (Learned Notes behind a replay gate, Structure Proposals, Second Opinion). Domain terms are defined in `CONTEXT.md`; decisions in `docs/adr/`.
 
 ## Build and Run
 
@@ -38,7 +38,7 @@ Configuration is layered: `config.yaml` is loaded first, then environment variab
 
 - **Slack**: `slack_bot_token` (xoxb-...), `slack_app_token` (xapp-...)
 - **GitLab**: `gitlab_url`, `gitlab_token`, `gitlab_group_id` (numeric ID or group path)
-- **LLM (optional, `/retrospect` only)**: `llm_provider` ("anthropic" or "openai"; empty = no LLM), `llm_model`, `anthropic_api_key` or `openai_api_key`, `openai_base_url`, `llm_reasoning_effort` (low/medium/high for OpenAI-compatible reasoning models; empty sends none)
+- **LLM (optional, learning loops and `/retrospect`)**: `llm_provider` ("anthropic" or "openai"; empty = no LLM), `llm_model`, `anthropic_api_key` or `openai_api_key`, `openai_base_url`, `llm_reasoning_effort` (low/medium/high for OpenAI-compatible reasoning models; empty sends none)
 - **Decision model**: `decision_model_url` (requests go to `{url}/v1/systemone`), `decision_model_api_key`, `decision_model_name`, `decision_model_confidence` (Section Choice confidence needed to file without asking; default 0.85), `similar_item_count` (similar past Work Items it sees; default 30); env `DECISION_MODEL_URL`, `DECISION_MODEL_API_KEY`, `DECISION_MODEL_NAME`, `DECISION_MODEL_CONFIDENCE`, `SIMILAR_ITEM_COUNT`
 - **Permissions**: `manager_slack_ids` (list of Slack user IDs) — controls access to `/fetch`, `/generate-report`, `/check`, `/retrospect`, `/stats`
 - **Nudge**: `team_members` (list of Slack full names or user IDs; used by `/check` and scheduled nudge), `nudge_day` (Monday-Sunday), `nudge_time` (HH:MM 24h format)
@@ -58,12 +58,13 @@ cmd/internal layout; the executable is `cmd/reportbot`, core logic is under `int
 - **internal/config/config.go** — Config struct, YAML + env loading with validation, `IsManagerID()`
 - **internal/domain/models.go** — `WorkItem` (Status, Status Note, `DoneAt`, Placement fields), `CodeChange`, `PlacedItem`, Status order, filing states, `ReportWeekRange()`
 - **internal/domain/taxonomy.go** — `Taxonomy` tree (Area → Category → Section), fileable `Sections()`, `Section.Path()`
-- **internal/storage/sqlite/** — `db.go` versioned additive migrations (`schema_migrations`); `work_items.go` (week membership, status/done_at, Updates), `placements.go` (Placement + `placement_history`, `model_judgments`, corrections, `/stats`), `taxonomy.go`, `jobs.go` (durable filing queue), `code_changes.go`, `published.go`
-- **internal/integrations/llm/** — optional LLM for `/retrospect` only: `retro.go` Section-description suggestions; `providers.go` Anthropic SDK / OpenAI Responses API
+- **internal/storage/sqlite/** — `db.go` versioned additive migrations (`schema_migrations`); `work_items.go` (week membership, status/done_at, Updates), `placements.go` (Placement + `placement_history`, `model_judgments`, corrections, `/stats`), `taxonomy.go` (incl. `SplitSection`), `learning.go` (Learned Notes + history, learning runs, replay cache, signals, Structure Proposals, Second Opinion candidates), `jobs.go` (durable filing queue), `code_changes.go`, `published.go`
+- **internal/integrations/llm/** — optional LLM: `learning.go` prompts and parsing for Learned Notes (Work Item text as delimited JSON data), Structure Proposals and the Second Opinion; `providers.go` `Complete()` over Anthropic SDK / OpenAI Responses API
 - **internal/similar/similar.go** — TF-IDF `Index` of placed Work Items, for the similar items the decision model sees and for Update candidates
 - **internal/integrations/decision/decision.go** — decision-model client: one request per Work Item, text-only instructions, retries on 429/5xx/529 with `Retry-After`, 8 in flight
-- **internal/filing/** — `filing.go` one filing pass (one decision-model request: Section Choice + Status/ticket/Update questions → Placement/Status/tickets/judgments → notify); `questions.go` exact request state and questions; `text.go` ticket rules; `worker.go` job workers, retries, sweep, re-filing after Taxonomy edits
-- **internal/integrations/slack/** — `slack.go` Socket Mode bot and slash commands; `notify.go` filing replies, "Where does this go?", Update/Link/Undo/Done buttons, edit modal; `retro.go` `/retrospect` and `/stats`; `slack_users.go` user resolution
+- **internal/filing/** — `filing.go` one filing pass (one decision-model request: Section Choice + Status/ticket/Update questions → Placement/Status/tickets/judgments → notify) and `Snapshot` (the context replay and the Second Opinion share with live filing); `questions.go` exact request state and questions (criteria = path, description, Learned Notes); `text.go` ticket rules; `worker.go` job workers, retries, sweep, re-filing after Taxonomy edits
+- **internal/learning/** — the learning loops (ADR 0003): `gate.go` replay gate (pure); `notes.go` Learned Notes run (signals → LLM draft → `validate.go` → replay current vs candidate → apply/discard, cached replays, Undo); `proposals.go` Structure Proposals (cooldown, Approve/Reject through Taxonomy edits); `second.go` Second Opinion (24 h, publish sweep ≤ 60 s); `scheduler.go` nightly 02:00 and hourly
+- **internal/integrations/slack/** — `slack.go` Socket Mode bot and slash commands; `notify.go` filing replies, "Where does this go?", Update/Link/Undo/Done buttons, edit modal; `retro.go` `/retrospect` (run the loops now), learning DMs (notes digest with Undo, proposals with Approve/Reject, assistant filing with Change) and `/stats`; `slack_users.go` user resolution
 - **internal/integrations/gitlab/**, **internal/integrations/github/** — MR/PR clients
 - **internal/fetch/auto_fetch.go** — records MRs/PRs as Code Changes (exact-ticket link, merge → in testing, own Work Item otherwise), cron scheduler
 - **internal/publish/publish.go** — live Weekly Report for a week; Published Report snapshot + `.md`/`.eml` files
@@ -77,18 +78,24 @@ cmd/internal layout; the executable is `cmd/reportbot`, core logic is under `int
 ### Arrival (`/report`, edit with new text, fetched Code Change)
 
 1. `slack.go:handleReport()` parses lines; code maps obvious Status words and leading `[tickets]`, otherwise leaves Status to the model and keeps the wording as the Status Note. `sqlite.InsertWorkItemsForFiling()` saves the item(s) and a `file` job in one transaction, *then* it replies "Saved — filing it…" (or replies with the error if the save failed).
-2. `filing.Queue` workers claim the job: `Filer.FileItem()` sends one decision-model request (`filing.BuildRequest`): a `section` Choice over the active Sections (criteria = path + description) with the 30 most similar placed Work Items in `state`, plus Status/ticket/Update questions only when code cannot decide.
+2. `filing.Queue` workers claim the job: `Filer.FileItem()` sends one decision-model request (`filing.BuildRequest`): a `section` Choice over the active Sections (criteria = path + description + Learned Notes) with the 30 most similar placed Work Items in `state`, plus Status/ticket/Update questions only when code cannot decide.
 3. Choice confidence ≥ `decision_model_confidence` → Placement `model`; else Undetermined and the reporter gets "Where does this go?" (the model's top 3 Sections by probability + Other…). The reply (via `response_url`, else ephemeral, else DM) shows the Section path, the line `**Author** - [tickets] description (status)`, Status/Note and tickets. Raw answers are kept in `model_judgments` (kind `section_choice` with the probability map).
 4. Failures retry with backoff (5 attempts); then the item is Undetermined with `model_unreachable` (the author is told once per Work Item, `failure_notified_at`) and the 15-minute sweep re-queues it. Update/Link questions are asked on a Work Item's first successful filing only (arrival, fetch, or a retry of a never-filed item).
 5. An edit whose re-filing is unsure keeps the old Section and sends "Where does this go?" buttons.
 
 ### Taxonomy edits
 
-Every edit in the web Taxonomy editor (and an applied `/retrospect` description) queues one coalesced `reclassify` job: one Section Choice request per Open Work Item (bounded by the decision client's concurrency); confident changes move (person-placed ones too, with an Undo DM).
+Every edit in the web Taxonomy editor (including a manager's Learned Notes edit, and an approved Structure Proposal) queues one coalesced `reclassify` job: one Section Choice request per Open Work Item (bounded by the decision client's concurrency); confident changes move (person-placed ones too, with an Undo DM).
 
 ### Weekly Report and publishing
 
-`sqlite.GetWeekItems()` = open items reported before the week ends + items done during the week. `/generate-report` and web Generate render the live view (no model calls), warn about Undetermined items, store the Published Report and write `.md`/`.eml`.
+`sqlite.GetWeekItems()` = open items reported before the week ends + items done during the week. With the LLM configured, `/generate-report` and web Generate first run the Second Opinion sweep on still-Undetermined items (at most 60 s), then render the live view, warn about Undetermined items, store the Published Report and write `.md`/`.eml`, and generate Structure Proposals in the background.
+
+### Learning loops (LLM required)
+
+- **Learned Notes** — nightly 02:00 (`timezone`) and `/retrospect`: signals since each Section was last considered (corrections of model Placements, mis-ranked picks), ≤ 3 Sections with signals from ≥ 2 people; the LLM drafts notes; `learning.ValidateNote` rejects unsafe drafts; replay of ≥ 60 person decisions from 8 weeks with current vs candidate notes; `learning.Gate` applies on ≥ +2 pts with no Section of ≥ 5 items losing. Runs are logged in `learning_runs`; notes history in `learned_notes_history` (Undo). Applied notes do not re-file Open Work Items.
+- **Structure Proposals** — after publishing and on `/retrospect`; Approve/Reject once (`structure_proposals`), 8-week cooldown.
+- **Second Opinion** — hourly for Work Items asked ≥ 24 h ago with no pick; Placement source `assistant`.
 
 ### Calendar Week Calculation
 
@@ -110,7 +117,7 @@ Every edit in the web Taxonomy editor (and an applied `/retrospect` description)
 - Slash commands must be **acked immediately** to avoid Slack's 3-second timeout
 - All command processing happens in goroutines after ack
 - Responses use **ephemeral messages** for feedback, except `/generate-report` which uploads the report to the channel (or DMs it to the caller with the `private` argument)
-- Never call the decision model or the LLM on the ack path; filing runs in `internal/filing` workers
+- Never call the decision model or the LLM on the ack path; filing runs in `internal/filing` workers, the loops in `internal/learning`
 - Permission check: `internal/config/config.go:IsManagerID()` checks Slack user ID against `manager_slack_ids`
 
 ## GitLab Integration Notes
@@ -133,7 +140,8 @@ Test files (unit tests never make live model calls; the gateway and the LLM are 
 - **internal/filing/filing_test.go** — arrival filing pass (Section Choice, criteria, de-duplicated similar items, stored `section_choice`), threshold routing with top-3 buttons, Status/ticket/Update questions in one request, retries and "unreachable → Undetermined" (told once), sweep, re-filing after Taxonomy edits with Undo notification, retired Sections, unsure edits keep their Section
 - **internal/filing/text_test.go** — status/ticket rules, request building only asks what code cannot decide
 - **internal/integrations/decision/decision_test.go** — text-only instructions, answer parsing, 429/5xx/529 retries with `Retry-After`, no retry on 422
-- **internal/integrations/llm/llm_test.go** — `/retrospect` prompt, reasoning effort, response parsing; **internal/similar/similar_test.go** — TF-IDF index
+- **internal/integrations/llm/learning_test.go** — notes prompt (Work Items as JSON data), notes/proposal/second-opinion parsing, reasoning effort, context cancel; **internal/similar/similar_test.go** — TF-IDF index
+- **internal/learning/*_test.go** — replay gate, note validation rules, Learned Notes runs (apply, discard, invalid, two-people rule, too few decisions, cache, Undo), proposals (approve once, cooldown), Second Opinion (24 h, top 3 only, publish sweep timeout)
 - **internal/storage/sqlite/db_test.go** — V1 → V2 migration, week membership and `done_at`, Placement history and corrections, jobs, Taxonomy edits, Code Changes and Updates, Published Report replace
 - **internal/cutover/cutover_test.go** — markdown parser on synthetic reports, import/promotion idempotency, backup-before-drop
 - **internal/integrations/slack/filing_flow_test.go** — `/report` save-then-queue, replies via `response_url`, placement/Update/Undo/Done buttons, edit modal, publish warning

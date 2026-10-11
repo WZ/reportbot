@@ -15,7 +15,7 @@ The first version classified everything in one batch at report time. Confidence 
 | Low-confidence items reviewed by the manager at report time | The reporter is asked "Where does this go?" right away |
 | Sections re-parsed from the last report, positional IDs | Taxonomy in the database with stable IDs, edited in the web UI |
 | Open items carried over as copied text | Open Work Items stay on every report until they are done |
-| Glossary and guide files maintained beside the code | Section descriptions in the Taxonomy, suggested by `/retrospect` |
+| Glossary and guide files maintained beside the code | Manager-written Section descriptions, plus Learned Notes applied only when a replay proves they help |
 | Report visible only after generation | Live report in the web UI for the whole team |
 
 ---
@@ -27,7 +27,7 @@ The first version classified everything in one batch at report time. Confidence 
 1. **Memory** — every Placement, by the models or by a person, is kept and reused as context
 2. **Self-evaluation** — every Section pick comes with a calibrated confidence that decides whether it is filed
 3. **Knowing what it doesn't know** — below a confidence level it asks a person instead of guessing
-4. **Self-improvement** — person decisions and corrections feed the next filing, and `/retrospect` proposes clearer Section descriptions
+4. **Self-improvement** — person decisions feed the next filing; nightly Learned Notes are tested against recent person decisions before they apply; weekly Structure Proposals go to managers
 
 ---
 
@@ -51,7 +51,7 @@ The first version classified everything in one batch at report time. Confidence 
 **Why it matters:** The decision model returns calibrated probabilities, so its confidence can gate what is filed without a person. On 592 past Work Items this filed about three times as many items at ≥ 90% accuracy as an LLM pick checked by the same model, with the same overall accuracy and half the calls.
 
 **How it works:**
-- One request per Work Item: the `section` Choice (criteria = each Section's path plus any manager-written description), with the 30 most similar past Work Items and where they were filed in `state`
+- One request per Work Item: the `section` Choice (criteria = each Section's path, any manager-written description, then its Learned Notes), with the 30 most similar past Work Items and where they were filed in `state`
 - In the same request, only when code cannot decide: the Status, the ticket ID among several candidate numbers, and whether the report updates an Open Work Item
 - Raw answers and probabilities are stored (`model_judgments`), so the threshold can be re-tuned without calling the model again
 
@@ -72,7 +72,7 @@ The first version classified everything in one batch at report time. Confidence 
 
 ### Feature 4: Memory That Comes From People
 
-**What it does:** Every Placement change is recorded in `placement_history` with who decided it — a model, the reporter, or a manager. Person decisions become the similar-item examples for future filing, and overrides of a model Placement are the corrections `/retrospect` studies.
+**What it does:** Every Placement change is recorded in `placement_history` with who decided it — a model, the reporter, or a manager. Person decisions become the similar-item examples for future filing, and disagreements with the decision model are the signals the learning loops study.
 
 **Why it matters:** The system learns the team's filing conventions from ordinary use — no retraining, no separate labelling step.
 
@@ -90,17 +90,23 @@ The first version classified everything in one batch at report time. Confidence 
 
 ---
 
-### Feature 6: Retrospective → Section Descriptions
+### Feature 6: Continuous Learning (needs the LLM)
 
-**What it does:** `/retrospect` (manager-only) has the LLM study recent corrections and suggest a clearer one-line description for the Sections people keep correcting. Apply writes it to the Taxonomy; the decision model sees it on the next filing. This is the only use of an LLM, and it is optional.
+Three loops, all off when no LLM is configured. The confidence threshold stays a fixed setting; nothing tunes it automatically. `/retrospect` (manager-only) runs Learned Notes and Structure Proposals now and shows what was applied (with Undo), discarded or proposed.
 
-**Why it matters:** Most mistakes happen between neighbouring Sections (e.g. two engineering areas whose items look alike). A precise description is the cheapest fix, and it is reviewed by a manager before it takes effect.
+**Learned Notes (nightly, replay-gated).** At 02:00, for up to three Sections, the LLM drafts a short contrastive note, e.g. "Cluster formation, node join/evict and cluster CLI. Not hardware/OS issues — those are Infrastructure." A Section qualifies when it has new corrections or mis-ranked "Where does this go?" picks from at least two people. The note is stored apart from the manager-written description and shown to the decision model after it. It applies only if a replay of the last 8 weeks of person decisions (at least 60) gains 2 points overall, with no Section of 5+ items losing. The replay uses the request builder live filing uses. Managers get a digest with the full notes and Undo.
+
+**Structure Proposals (weekly).** Right after publishing, the LLM proposes 0–3 changes: a new Section for a recurring theme among Undetermined Work Items and "Other…" picks, a split of a large Section with separate themes, or retiring a Section unused for 8 weeks. Managers get [Approve] [Reject] by DM. Approve applies it once through the Taxonomy edit paths, which re-file Open Work Items. A rejected change is not proposed again for 8 weeks.
+
+**Second Opinion.** An unsure Work Item that nobody placed within 24 hours gets a Second Opinion. The LLM chooses one of the decision model's top 3 Sections, with the same context the decision model saw. The Work Item is filed with Placement source `assistant`, the reporter is told and can Change it, and `/stats` counts these apart. Publishing runs the same step first on every still-Undetermined Work Item, for at most about 60 seconds.
+
+**Why it matters:** Most mistakes happen between neighbouring Sections. A precise note is the cheapest fix, and the replay shows whether it helps before anyone is affected, which a manager reading the note cannot tell.
 
 ---
 
 ### Feature 7: Accuracy Dashboard (`/stats`)
 
-**What it does:** Shows, for the week: items reported or fetched, how many were filed automatically and how many were asked, filing failures, items still Undetermined, and corrections by Section.
+**What it does:** Shows, for the week: items reported or fetched, how many were filed automatically, how many were asked and how many the assistant filed, filing failures, items still Undetermined, and corrections by Section. Without an LLM it says the learning loops are off.
 
 **Why it matters:** The confidence threshold was set from historical data; `/stats` is how the team checks it against real corrections and tunes it.
 
@@ -113,14 +119,17 @@ The first version classified everything in one batch at report time. Confidence 
 - Nothing is filed silently unless the decision model is confident
 - Updates and MR links are confirmed by a person; only exact ticket matches link automatically
 - `done` is always a person's decision — a merged MR moves a Work Item to `in testing`, not `done`
-- `/retrospect` suggestions take effect only when a manager applies them
+- Learned Notes apply automatically only behind the replay gate on person decisions; any manager can Undo them or edit them in the web Taxonomy editor
+- Structure Proposals change the Taxonomy only when a manager approves them
+- A Second Opinion chooses only among the decision model's top 3, and the reporter's choice wins
 - A person whose choice is overridden after a Taxonomy edit can undo it
 
 ### Graceful Degradation
 
 - The Slack reply never waits for a model
 - If the decision model is unreachable, the Work Item is Undetermined with a reason and retried; it is never lost
-- Publishing calls no model; it renders what is already filed and warns about Undetermined items
+- Publishing may call the LLM: it first gives a Second Opinion on still-Undetermined Work Items, for at most about 60 seconds, then publishes what is filed and warns about the rest
+- Without an LLM the learning loops are off and everything else works
 
 ### Trust and Identity
 
@@ -128,11 +137,18 @@ The first version classified everything in one batch at report time. Confidence 
 - Fetched and imported Work Items get an owner only through the explicit `author_ids` map; code-hosting accounts are matched by numeric account ID
 - Unmapped Work Items are manager-only
 
+### Untrusted Text
+
+- Work Item text reaches the LLM only as delimited JSON data that the prompt says to ignore instructions in
+- A drafted note is rejected before the replay unless it is plain text of at most 300 characters. It must not address the model, must name only existing Sections, and must name no author. Notes sit only in their own Section's criteria, never in instructions
+- Only Sections with signals from at least two people (by Slack user ID) are tuned
+- Untrusted text in Slack messages is escaped, and rejected notes are not shown
+
 ### Privacy and Cost
 
 - The models are reached through configurable endpoints, so they can stay behind an internal gateway
 - Similar-item retrieval is in-memory TF-IDF — no extra model calls
-- Each Work Item costs one decision-model request; publishing costs none
+- Each Work Item costs one decision-model request; a Learned Notes run costs one LLM call plus a replay, mostly answered from the replay cache
 
 ---
 
@@ -169,7 +185,7 @@ flowchart TB
     end
 
     MGR["Manager"]
-    RETRO["/retrospect<br>LLM drafts Section descriptions<br>(optional)"]
+    LLM["LLM: learned notes (nightly, replay-gated),<br>structure proposals (weekly), second opinion<br>(optional)"]
 
     DEV --> Q
     CC --> Q
@@ -183,18 +199,20 @@ flowchart TB
     Deliver --> MGR
     ASK -.->|"person decisions"| MEM
     MGR -.->|"moves, Taxonomy edits"| MEM
-    MGR -->|"runs"| RETRO
-    RETRO -.->|"descriptions the manager applies"| MEM
+    MGR -->|"/retrospect, Approve/Reject, Undo"| LLM
+    LLM -.->|"notes that pass the replay"| MEM
+    LLM -.->|"top-3 pick after 24 h"| ASK
+    LLM -.->|"proposals"| MGR
 
     style Input fill:#1a5276,stroke:#333,color:#fff
     style File fill:#1a1a2e,stroke:#69f,color:#fff
     style Place fill:#14532d,stroke:#4ade80,color:#fff
     style Deliver fill:#0f3460,stroke:#69f,color:#fff
     style MGR fill:#f96,stroke:#333,color:#000
-    style RETRO fill:#3b2f5c,stroke:#a78bfa,color:#fff,stroke-dasharray: 4 3
+    style LLM fill:#3b2f5c,stroke:#a78bfa,color:#fff,stroke-dasharray: 4 3
 ```
 
-Two loops close the system. The **reporter loop**: whenever the decision model is unsure, the reporter decides, and that decision becomes memory for the next item. The **manager loop**: moves, Taxonomy edits and `/retrospect` descriptions sharpen the context the decision model sees. Only confident answers are filed without a person.
+Two loops close the system. The **reporter loop**: whenever the decision model is unsure, the reporter decides, and that decision becomes memory for the next item. The **manager loop**: moves, Taxonomy edits and approved Structure Proposals sharpen the context. The **learning loop**: nightly Learned Notes, applied only when a replay of person decisions improves accuracy. Only confident answers are filed without a person.
 
 ---
 
@@ -203,8 +221,9 @@ Two loops close the system. The **reporter loop**: whenever the decision model i
 ```
 Week 1:  Many items are asked ("Where does this go?") — reporters click once each
 Week 2:  Those clicks are now similar-item examples → more confident picks → fewer questions
-Week 3:  /retrospect suggests descriptions for the two most-corrected Sections → manager applies
-Week 4:  /stats shows real auto-filed accuracy → threshold re-tuned from production data
+Nightly: Learned Notes for the most-confused Sections → applied only if the replay improves accuracy
+Weekly:  after publishing, Structure Proposals → a manager approves or rejects
+Week 4:  /stats shows real auto-filed accuracy → threshold re-tuned by hand from production data
 ```
 
 ---
@@ -214,6 +233,6 @@ Week 4:  /stats shows real auto-filed accuracy → threshold re-tuned from produ
 | Item | Value | Effort |
 |------|-------|--------|
 | **Re-tune the threshold** from 2–3 weeks of `/stats` corrections | More items filed without a question | Low |
-| **Manager-written descriptions** for the most confused Sections | Fewer neighbouring-Section mistakes | Low |
+| **Review Learned Notes** in the Taxonomy editor after a few weeks | Keep notes short and current | Low |
 | **Faster decision-model serving** (batching on the gateway) | Faster bulk re-filing | Medium |
 | **Semantic embeddings** instead of TF-IDF for similar items | Better context for the decision model | Medium |
