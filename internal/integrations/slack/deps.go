@@ -106,8 +106,5 @@ var (
 	getCodeChangesForItem    = sqlite.GetCodeChangesForItem
 	confirmCodeChangeLink    = sqlite.ConfirmCodeChangeLink
 	rejectCodeChangeLink     = sqlite.RejectCodeChangeLink
-	getRecentCorrections     = sqlite.GetRecentCorrections
 	getWeekStats             = sqlite.GetWeekStats
-	setSectionDescription    = sqlite.SetSectionDescription
-	enqueueReclassify        = sqlite.EnqueueReclassify
 )

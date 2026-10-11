@@ -16,8 +16,8 @@ import (
 )
 
 // NewServer creates and configures the HTTP server with chi router.
-// wake nudges the filing worker after a Work Item or the Taxonomy changes.
-func NewServer(cfg web.Config, db *sql.DB, wake func()) *http.Server {
+// wake nudges the filing worker after a Work Item or the Taxonomy changes; loops is nil without an LLM.
+func NewServer(cfg web.Config, db *sql.DB, wake func(), loops web.Loops) *http.Server {
 	r := chi.NewRouter()
 
 	// Built-in chi middleware
@@ -78,7 +78,7 @@ func NewServer(cfg web.Config, db *sql.DB, wake func()) *http.Server {
 		r.Group(func(r chi.Router) {
 			r.Use(mw.RequireManager)
 
-			r.Post("/generate", GenerateReport(cfg, db))
+			r.Post("/generate", GenerateReport(cfg, db, loops))
 			r.Get("/generate/{jobID}/status", GenerateStatus())
 			r.Get("/taxonomy", TaxonomyPage(db))
 			r.Post("/taxonomy/nodes", AddTaxonomyNode(db, wake))
@@ -87,6 +87,7 @@ func NewServer(cfg web.Config, db *sql.DB, wake func()) *http.Server {
 			r.Post("/taxonomy/nodes/{id}/retire", RetireTaxonomyNode(db, wake))
 			r.Post("/taxonomy/nodes/{id}/merge", MergeTaxonomySection(db, wake))
 			r.Post("/taxonomy/nodes/{id}/split", SplitTaxonomySection(db, wake))
+			r.Post("/taxonomy/nodes/{id}/notes", SetTaxonomyNotes(db, wake))
 		})
 	})
 

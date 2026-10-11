@@ -21,8 +21,10 @@ import (
 	"reportbot/internal/integrations/github"
 	"reportbot/internal/integrations/gitlab"
 	slackbot "reportbot/internal/integrations/slack"
+	"reportbot/internal/learning"
 	"reportbot/internal/nudge"
 	"reportbot/internal/storage/sqlite"
+	"reportbot/internal/web"
 	"reportbot/internal/web/handlers"
 
 	"github.com/slack-go/slack"
@@ -61,13 +63,26 @@ func Main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	queue := filing.NewQueue(&filing.Filer{
+	filer := &filing.Filer{
 		DB:       db,
 		Cfg:      cfg,
 		Decision: decision.NewClient(cfg.DecisionModelURL, cfg.DecisionModelAPIKey, cfg.DecisionModelName),
 		Notify:   slackbot.NewNotifier(api, db, cfg),
-	})
+	}
+	queue := filing.NewQueue(filer)
 	queue.Start(ctx)
+
+	// The learning loops need the LLM; without it they stay nil and filing works as before.
+	var slackLoops slackbot.Loops
+	var webLoops web.Loops
+	if cfg.LLMConfigured() {
+		learner := &learning.Learner{DB: db, Cfg: cfg, Filer: filer, Wake: queue.Wake,
+			Notify: &slackbot.LearningNotifier{API: api, DB: db, Cfg: cfg}}
+		learner.Start(ctx)
+		slackLoops, webLoops = learner, learner
+	} else {
+		log.Printf("Learning loops disabled: no LLM configured")
+	}
 
 	nudge.StartNudgeScheduler(cfg, db, api)
 	fetch.StartAutoFetchScheduler(cfg, db, api, fetch.Hooks{ResolveAccount: cfg.AccountAuthorID, Wake: queue.Wake})
@@ -75,7 +90,7 @@ func Main() {
 	// Start web UI if enabled — verify bind before proceeding
 	var webSrv *http.Server
 	if cfg.WebEnabled {
-		webSrv = handlers.NewServer(cfg, db, queue.Wake)
+		webSrv = handlers.NewServer(cfg, db, queue.Wake, webLoops)
 		ln, err := net.Listen("tcp", fmt.Sprintf(":%d", cfg.WebPort))
 		if err != nil {
 			log.Fatalf("Web server bind failed on port %d: %v", cfg.WebPort, err)
@@ -107,7 +122,7 @@ func Main() {
 	}()
 
 	log.Println("Starting Engineering Report Bot...")
-	if err := slackbot.StartSlackBot(cfg, db, api, queue.Wake); err != nil {
+	if err := slackbot.StartSlackBot(cfg, db, api, queue.Wake, slackLoops); err != nil {
 		log.Fatalf("Slack bot error: %v", err)
 	}
 }

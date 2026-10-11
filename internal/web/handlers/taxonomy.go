@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"reportbot/internal/domain"
+	"reportbot/internal/storage/sqlite"
 	"reportbot/internal/web"
 	"reportbot/internal/web/middleware"
 	"reportbot/internal/web/templates"
@@ -40,7 +41,8 @@ func TaxonomyPage(db *sql.DB) http.HandlerFunc {
 		}
 		var build func(n domain.TaxonomyNode) templates.TaxNodeData
 		build = func(n domain.TaxonomyNode) templates.TaxNodeData {
-			d := templates.TaxNodeData{ID: n.ID, Level: n.Level, Name: n.Name, Description: n.Description, IsSection: sections[n.ID]}
+			d := templates.TaxNodeData{ID: n.ID, Level: n.Level, Name: n.Name, Description: n.Description,
+				LearnedNotes: n.LearnedNotes, IsSection: sections[n.ID]}
 			for _, c := range tax.Children(n.ID) {
 				d.Children = append(d.Children, build(c))
 			}
@@ -139,6 +141,20 @@ func RetireTaxonomyNode(db *sql.DB, wake func()) http.HandlerFunc {
 	})
 }
 
+// SetTaxonomyNotes edits or clears a Section's Learned Notes; the manager's description is untouched.
+func SetTaxonomyNotes(db *sql.DB, wake func()) http.HandlerFunc {
+	return taxonomyEdit(db, wake, func(r *http.Request, tax domain.Taxonomy) error {
+		n, err := pathNode(r, tax)
+		if err != nil {
+			return err
+		}
+		if _, ok := tax.Section(n.ID); !ok {
+			return fmt.Errorf("only a Section has learned notes")
+		}
+		return web.SetLearnedNotes(db, n.ID, r.FormValue("learned_notes"), middleware.UserID(r))
+	})
+}
+
 // MergeTaxonomySection moves every Work Item of one Section into another and retires the first.
 func MergeTaxonomySection(db *sql.DB, wake func()) http.HandlerFunc {
 	return taxonomyEdit(db, wake, func(r *http.Request, tax domain.Taxonomy) error {
@@ -161,8 +177,7 @@ func MergeTaxonomySection(db *sql.DB, wake func()) http.HandlerFunc {
 	})
 }
 
-// SplitTaxonomySection: a Section gets new siblings and is retired; a Category-as-Section gets
-// child Sections and is not retired, since retiring it would retire the new children too.
+// SplitTaxonomySection replaces a Section with new ones (see sqlite.SplitSection).
 func SplitTaxonomySection(db *sql.DB, wake func()) http.HandlerFunc {
 	return taxonomyEdit(db, wake, func(r *http.Request, tax domain.Taxonomy) error {
 		n, err := pathNode(r, tax)
@@ -172,27 +187,12 @@ func SplitTaxonomySection(db *sql.DB, wake func()) http.HandlerFunc {
 		if _, ok := tax.Section(n.ID); !ok {
 			return fmt.Errorf("only a Section can be split")
 		}
-		var names []string
+		var parts []sqlite.NewSection
 		for _, line := range strings.Split(r.FormValue("names"), "\n") {
 			if name := strings.TrimSpace(line); name != "" {
-				names = append(names, name)
+				parts = append(parts, sqlite.NewSection{Name: name})
 			}
 		}
-		if len(names) == 0 {
-			return fmt.Errorf("at least one new Section name is required")
-		}
-		parent := n.ParentID
-		if n.Level == domain.LevelCategory {
-			parent = n.ID
-		}
-		for _, name := range names {
-			if _, err := web.InsertTaxonomyNode(db, parent, domain.LevelSection, name, ""); err != nil {
-				return err
-			}
-		}
-		if n.Level == domain.LevelSection {
-			return web.RetireTaxonomyNode(db, n.ID)
-		}
-		return nil
+		return web.SplitSection(db, n.ID, parts)
 	})
 }

@@ -1,6 +1,7 @@
 package slackbot
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"log"
@@ -14,6 +15,7 @@ import (
 
 	"reportbot/internal/domain"
 	"reportbot/internal/filing"
+	"reportbot/internal/learning"
 	"reportbot/internal/publish"
 	"reportbot/internal/report"
 
@@ -45,9 +47,6 @@ const (
 	editBlockSection      = "edit_section"
 	editActionSection     = "section_input"
 
-	actionRetroApply   = "retro_apply"
-	actionRetroDismiss = "retro_dismiss"
-
 	actionNudgeMember         = "nudge_member"
 	actionNudgeAll            = "nudge_all"
 	modalNudgeConfirmCallback = "nudge_confirm_modal"
@@ -69,10 +68,12 @@ const (
 var wakeFiling = func() {}
 
 // StartSlackBot runs the Socket Mode loop; wake tells the filing workers new jobs exist.
-func StartSlackBot(cfg Config, db *sql.DB, api *slack.Client, wake func()) error {
+// l is nil when no LLM is configured.
+func StartSlackBot(cfg Config, db *sql.DB, api *slack.Client, wake func(), l Loops) error {
 	if wake != nil {
 		wakeFiling = wake
 	}
+	loops = l
 	client := socketmode.New(api)
 
 	go func() {
@@ -484,6 +485,15 @@ func publishReport(api *slack.Client, db *sql.DB, cfg Config, channelID, userID,
 		postEphemeralTo(api, channelID, userID, "No Work Items found for this week.")
 		return
 	}
+	if n := len(live.View.Undetermined); n > 0 && !confirmed && loops != nil {
+		postEphemeralTo(api, channelID, userID, fmt.Sprintf("Asking the assistant about %d Undetermined Work Item(s) first (up to a minute)…", n))
+		if loops.SweepUndetermined(context.Background(), live.View.Undetermined, learning.PublishSweepTimeout) > 0 {
+			if live, err = publish.LoadWeek(db, cfg, time.Now()); err != nil {
+				postEphemeralTo(api, channelID, userID, fmt.Sprintf("Error loading the report: %v", err))
+				return
+			}
+		}
+	}
 	if n := len(live.View.Undetermined); n > 0 && !confirmed {
 		text := fmt.Sprintf("%d Work Item(s) are still in Undetermined.", n)
 		if link := liveReportLink(cfg); link != "" {
@@ -507,6 +517,9 @@ func publishReport(api *slack.Client, db *sql.DB, cfg Config, channelID, userID,
 		log.Printf("generate-report publish error: %v", err)
 		return
 	}
+	if loops != nil {
+		go proposeAfterPublish(loops)
+	}
 	filePath, title := res.TeamPath, fmt.Sprintf("%s team report", cfg.TeamName)
 	if mode == "boss" {
 		filePath, title = res.BossPath, fmt.Sprintf("%s report email draft", cfg.TeamName)
@@ -518,6 +531,15 @@ func publishReport(api *slack.Client, db *sql.DB, cfg Config, channelID, userID,
 	}
 	postEphemeralTo(api, channelID, userID, fmt.Sprintf("Published %d Work Items (mode: %s). Saved to: %s", live.View.ItemCount(), mode, filePath))
 	log.Printf("generate-report done items=%d mode=%s", live.View.ItemCount(), mode)
+}
+
+// proposeAfterPublish generates the week's Structure Proposals; they reach managers by DM.
+func proposeAfterPublish(l Loops) {
+	ctx, cancel := context.WithTimeout(context.Background(), retrospectTimeout)
+	defer cancel()
+	if _, err := l.ProposeStructure(ctx); err != nil {
+		log.Printf("structure proposals after publish: %v", err)
+	}
 }
 
 func uploadReportFile(api *slack.Client, channelID, userID string, sendPrivate bool, filePath, title, comment string) error {
@@ -1102,15 +1124,11 @@ func handleBlockActions(api *slack.Client, db *sql.DB, cfg Config, cb slack.Inte
 	case actionNudgePagePrev, actionNudgePageNext:
 		handleNudgePageAction(api, db, cfg, cb, act)
 		return
-	case actionRetroApply:
-		handleRetroApply(api, db, cfg, cb, act)
+	case actionNotesUndo:
+		handleNotesUndo(api, cfg, cb, act.Value)
 		return
-	case actionRetroDismiss:
-		channelForMsg := channelID
-		if channelForMsg == "" {
-			channelForMsg = cb.Container.ChannelID
-		}
-		postEphemeralTo(api, channelForMsg, userID, "Suggestion dismissed.")
+	case actionProposalApprove, actionProposalReject:
+		handleProposalDecision(api, db, cfg, cb, act.Value, act.ActionID == actionProposalApprove)
 		return
 	case actionRowMenu:
 		val := strings.TrimSpace(act.SelectedOption.Value)
@@ -1789,7 +1807,7 @@ func handleHelp(api *slack.Client, cfg Config, cmd slack.SlashCommand) {
 			"`/gen` — Alias of `/generate-report`.",
 			"`/check` — List missing members with nudge buttons, and merged code changes waiting in testing.",
 			"`/nudge <member>` — Send a test nudge DM to one member.",
-			"`/retrospect` — Suggest Section descriptions from recent corrections.",
+			"`/retrospect` — Run the learning loops now: learned notes (replay-gated) and structure proposals.",
 			"`/stats` — Show this week's filing stats.",
 		)
 	}
