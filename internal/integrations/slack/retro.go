@@ -86,6 +86,9 @@ func retrospectBlocks(rep learning.RunNowReport, tax domain.Taxonomy) (string, [
 		for _, c := range n.Candidates {
 			notes += fmt.Sprintf("\n• %s: _%s_", c.Section.Label(), c.New)
 		}
+		for _, c := range n.Invalid {
+			notes += fmt.Sprintf("\n• %s: _%s_ (invalid: %s)", c.Section.Label(), c.Notes, c.Reason)
+		}
 	default:
 		notes = fmt.Sprintf("*Learned notes:* nothing to learn (%s).", n.Reason)
 	}

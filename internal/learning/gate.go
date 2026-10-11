@@ -12,6 +12,7 @@ const (
 	MinReplayItems     = 60
 	MinGainPoints      = 2 // overall accuracy must rise by at least this many percentage points
 	MinSectionItems    = 5 // a Section with this many replay items may not lose accuracy
+	MinSignalPeople    = 2 // a Section is tuned only on signals from this many distinct people
 	ReplayWindowWeeks  = 8
 	maxSectionsPerRun  = 3
 	examplesPerSection = 4

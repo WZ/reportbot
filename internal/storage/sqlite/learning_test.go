@@ -35,7 +35,7 @@ func TestLearningSignalsCorrectionsAndMisrankedPicks(t *testing.T) {
 		ModelSectionID: a, FilingState: domain.FilingFiled, HistoryNote: ReasonArrival}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := SetPlacement(db, corrected, Placement{SectionID: b, PlacedBy: domain.PlacedByPerson, HistoryNote: ReasonWebMove}); err != nil {
+	if err := SetPlacement(db, corrected, Placement{SectionID: b, PlacedBy: domain.PlacedByPerson, HistoryNote: ReasonWebMove, ActorID: "U7"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -77,10 +77,11 @@ func TestLearningSignalsCorrectionsAndMisrankedPicks(t *testing.T) {
 	for _, s := range sigs {
 		byItem[s.WorkItemID] = s
 	}
-	if c := byItem[corrected]; c.Kind != SignalCorrection || c.ModelSection != a || c.ChosenSection != b || c.Description != "moved by a person" {
+	if c := byItem[corrected]; c.Kind != SignalCorrection || c.ModelSection != a || c.ChosenSection != b || c.Description != "moved by a person" ||
+		c.Person != "U7" || c.Author != "Dev A" {
 		t.Fatalf("correction: %+v", c)
 	}
-	if m := byItem[misranked]; m.Kind != SignalMisranked || m.ModelSection != a || m.ChosenSection != infra || !m.OutsideTop3 {
+	if m := byItem[misranked]; m.Kind != SignalMisranked || m.ModelSection != a || m.ChosenSection != infra || !m.OutsideTop3 || m.Person != "U1" {
 		t.Fatalf("mis-ranked pick: %+v", m)
 	}
 	if later, _ := GetLearningSignals(db, now.Add(time.Hour)); len(later) != 0 {

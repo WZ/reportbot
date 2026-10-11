@@ -81,8 +81,24 @@ type NotesReport struct {
 	Reason     string
 	Signals    int
 	Candidates []NoteOutcome
+	Invalid    []InvalidNote // drafts rejected before the replay
 	Gate       *GateResult
 	Applied    bool
+}
+
+// InvalidNote is a drafted note that failed ValidateNote.
+type InvalidNote struct {
+	Section domain.Section
+	Notes   string
+	Reason  string
+}
+
+func invalidReasons(ns []InvalidNote) string {
+	parts := make([]string, len(ns))
+	for i, n := range ns {
+		parts[i] = n.Section.Label() + ": " + n.Reason
+	}
+	return joinReasons(parts)
 }
 
 // RunNotes drafts Learned Notes for up to three Sections with new signals and applies them
@@ -101,7 +117,7 @@ func (l *Learner) RunNotes(ctx context.Context, trigger string) (NotesReport, er
 			oldAcc, newAcc := rep.Gate.OldAccuracy(), rep.Gate.NewAccuracy()
 			run.ReplayItems, run.OldAccuracy, run.NewAccuracy = rep.Gate.Items, &oldAcc, &newAcc
 		}
-		if b, e := json.Marshal(candidateLog(rep.Candidates)); e == nil {
+		if b, e := json.Marshal(candidateLog(rep.Candidates, rep.Invalid)); e == nil {
 			run.Candidates = string(b)
 		}
 		id, e := sqlite.InsertLearningRun(l.DB, run)
@@ -117,13 +133,16 @@ func (l *Learner) RunNotes(ctx context.Context, trigger string) (NotesReport, er
 	if err != nil {
 		return finish(sqlite.RunFailed, err.Error(), err)
 	}
-	signals, sections, err := l.newSignals(snap, started)
+	signals, sections, withSignals, err := l.newSignals(snap, started)
 	if err != nil {
 		return finish(sqlite.RunFailed, err.Error(), err)
 	}
 	rep.Signals = len(signals)
-	if len(sections) == 0 {
+	if withSignals == 0 {
 		return finish(sqlite.RunSkipped, "no new signals", nil)
+	}
+	if len(sections) == 0 {
+		return finish(sqlite.RunSkipped, fmt.Sprintf("no Section has new signals from %d people", MinSignalPeople), nil)
 	}
 	replayItems, err := l.replayItems(snap, started)
 	if err != nil {
@@ -138,13 +157,27 @@ func (l *Learner) RunNotes(ctx context.Context, trigger string) (NotesReport, er
 	if err != nil {
 		return finish(sqlite.RunFailed, "drafting: "+err.Error(), err)
 	}
+	known := TaxonomyNames(snap.Sections())
+	var authors []string
+	for _, sg := range signals {
+		authors = append(authors, sg.Author)
+	}
 	for _, d := range drafts {
 		s, _ := snap.Section(d.SectionID)
-		if d.Notes != s.LearnedNotes {
-			rep.Candidates = append(rep.Candidates, NoteOutcome{Section: s, Old: s.LearnedNotes, New: d.Notes})
+		if d.Notes == s.LearnedNotes {
+			continue
 		}
+		if err := ValidateNote(d.Notes, known, authors); err != nil {
+			rep.Invalid = append(rep.Invalid, InvalidNote{Section: s, Notes: d.Notes, Reason: err.Error()})
+			log.Printf("learning notes section=%d discarded: invalid: %v", s.ID, err)
+			continue
+		}
+		rep.Candidates = append(rep.Candidates, NoteOutcome{Section: s, Old: s.LearnedNotes, New: d.Notes})
 	}
 	if len(rep.Candidates) == 0 {
+		if len(rep.Invalid) > 0 {
+			return finish(sqlite.RunDiscarded, "discarded: invalid: "+invalidReasons(rep.Invalid), nil)
+		}
 		return finish(sqlite.RunDiscarded, "the LLM drafted no new notes", nil)
 	}
 
@@ -201,14 +234,18 @@ func joinReasons(rs []string) string {
 
 type candidateEntry struct {
 	SectionID int64  `json:"section_id"`
-	Old       string `json:"old"`
+	Old       string `json:"old,omitempty"`
 	New       string `json:"new"`
+	Invalid   string `json:"invalid,omitempty"`
 }
 
-func candidateLog(cs []NoteOutcome) []candidateEntry {
-	out := make([]candidateEntry, len(cs))
-	for i, c := range cs {
-		out[i] = candidateEntry{SectionID: c.Section.ID, Old: c.Old, New: c.New}
+func candidateLog(cs []NoteOutcome, invalid []InvalidNote) []candidateEntry {
+	out := make([]candidateEntry, 0, len(cs)+len(invalid))
+	for _, c := range cs {
+		out = append(out, candidateEntry{SectionID: c.Section.ID, Old: c.Old, New: c.New})
+	}
+	for _, n := range invalid {
+		out = append(out, candidateEntry{SectionID: n.Section.ID, New: n.Notes, Invalid: n.Reason})
 	}
 	return out
 }
@@ -221,33 +258,41 @@ func sectionIDs(ss []domain.Section) []int64 {
 	return out
 }
 
-// newSignals returns the signals not yet considered and the (at most three) active Sections
-// with the most of them; a signal counts for both its model and person Section.
-func (l *Learner) newSignals(snap *filing.Snapshot, now time.Time) ([]sqlite.LearningSignal, []domain.Section, error) {
+// newSignals returns the signals not yet considered, the (at most three) active Sections with the
+// most of them, and how many Sections had any; a signal counts for both its model and person Section.
+func (l *Learner) newSignals(snap *filing.Snapshot, now time.Time) ([]sqlite.LearningSignal, []domain.Section, int, error) {
 	floor := now.Add(-signalWindow)
 	all, err := sqlite.GetLearningSignals(l.DB, floor)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, 0, err
 	}
 	marks, err := sqlite.SectionWatermarks(l.DB)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, 0, err
 	}
 	isNew := func(s sqlite.LearningSignal, sec int64) bool {
 		_, active := snap.Section(sec)
 		return active && s.CreatedAt.After(marks[sec])
 	}
 	counts := map[int64]int{}
+	people := map[int64]map[string]bool{}
 	for _, s := range all {
 		for _, sec := range []int64{s.ModelSection, s.ChosenSection} {
 			if isNew(s, sec) {
 				counts[sec]++
+				if people[sec] == nil {
+					people[sec] = map[string]bool{}
+				}
+				people[sec][s.Person] = true
 			}
 		}
 	}
+	// No single person steers a Section: its signals must come from MinSignalPeople people.
 	ids := make([]int64, 0, len(counts))
 	for id := range counts {
-		ids = append(ids, id)
+		if len(people[id]) >= MinSignalPeople {
+			ids = append(ids, id)
+		}
 	}
 	sort.Slice(ids, func(i, j int) bool {
 		if counts[ids[i]] != counts[ids[j]] {
@@ -271,7 +316,7 @@ func (l *Learner) newSignals(snap *filing.Snapshot, now time.Time) ([]sqlite.Lea
 			used = append(used, s)
 		}
 	}
-	return used, sections, nil
+	return used, sections, len(counts), nil
 }
 
 // replayItems are the recent person-decided Work Items filed in an active Section.

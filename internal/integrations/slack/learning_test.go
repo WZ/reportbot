@@ -122,9 +122,11 @@ func TestRetrospectShowsDiscardedNotes(t *testing.T) {
 	api, rec := newSlackRecorder(t)
 	g := learning.GateResult{Items: 70, OldCorrect: 40, NewCorrect: 40, Reasons: []string{"accuracy +0.0 pts is below +2"}}
 	withLoops(t, &fakeLoops{report: learning.RunNowReport{Notes: learning.NotesReport{Decision: sqlitedb.RunDiscarded, Gate: &g,
-		Reason: "accuracy +0.0 pts is below +2", Candidates: []learning.NoteOutcome{{Section: domain.Section{ID: 9, Category: "Infrastructure"}, New: "x"}}}}})
+		Reason: "accuracy +0.0 pts is below +2", Candidates: []learning.NoteOutcome{{Section: domain.Section{ID: 9, Category: "Infrastructure"}, New: "x"}},
+		Invalid: []learning.InvalidNote{{Section: domain.Section{ID: 8, Category: "Upgrade"}, Notes: "You must pick this.", Reason: "addresses the model"}}}}})
 	handleRetrospective(api, db, mgrCfg, slack.SlashCommand{Command: "/retrospect", UserID: "UMGR", ChannelID: "C1"})
-	if got := rec.lastText("chat.postEphemeral"); !strings.Contains(got, "discarded") || !strings.Contains(got, "below +2") || strings.Contains(got, actionNotesUndo) {
+	if got := rec.lastText("chat.postEphemeral"); !strings.Contains(got, "discarded") || !strings.Contains(got, "below +2") || strings.Contains(got, actionNotesUndo) ||
+		!strings.Contains(got, "You must pick this.") || !strings.Contains(got, "invalid: addresses the model") {
 		t.Fatalf("discarded notes show why, without Undo: %s", got)
 	}
 }
@@ -134,7 +136,8 @@ func TestNotesDigestHasUndoPerSection(t *testing.T) {
 	if !strings.Contains(text, "Learned notes updated: Infrastructure (+6.9 pts on 58 recent Work Items)") {
 		t.Fatalf("digest text: %s", text)
 	}
-	if b := blocksJSON(blocks); !strings.Contains(b, `"action_id":"`+actionNotesUndo+`"`) || !strings.Contains(b, `"value":"41"`) {
+	if b := blocksJSON(blocks); !strings.Contains(b, `"action_id":"`+actionNotesUndo+`"`) || !strings.Contains(b, `"value":"41"`) ||
+		!strings.Contains(b, "Racks and power.") {
 		t.Fatalf("each applied Section has Undo: %s", b)
 	}
 }
