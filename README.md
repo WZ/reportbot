@@ -224,14 +224,14 @@ Set `web_enabled` / `WEB_ENABLED` to serve the report editor web UI alongside th
 Run once against the existing database, with the latest published team report:
 
 ```bash
-./reportbot migrate-v2 --report reports/TEAM_20260925.md --dry-run   # counts only
+./reportbot migrate-v2 --report reports/TEAM_20260925.md --dry-run   # runs on a copy, prints every count
 ./reportbot migrate-v2 --report reports/TEAM_20260925.md             # seed Taxonomy, import open lines, promote rows
 ./reportbot migrate-v2 --report reports/TEAM_20260925.md --drop-v1   # back up the DB, then drop V1 tables/columns
 ```
 
 Imported lines get an owner only through `author_ids`. The run prints a binding report (author → Slack user ID, or "unmapped"); review it before `--drop-v1`. To draft `author_ids`, run `./reportbot migrate-v2 --report <latest.md> --suggest-author-ids`: it prints a YAML block, marked unverified, of exact name matches among `manager_slack_ids` and the Slack user IDs in `team_members`: report author names, plus `gitlab:<id>` / `github:<id>` lines for the last four weeks' MR/PR authors (annotated with username and display name). Unmatched entries are commented out. It writes nothing, and prints no suggestions if any roster lookup fails.
 
-Each step is idempotent. It seeds the Taxonomy from the report's headings, imports its open authored lines as Work Items with a person Placement, promotes existing rows that match a published line (Placement from the latest report showing them), queues rows reported after that report for filing, and records fetched MRs/PRs as Code Changes. `--drop-v1` refuses to run until those steps are done, and only after writing `<db>.<timestamp>.backup`.
+Each step is idempotent. It seeds the Taxonomy from the report's headings, imports its open authored lines as Work Items with a person Placement, promotes existing rows that match a published line (Placement from the latest report showing them; V1 status mapped to the four Statuses, so rows still marked open stay open), queues rows reported after that report for filing, and records fetched MRs/PRs as Code Changes (merged when the row was done, otherwise open). `--dry-run` runs all of this on a temporary copy and prints the counts: Sections, open lines, rows promoted and unmatched, Statuses mapped, Code Changes, rows queued for filing, and the binding report. Until it has run, the web report shows only a "run the cut-over import" banner. `--drop-v1` refuses to run until those steps are done, and only after writing `<db>.<timestamp>.backup`.
 
 ### 3. Build & Run
 
