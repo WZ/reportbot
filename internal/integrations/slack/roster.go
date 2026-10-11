@@ -8,9 +8,8 @@ import (
 	"github.com/slack-go/slack"
 )
 
-// SuggestAuthorIDs proposes author_ids entries for the owner to review; it grants nothing.
-// It matches each author exactly against the names of the roster (manager_slack_ids plus
-// team_members given as Slack user IDs) and fails closed if any roster lookup fails.
+// SuggestAuthorIDs drafts author_ids for review (it grants nothing) from exact roster-name
+// matches; it fails closed if any roster lookup fails.
 func SuggestAuthorIDs(cfg Config, authors []string, accounts []Account, getUser func(id string) (*slack.User, error)) (string, error) {
 	seen := map[string]bool{}
 	var users []slack.User

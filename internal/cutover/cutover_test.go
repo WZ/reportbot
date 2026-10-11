@@ -128,9 +128,26 @@ func TestRunImportsPromotesAndIsIdempotent(t *testing.T) {
 	opts := Options{LatestReport: latest, Location: loc, Now: time.Date(2026, 9, 28, 9, 0, 0, 0, loc),
 		AuthorID: config.Config{AuthorIDs: map[string]string{"dev c": "UDEVC", "dev a": "UDEVA", "dev e": "UDEVE"}}.AuthorID}
 
+	dryOpts := opts
+	dryOpts.DryRun = true
+	dry, err := Run(db, dbPath, dryOpts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tax, _ := sqlite.LoadTaxonomy(db); len(tax.Nodes) != 0 {
+		t.Fatal("--dry-run must not write")
+	}
+
 	sum, err := Run(db, dbPath, opts)
 	if err != nil {
 		t.Fatal(err)
+	}
+	dry.DryRun = false
+	if dry.String() != sum.String() {
+		t.Fatalf("--dry-run must report the same counts as the run:\n%s\nvs\n%s", dry, sum)
+	}
+	if sum.Statuses[domain.StatusInTesting] != 2 || sum.Statuses[domain.StatusDone] != 2 || sum.Statuses[domain.StatusBlocked] != 2 {
+		t.Fatalf("unexpected status counts: %v", sum.Statuses)
 	}
 	if sum.Sections != 4 || sum.Unmatched != 2 || sum.OpenLines != 5 || sum.ImportedExisting != 1 || sum.ImportedNew != 4 || sum.Live != 1 || sum.CodeChanges != 1 {
 		t.Fatalf("unexpected summary:\n%s", sum)
@@ -139,10 +156,6 @@ func TestRunImportsPromotesAndIsIdempotent(t *testing.T) {
 	report := sum.String()
 	if !strings.Contains(report, "Dev A -> UDEVA") || !strings.Contains(report, "Dev G -> unmapped") {
 		t.Fatalf("expected a binding report:\n%s", report)
-	}
-	dry, err := Run(db, dbPath, Options{LatestReport: latest, Location: loc, DryRun: true, AuthorID: opts.AuthorID})
-	if err != nil || len(dry.Bindings) != len(sum.Bindings) {
-		t.Fatalf("--dry-run must include the binding report: %+v err=%v", dry.Bindings, err)
 	}
 
 	tax, _ := sqlite.LoadTaxonomy(db)
@@ -161,9 +174,9 @@ func TestRunImportsPromotesAndIsIdempotent(t *testing.T) {
 		shard.StatusNote != "root cause analysis in progress" || !shard.DoneAt.IsZero() || shard.AuthorID != "UDEVA" {
 		t.Fatalf("unexpected matched row: %+v", shard)
 	}
-	// An older row seen in an older report is promoted as done history in its Section.
+	// An older row seen in an older report keeps its V1 Status (mapped) in its last Section.
 	node, _ := sqlite.GetWorkItemByID(db, 2)
-	if node.SectionID != cm || node.Status != domain.StatusDone || node.DoneAt.IsZero() || node.StatusNote != "mr review" {
+	if node.SectionID != cm || node.Status != domain.StatusInTesting || !node.DoneAt.IsZero() || node.StatusNote != "mr review" {
 		t.Fatalf("unexpected promoted row: %+v", node)
 	}
 	// Unmatched rows stay history with no Placement.
@@ -180,7 +193,7 @@ func TestRunImportsPromotesAndIsIdempotent(t *testing.T) {
 	for _, o := range open {
 		openDesc = append(openDesc, o.Description)
 	}
-	if len(open) != 6 { // 4 imported open lines + matched row + live row
+	if len(open) != 7 { // 4 imported open lines + matched row + live row + promoted in-testing row
 		t.Fatalf("unexpected open items: %v", openDesc)
 	}
 	byAuthor := map[string]domain.WorkItem{}
@@ -193,6 +206,11 @@ func TestRunImportsPromotesAndIsIdempotent(t *testing.T) {
 	// A Category with Sections is not fileable, so its own lines wait in Undetermined.
 	if e := byAuthor["Dev E"]; e.SectionID != 0 || e.AuthorID != "UDEVE" {
 		t.Fatalf("expected Undetermined: %+v", e)
+	}
+
+	cc, ok, _ := sqlite.GetCodeChangeByRef(db, "gitlab", "https://git.example/mr/9")
+	if !ok || cc.State != "merged" {
+		t.Fatalf("a done V1 row becomes a merged Code Change: %+v", cc)
 	}
 
 	again, err := Run(db, dbPath, opts)

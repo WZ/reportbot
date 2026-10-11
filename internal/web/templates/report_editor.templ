@@ -13,6 +13,8 @@ type ReportPageData struct {
 }
 
 type ReportBodyData struct {
+	// NeedsCutover is true until migrate-v2 seeds the Taxonomy; nothing else is shown then.
+	NeedsCutover bool
 	WeekParam    string
 	Version      string
 	ItemCount    int
@@ -110,30 +112,34 @@ templ ReportBody(data ReportBodyData) {
 		hx-trigger="every 15s [!document.querySelector('#report-body .edit-form')], report-changed from:body"
 		hx-swap="outerHTML"
 	>
-		<div class="stats">
-			<span><span class="val">{ fmt.Sprintf("%d", data.ItemCount) }</span> Work Items</span>
-			<span><span class="val">{ fmt.Sprintf("%d", len(data.Undetermined)) }</span> Undetermined</span>
-		</div>
-		if data.ItemCount == 0 {
-			<div class="empty">
-				<p>No Work Items this week.</p>
+		if data.NeedsCutover {
+			<div class="flash flash-error">Run the cut-over import (<code>reportbot migrate-v2</code>) to set up the report's Sections.</div>
+		} else {
+			<div class="stats">
+				<span><span class="val">{ fmt.Sprintf("%d", data.ItemCount) }</span> Work Items</span>
+				<span><span class="val">{ fmt.Sprintf("%d", len(data.Undetermined)) }</span> Undetermined</span>
 			</div>
-		}
-		if len(data.Undetermined) > 0 {
-			<div class="section undetermined">
-				<div class="section-header">
-					<span class="name">Undetermined</span>
-					<span class="count">{ fmt.Sprintf("%d", len(data.Undetermined)) }</span>
+			if data.ItemCount == 0 {
+				<div class="empty">
+					<p>No Work Items this week.</p>
 				</div>
-				for _, item := range data.Undetermined {
-					@ItemRow(item)
+			}
+			if len(data.Undetermined) > 0 {
+				<div class="section undetermined">
+					<div class="section-header">
+						<span class="name">Undetermined</span>
+						<span class="count">{ fmt.Sprintf("%d", len(data.Undetermined)) }</span>
+					</div>
+					for _, item := range data.Undetermined {
+						@ItemRow(item)
+					}
+				</div>
+			}
+			for _, area := range data.Areas {
+				<h2 class="area-name">{ area.Name }</h2>
+				for _, cat := range area.Categories {
+					@SectionGroup(cat)
 				}
-			</div>
-		}
-		for _, area := range data.Areas {
-			<h2 class="area-name">{ area.Name }</h2>
-			for _, cat := range area.Categories {
-				@SectionGroup(cat)
 			}
 		}
 	</div>

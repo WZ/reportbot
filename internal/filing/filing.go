@@ -40,9 +40,17 @@ type Asker interface {
 	Ask(ctx context.Context, state any, questions map[string]decision.Question) (*decision.Response, error)
 }
 
+// Why a Work Item is being filed.
+const (
+	KindArrival    = "arrival"     // a new /report
+	KindEdit       = "edit"        // its text changed
+	KindCodeChange = "code_change" // a newly fetched Code Change
+	KindRetry      = "retry"       // the sweep, after a failure or a stall
+)
+
 // Payload travels with a filing job: where to reply and why the item is being filed.
 type Payload struct {
-	Kind        string `json:"kind"` // "arrival" | "edit" | "code_change" | "retry"
+	Kind        string `json:"kind"`
 	ResponseURL string `json:"response_url,omitempty"`
 	ChannelID   string `json:"channel_id,omitempty"`
 	UserID      string `json:"user_id,omitempty"`
@@ -67,9 +75,11 @@ type Result struct {
 	Payload Payload
 	// Choices for "Where does this go?": the LLM's Section first, then the top Sections by similar-item vote.
 	Choices []domain.Section
-	Update  *Candidate // likely Update target, the reporter confirms
-	Link    *Candidate // likely Work Item for a Code Change, the author confirms
-	Failed  bool       // a model was unreachable after retries
+	// Kept is the Section an edited item stays in while the reporter decides.
+	Kept   *domain.Section
+	Update *Candidate // likely Update target, the reporter confirms
+	Link   *Candidate // likely Work Item for a Code Change, the author confirms
+	Failed bool       // a model was unreachable after retries
 }
 
 // Notifier tells people what filing decided (Slack in production).
@@ -272,14 +282,23 @@ func (f *Filer) FileItem(ctx context.Context, itemID int64, payload Payload) err
 			in.Tickets = cands
 		}
 	}
+	// Update and Link candidates are for a new Work Item's first filing only.
+	first := payload.Kind == KindArrival || payload.Kind == KindCodeChange
+	if payload.Kind == KindRetry {
+		filed, err := sqlite.HasBeenFiled(f.DB, item.ID)
+		if err != nil {
+			return err
+		}
+		first = !filed
+	}
 	var codeChange *domain.CodeChange
 	switch item.Source {
 	case "slack":
-		if payload.Kind == "arrival" {
+		if first {
 			in.Updates, err = f.updateCandidates(c, item)
 		}
 	case "gitlab", "github":
-		if payload.Kind == "code_change" {
+		if first {
 			if cc, ok := f.ownCodeChange(item.ID); ok {
 				codeChange = &cc
 				in.Links, err = f.updateCandidates(c, item)
@@ -330,13 +349,12 @@ func (f *Filer) FileItem(ctx context.Context, itemID int64, payload Payload) err
 		}
 	}
 	if result.Section == nil {
-		if cur, ok := c.active[item.SectionID]; ok && payload.Kind != "arrival" && payload.Kind != "code_change" {
-			// A re-file that is not confident keeps the Section the item already has.
+		result.Choices = c.voteChoices(pick, similar, f.exampleCount())
+		if cur, ok := c.active[item.SectionID]; ok && !first {
+			// An unsure re-file keeps the Section the item has, and still asks the reporter.
 			out.Placement = sqlite.Placement{SectionID: cur.ID, PlacedBy: item.PlacedBy, Confidence: item.Confidence,
 				LLMSectionID: pick, FilingState: domain.FilingFiled, HistoryNote: sqlite.ReasonArrival}
-			result.Section = &cur
-		} else {
-			result.Choices = c.voteChoices(pick, similar, f.exampleCount())
+			result.Kept = &cur
 		}
 	}
 	if in.AskStatus {
@@ -511,6 +529,11 @@ func (f *Filer) MarkFailed(itemID int64, payload Payload) error {
 	if err := sqlite.ApplyFiling(f.DB, itemID, out); err != nil {
 		return err
 	}
+	// Tell the author once per Work Item, not on every sweep retry.
+	first, err := sqlite.MarkFailureNotified(f.DB, itemID)
+	if err != nil || !first {
+		return err
+	}
 	item, err = sqlite.GetWorkItemByID(f.DB, itemID)
 	if err != nil {
 		return err
@@ -523,7 +546,7 @@ func (f *Filer) notify(r Result) {
 	if f.Notify == nil {
 		return
 	}
-	if r.Section == nil && r.Item.SectionID != 0 {
+	if r.Section == nil && r.Kept == nil && len(r.Choices) == 0 && r.Item.SectionID != 0 {
 		if tax, err := sqlite.LoadTaxonomy(f.DB); err == nil {
 			if s, ok := tax.SectionAny(r.Item.SectionID); ok {
 				r.Section = &s

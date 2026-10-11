@@ -19,6 +19,7 @@ type githubSearchResponse struct {
 type githubPRItem struct {
 	Title         string         `json:"title"`
 	HTMLURL       string         `json:"html_url"`
+	Body          string         `json:"body"`
 	State         string         `json:"state"` // "open" or "closed"
 	CreatedAt     string         `json:"created_at"`
 	UpdatedAt     string         `json:"updated_at"`
@@ -174,6 +175,7 @@ func convertGitHubItem(item githubPRItem, derivedState string) GitHubPR {
 		Title:        item.Title,
 		Author:       item.User.Login,
 		AuthorID:     item.User.ID,
+		Body:         item.Body,
 		AuthorName:   item.User.Login, // Search API doesn't return display name
 		HTMLURL:      item.HTMLURL,
 		MergedAt:     mergedAt,

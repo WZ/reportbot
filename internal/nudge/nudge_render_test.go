@@ -139,7 +139,7 @@ func TestRenderNudgeForUser_GenericOnlyWhenNoActiveItems(t *testing.T) {
 		t.Fatalf("RenderNudgeForUser returned error: %v", err)
 	}
 
-	if !strings.Contains(rendered.Text, "Friendly reminder to report your work items") {
+	if !strings.Contains(rendered.Text, "Friendly reminder to report your Work Items") {
 		t.Fatalf("expected generic reminder text, got %q", rendered.Text)
 	}
 	if strings.Contains(rendered.Text, "still open") {
@@ -232,7 +232,7 @@ func TestRenderNudgeForUser_PaginatesAndUsesAllSources(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RenderNudgeForUser first page error: %v", err)
 	}
-	if !strings.Contains(firstPage.Text, "Showing 1-10 of 13 active items") {
+	if !strings.Contains(firstPage.Text, "Showing 1-10 of 13 open Work Items") {
 		t.Fatalf("expected first-page summary, got %q", firstPage.Text)
 	}
 	if strings.Contains(firstPage.Text, "Name-only task") {
@@ -246,7 +246,7 @@ func TestRenderNudgeForUser_PaginatesAndUsesAllSources(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RenderNudgeForUser second page error: %v", err)
 	}
-	if !strings.Contains(secondPage.Text, "Showing 11-13 of 13 active items") {
+	if !strings.Contains(secondPage.Text, "Showing 11-13 of 13 open Work Items") {
 		t.Fatalf("expected clamped second-page summary, got %q", secondPage.Text)
 	}
 }
@@ -307,7 +307,7 @@ func TestRenderNudgeForUser_UpdatedNoItems(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RenderNudgeForUser returned error: %v", err)
 	}
-	if !strings.Contains(rendered.Text, "Updated. You have no open items.") {
+	if !strings.Contains(rendered.Text, "Updated. You have no open Work Items.") {
 		t.Fatalf("expected updated no-items text, got %q", rendered.Text)
 	}
 }

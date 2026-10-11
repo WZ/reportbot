@@ -116,7 +116,7 @@ func TaxonomyPage(data TaxonomyPageData) templ.Component {
 				return templ_7745c5c3_Err
 			}
 			if data.Reclassifying {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, "<div class=\"flash flash-info\">Re-classifying Open Work Items…</div>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, "<div class=\"flash flash-info\">Re-filing Open Work Items…</div>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}

@@ -11,7 +11,6 @@ import (
 	"reportbot/internal/fetch"
 	"reportbot/internal/filing"
 	"reportbot/internal/report"
-	"reportbot/internal/storage/sqlite"
 
 	"github.com/slack-go/slack"
 )
@@ -78,8 +77,12 @@ func FiledBlocks(cfg Config, r filing.Result) (string, []slack.Block) {
 			btns = append(btns, button(actionPlacePick, fmt.Sprintf("%d:%d", r.Item.ID, s.ID), s.Label()))
 		}
 		btns = append(btns, button(actionPlaceOther, strconv.FormatInt(r.Item.ID, 10), "Other…"))
+		stays := "It stays in Undetermined until someone picks."
+		if r.Kept != nil {
+			stays = fmt.Sprintf("It stays in %s until someone picks.", r.Kept.Path())
+		}
 		blocks = append(blocks, slack.NewActionBlock(fmt.Sprintf("place_%d", r.Item.ID), btns...),
-			slack.NewContextBlock("", slack.NewTextBlockObject(slack.MarkdownType, "It stays in Undetermined until someone picks.", false, false)))
+			slack.NewContextBlock("", slack.NewTextBlockObject(slack.MarkdownType, stays, false, false)))
 	}
 	if r.Update != nil {
 		u := "Looks like an update to: " + slackLine(r.Update.Item)
@@ -96,7 +99,7 @@ func FiledBlocks(cfg Config, r filing.Result) (string, []slack.Block) {
 
 // Filed implements filing.Notifier.
 func (n *Notifier) Filed(r filing.Result) {
-	if r.Payload.Kind == "code_change" {
+	if r.Payload.Kind == filing.KindCodeChange {
 		n.codeChangeFiled(r)
 		return
 	}
@@ -122,9 +125,18 @@ func (n *Notifier) codeChangeFiled(r filing.Result) {
 	}
 	if r.Link != nil {
 		text := fmt.Sprintf("Your merge request %q looks like part of:\n%s\nIs this part of it?", cc.Title, slackLine(r.Link.Item))
+		// Separate carries the Section choices, so an unsure Placement still gets its buttons.
+		separate := strconv.FormatInt(cc.ID, 10)
+		if r.Section == nil {
+			var ids []string
+			for _, s := range r.Choices {
+				ids = append(ids, strconv.FormatInt(s.ID, 10))
+			}
+			separate += "|" + strings.Join(ids, ",")
+		}
 		dm(n.API, r.Item.AuthorID, text, []slack.Block{mdSection(text), slack.NewActionBlock(fmt.Sprintf("link_%d", cc.ID),
 			button(actionLinkConfirm, fmt.Sprintf("%d:%d", cc.ID, r.Link.Item.ID), "Link"),
-			button(actionLinkReject, strconv.FormatInt(cc.ID, 10), "Separate"))})
+			button(actionLinkReject, separate, "Separate"))})
 		return
 	}
 	if r.Section == nil {
@@ -135,7 +147,7 @@ func (n *Notifier) codeChangeFiled(r filing.Result) {
 }
 
 func ownCodeChange(db *sql.DB, itemID int64) (domain.CodeChange, error) {
-	ccs, err := sqlite.GetCodeChangesForItem(db, itemID)
+	ccs, err := getCodeChangesForItem(db, itemID)
 	if err != nil {
 		return domain.CodeChange{}, err
 	}
@@ -149,7 +161,7 @@ func ownCodeChange(db *sql.DB, itemID int64) (domain.CodeChange, error) {
 
 // PlacementOverridden implements filing.Notifier: a re-classification moved a person's choice.
 func (n *Notifier) PlacementOverridden(item domain.WorkItem, eventID int64, from, to domain.Section) {
-	text := fmt.Sprintf("After a report structure change, your item moved:\n%s\n%s → %s",
+	text := fmt.Sprintf("After a report structure change, your Work Item moved:\n%s\n%s → %s",
 		slackLine(item), from.Label(), to.Label())
 	dm(n.API, item.AuthorID, text, []slack.Block{mdSection(text),
 		slack.NewActionBlock(fmt.Sprintf("undo_%d", eventID), button(actionPlacementUndo, strconv.FormatInt(eventID, 10), "Undo"))})
@@ -200,13 +212,16 @@ func dm(api *slack.Client, userID, text string, blocks []slack.Block) {
 	}
 }
 
+func actionChannel(cb slack.InteractionCallback) string {
+	if cb.Channel.ID != "" {
+		return cb.Channel.ID
+	}
+	return cb.Container.ChannelID
+}
+
 // replyToAction replaces the message a button was on, or answers ephemerally.
 func replyToAction(api *slack.Client, cb slack.InteractionCallback, text string) {
-	channelID := cb.Channel.ID
-	if channelID == "" {
-		channelID = cb.Container.ChannelID
-	}
-	respond(api, cb.ResponseURL, channelID, cb.User.ID, true, text, nil)
+	respond(api, cb.ResponseURL, actionChannel(cb), cb.User.ID, true, text, nil)
 }
 
 func parsePair(value string) (int64, int64, bool) {
@@ -237,11 +252,11 @@ func handlePlacePick(api *slack.Client, db *sql.DB, cfg Config, cb slack.Interac
 	}
 	item, err := GetWorkItemByID(db, itemID)
 	if err != nil {
-		replyToAction(api, cb, "That item no longer exists.")
+		replyToAction(api, cb, "That Work Item no longer exists.")
 		return
 	}
 	if !canActOn(cfg, cb.User.ID, item) {
-		replyToAction(api, cb, "You can only file your own items.")
+		replyToAction(api, cb, "You can only file your own Work Items.")
 		return
 	}
 	tax, err := LoadTaxonomy(db)
@@ -253,8 +268,8 @@ func handlePlacePick(api *slack.Client, db *sql.DB, cfg Config, cb slack.Interac
 		replyToAction(api, cb, "That Section no longer exists. Use Other… to pick another.")
 		return
 	}
-	if err := sqlite.SetPlacement(db, itemID, sqlite.Placement{SectionID: sectionID, PlacedBy: domain.PlacedByPerson,
-		Confidence: item.Confidence, HistoryNote: sqlite.ReasonButton, ActorID: cb.User.ID}); err != nil {
+	if err := setPlacement(db, itemID, Placement{SectionID: sectionID, PlacedBy: domain.PlacedByPerson,
+		Confidence: item.Confidence, HistoryNote: reasonButton, ActorID: cb.User.ID}); err != nil {
 		log.Printf("place pick error item=%d: %v", itemID, err)
 		return
 	}
@@ -274,14 +289,14 @@ func handleUpdateConfirm(api *slack.Client, db *sql.DB, cfg Config, cb slack.Int
 	}
 	existing, err := GetWorkItemByID(db, existingID)
 	if err != nil {
-		replyToAction(api, cb, "The earlier item no longer exists; the report stays a new item.")
+		replyToAction(api, cb, "The earlier Work Item no longer exists; the report stays a new Work Item.")
 		return
 	}
 	if !canActOn(cfg, cb.User.ID, newItem) || !canActOn(cfg, cb.User.ID, existing) {
-		replyToAction(api, cb, "You can only update your own items.")
+		replyToAction(api, cb, "You can only update your own Work Items.")
 		return
 	}
-	merged, err := sqlite.MergeUpdate(db, existingID, newID)
+	merged, err := applyUpdate(db, existingID, newID)
 	if err != nil {
 		log.Printf("update confirm error existing=%d new=%d: %v", existingID, newID, err)
 		replyToAction(api, cb, fmt.Sprintf("Update failed: %v", err))
@@ -310,7 +325,7 @@ func handleUpdateReject(api *slack.Client, db *sql.DB, cfg Config, cb slack.Inte
 		return
 	}
 	if item, err := GetWorkItemByID(db, newID); err == nil {
-		replyToAction(api, cb, "Kept as a new item:\n"+slackLine(item))
+		replyToAction(api, cb, "Kept as a new Work Item:\n"+slackLine(item))
 	}
 }
 
@@ -319,11 +334,11 @@ func handleLinkConfirm(api *slack.Client, db *sql.DB, cfg Config, cb slack.Inter
 	if !ok {
 		return
 	}
-	cc, err := sqlite.GetCodeChange(db, ccID)
+	cc, err := getCodeChange(db, ccID)
 	if err != nil || (cc.AuthorID != cb.User.ID && !cfg.IsManagerID(cb.User.ID)) {
 		return
 	}
-	if err := sqlite.ConfirmCodeChangeLink(db, ccID, target); err != nil {
+	if err := confirmCodeChangeLink(db, ccID, target); err != nil {
 		log.Printf("link confirm error cc=%d target=%d: %v", ccID, target, err)
 		replyToAction(api, cb, fmt.Sprintf("Link failed: %v", err))
 		return
@@ -333,23 +348,41 @@ func handleLinkConfirm(api *slack.Client, db *sql.DB, cfg Config, cb slack.Inter
 			_ = SetWorkItemStatus(db, target, domain.StatusInTesting)
 		}
 	}
-	replyToAction(api, cb, fmt.Sprintf("Linked %q to the existing item.", cc.Title))
+	replyToAction(api, cb, fmt.Sprintf("Linked %q to the existing Work Item.", cc.Title))
 }
 
 func handleLinkReject(api *slack.Client, db *sql.DB, cfg Config, cb slack.InteractionCallback, value string) {
-	ccID, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+	idText, choiceText, _ := strings.Cut(strings.TrimSpace(value), "|")
+	ccID, err := strconv.ParseInt(idText, 10, 64)
 	if err != nil {
 		return
 	}
-	cc, err := sqlite.GetCodeChange(db, ccID)
+	cc, err := getCodeChange(db, ccID)
 	if err != nil || (cc.AuthorID != cb.User.ID && !cfg.IsManagerID(cb.User.ID)) {
 		return
 	}
-	if err := sqlite.RejectCodeChangeLink(db, ccID); err != nil {
+	if err := rejectCodeChangeLink(db, ccID); err != nil {
 		log.Printf("link reject error cc=%d: %v", ccID, err)
 		return
 	}
-	replyToAction(api, cb, fmt.Sprintf("Kept %q as its own item.", cc.Title))
+	item, err := GetWorkItemByID(db, cc.WorkItemID)
+	if err == nil && item.SectionID == 0 && choiceText != "" {
+		if tax, err := LoadTaxonomy(db); err == nil {
+			r := filing.Result{Item: item}
+			for _, id := range strings.Split(choiceText, ",") {
+				n, _ := strconv.ParseInt(id, 10, 64)
+				if s, ok := tax.Section(n); ok {
+					r.Choices = append(r.Choices, s)
+				}
+			}
+			text, blocks := FiledBlocks(cfg, r)
+			text = fmt.Sprintf("Kept %q as its own Work Item.\n", cc.Title) + text
+			blocks = append([]slack.Block{mdSection(fmt.Sprintf("Kept %q as its own Work Item.", cc.Title))}, blocks...)
+			respond(api, cb.ResponseURL, actionChannel(cb), cb.User.ID, true, text, blocks)
+			return
+		}
+	}
+	replyToAction(api, cb, fmt.Sprintf("Kept %q as its own Work Item.", cc.Title))
 }
 
 // handlePlacementUndo restores the Placement a re-classification replaced.
@@ -358,24 +391,24 @@ func handlePlacementUndo(api *slack.Client, db *sql.DB, cfg Config, cb slack.Int
 	if err != nil {
 		return
 	}
-	ev, err := sqlite.GetPlacementEvent(db, eventID)
+	ev, err := getPlacementEvent(db, eventID)
 	if err != nil {
 		return
 	}
 	item, err := GetWorkItemByID(db, ev.WorkItemID)
 	if err != nil {
-		replyToAction(api, cb, "That item no longer exists.")
+		replyToAction(api, cb, "That Work Item no longer exists.")
 		return
 	}
 	if !canActOn(cfg, cb.User.ID, item) {
 		return
 	}
 	if item.SectionID != ev.ToSection {
-		replyToAction(api, cb, "This item has moved again since; nothing to undo.")
+		replyToAction(api, cb, "This Work Item has moved again since; nothing to undo.")
 		return
 	}
-	if err := sqlite.SetPlacement(db, item.ID, sqlite.Placement{SectionID: ev.FromSection, PlacedBy: domain.PlacedByPerson,
-		HistoryNote: sqlite.ReasonUndo, ActorID: cb.User.ID}); err != nil {
+	if err := setPlacement(db, item.ID, Placement{SectionID: ev.FromSection, PlacedBy: domain.PlacedByPerson,
+		HistoryNote: reasonUndo, ActorID: cb.User.ID}); err != nil {
 		log.Printf("undo error event=%d: %v", eventID, err)
 		return
 	}

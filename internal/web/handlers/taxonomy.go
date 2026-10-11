@@ -71,7 +71,7 @@ func taxonomyEdit(db *sql.DB, wake func(), edit func(r *http.Request, tax domain
 		}
 		if err := web.EnqueueReclassify(db); err != nil {
 			log.Printf("Error queuing re-classification: %v", err)
-			http.Error(w, "Saved, but failed to queue re-classification", http.StatusInternalServerError)
+			http.Error(w, "Saved, but failed to queue re-filing of open Work Items", http.StatusInternalServerError)
 			return
 		}
 		wake()
@@ -161,9 +161,8 @@ func MergeTaxonomySection(db *sql.DB, wake func()) http.HandlerFunc {
 	})
 }
 
-// SplitTaxonomySection replaces a Section with new ones. A Section node gets new siblings
-// and is retired; a Category that is itself a Section gets child Sections instead, which
-// already stops it being a Section (retiring it would retire the new children too).
+// SplitTaxonomySection: a Section gets new siblings and is retired; a Category-as-Section gets
+// child Sections and is not retired, since retiring it would retire the new children too.
 func SplitTaxonomySection(db *sql.DB, wake func()) http.HandlerFunc {
 	return taxonomyEdit(db, wake, func(r *http.Request, tax domain.Taxonomy) error {
 		n, err := pathNode(r, tax)

@@ -169,3 +169,15 @@ func TestCodeChangeOwnersBindOnlyByAccountID(t *testing.T) {
 		}
 	}
 }
+
+func TestGitHubTicketIDs(t *testing.T) {
+	if got := githubTicketIDs(GitHubPR{Body: "Summary\n\nJira: 1234567, 7654321\n", Title: "fix 1111111"}, "Jira"); got != "1234567,7654321" {
+		t.Fatalf("description ticket field first, got %q", got)
+	}
+	if got := githubTicketIDs(GitHubPR{Title: "[2345678] fix shard timeout"}, "Jira"); got != "2345678" {
+		t.Fatalf("title tickets otherwise, got %q", got)
+	}
+	if got := githubTicketIDs(GitHubPR{Title: "bump to 7.6.3 build 1459"}, "Jira"); got != "" {
+		t.Fatalf("no ticket in a version bump, got %q", got)
+	}
+}

@@ -162,7 +162,7 @@ func TestHandleBlockActions_NudgeDoneUpdatesStatusAndRefreshesMessage(t *testing
 	if rec.updateCalls != 1 {
 		t.Fatalf("expected one chat.update call, got %d", rec.updateCalls)
 	}
-	if !strings.Contains(rec.lastUpdateText, "Updated. You have no open items.") {
+	if !strings.Contains(rec.lastUpdateText, "Updated. You have no open Work Items.") {
 		t.Fatalf("unexpected updated message text: %q", rec.lastUpdateText)
 	}
 }
@@ -261,7 +261,7 @@ func TestHandleBlockActions_NudgePageNextRefreshesWithoutMutation(t *testing.T) 
 	if rec.updateCalls != 1 {
 		t.Fatalf("expected one chat.update call, got %d", rec.updateCalls)
 	}
-	if !strings.Contains(rec.lastUpdateText, "Showing 11-11 of 11 active items") {
+	if !strings.Contains(rec.lastUpdateText, "Showing 11-11 of 11 open Work Items") {
 		t.Fatalf("expected second-page summary, got %q", rec.lastUpdateText)
 	}
 	unchanged, err := GetWorkItemByID(db, items[0].ID)
@@ -319,7 +319,7 @@ func TestHandleBlockActions_NudgeDoneClampsPageAfterLastItemRemoved(t *testing.T
 	if rec.updateCalls != 1 {
 		t.Fatalf("expected one chat.update call, got %d", rec.updateCalls)
 	}
-	if !strings.Contains(rec.lastUpdateText, "Showing 1-10 of 10 active items") {
+	if !strings.Contains(rec.lastUpdateText, "Showing 1-10 of 10 open Work Items") {
 		t.Fatalf("expected page clamp to first page, got %q", rec.lastUpdateText)
 	}
 }

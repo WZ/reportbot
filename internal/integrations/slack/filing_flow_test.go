@@ -3,6 +3,7 @@ package slackbot
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -165,6 +166,11 @@ func TestFiledBlocksAskAndUpdate(t *testing.T) {
 	}
 	if !strings.Contains(text, "Where does this go?") || !strings.Contains(text, "Looks like an update to:") {
 		t.Fatalf("unexpected text: %s", text)
+	}
+	kept := domain.Section{ID: 5, Area: "A", Category: "Infra"}
+	_, keptBlocks := FiledBlocks(Config{}, filing.Result{Item: item, Choices: choices, Kept: &kept})
+	if kb, _ := json.Marshal(keptBlocks); !strings.Contains(string(kb), "It stays in A › Infra until someone picks.") {
+		t.Fatalf("an unsure edit keeps its Section and says so: %s", kb)
 	}
 	failed, _ := FiledBlocks(Config{}, filing.Result{Item: item, Failed: true})
 	if !strings.Contains(failed, "model unreachable") {
@@ -337,5 +343,39 @@ func TestItemsWithoutAuthorIDAreManagerOnly(t *testing.T) {
 	}
 	if canManageItem(it, false, "U1") || !canManageItem(domain.WorkItem{AuthorID: "U1"}, false, "U1") {
 		t.Fatal("ownership is by Slack user ID only")
+	}
+}
+
+func TestReportSaveFailureSaysSoAndNothingElse(t *testing.T) {
+	db := newTestDB(t)
+	api, rec := newSlackRecorder(t)
+	orig := insertWorkItemsForFiling
+	insertWorkItemsForFiling = func(*sql.DB, []WorkItem, string) ([]int64, error) { return nil, fmt.Errorf("disk full") }
+	t.Cleanup(func() { insertWorkItemsForFiling = orig })
+	handleReport(api, db, Config{Location: time.UTC}, slack.SlashCommand{Command: "/report", UserID: "U1", ChannelID: "C1", Text: "x (done)"})
+	if got := rec.lastText("chat.postEphemeral"); strings.Contains(got, "Saved") || !strings.Contains(got, "disk full") {
+		t.Fatalf("expected only the error reply, got %q", got)
+	}
+}
+
+func TestLinkSeparateShowsSectionButtonsWhenUnsure(t *testing.T) {
+	db := newTestDB(t)
+	api, rec := newSlackRecorder(t)
+	cm, infra := seedSections(t, db)
+	ccID, itemID, err := sqlitedb.InsertCodeChangeWithItem(db, domain.CodeChange{Source: "gitlab", SourceRef: "https://git.example/mr/5", Title: "fix",
+		Author: "Dev A", AuthorID: "U1", State: "open"}, domain.WorkItem{Description: "fix", Author: "Dev A", AuthorID: "U1", Source: "gitlab",
+		Status: domain.StatusInProgress, ReportedAt: time.Now()}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	handleBlockActions(api, db, Config{}, interaction("U1", actionLinkReject, itoa(ccID)+"|"+itoa(cm)+","+itoa(infra), rec.srv.URL+"/respond"))
+	if len(rec.responses) != 1 {
+		t.Fatalf("expected one reply, got %d", len(rec.responses))
+	}
+	b, _ := json.Marshal(rec.responses[0])
+	for _, want := range []string{`"value":"` + itoa(itemID) + ":" + itoa(cm), `"value":"` + itoa(itemID) + ":" + itoa(infra), "Where does this go?", "own Work Item"} {
+		if !strings.Contains(string(b), want) {
+			t.Fatalf("missing %q in %s", want, b)
+		}
 	}
 }

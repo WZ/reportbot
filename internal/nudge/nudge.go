@@ -176,14 +176,14 @@ func renderGenericNudge(cfg Config, reportChannelID string, now time.Time) Rende
 }
 
 func renderUpdatedNoItems(reminder string) RenderedNudge {
-	msg := "Updated. You have no open items."
+	msg := "Updated. You have no open Work Items."
 	blocks := []slack.Block{
 		slack.NewSectionBlock(slack.NewTextBlockObject(slack.MarkdownType, reminder, false, false), nil, nil),
 		slack.NewDividerBlock(),
 		slack.NewSectionBlock(slack.NewTextBlockObject(slack.MarkdownType, msg, false, false), nil, nil),
 	}
 	return RenderedNudge{
-		Text:   reminder + "\n\nUpdated. You have no open items.",
+		Text:   reminder + "\n\nUpdated. You have no open Work Items.",
 		Blocks: blocks,
 	}
 }
@@ -212,7 +212,7 @@ func renderInteractiveNudge(reminder, userID string, active []WorkItem, state re
 		textLines = append(textLines, stripMarkdownFormatting(itemText))
 	}
 
-	summary := fmt.Sprintf("Showing %d-%d of %d active items", state.pageStart+1, state.pageEnd, len(active))
+	summary := fmt.Sprintf("Showing %d-%d of %d open Work Items", state.pageStart+1, state.pageEnd, len(active))
 	blocks = append(blocks, slack.NewSectionBlock(slack.NewTextBlockObject(slack.MarkdownType, summary, false, false), nil, nil))
 	textLines = append(textLines, summary)
 
@@ -397,14 +397,14 @@ func clampPage(page, totalPages int) int {
 func renderIntroText(count int, updated bool) string {
 	if updated {
 		if count == 1 {
-			return "Updated. This item is still open:"
+			return "Updated. This Work Item is still open:"
 		}
-		return "Updated. These items are still open:"
+		return "Updated. These Work Items are still open:"
 	}
 	if count == 1 {
-		return "This item is still open. Please update the status if it has changed."
+		return "This Work Item is still open. Please update the status if it has changed."
 	}
-	return "These items are still open. Please update the status if any have changed."
+	return "These Work Items are still open. Please update the status if any have changed."
 }
 
 func buildGenericNudgeText(reportChannelID string, monday, nextMonday time.Time) string {
@@ -413,7 +413,7 @@ func buildGenericNudgeText(reportChannelID string, monday, nextMonday time.Time)
 		channelRef = fmt.Sprintf(" Please report in <#%s>.", reportChannelID)
 	}
 	return fmt.Sprintf(
-		"Hey! Friendly reminder to report your work items for this week (%s - %s) using `/report`.%s\n"+
+		"Hey! Friendly reminder to report your Work Items for this week (%s - %s) using `/report`.%s\n"+
 			"Example: `/report [ticket_id] Add pagination to user list API (done)`",
 		monday.Format("Jan 2"), nextMonday.AddDate(0, 0, -1).Format("Jan 2"),
 		channelRef,

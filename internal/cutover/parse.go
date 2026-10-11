@@ -45,9 +45,8 @@ var (
 	leadTickets = regexp.MustCompile(`^\[([0-9][0-9,\s]*)\]\s*`)
 )
 
-// Parse reads "### Area", "#### Category", "- **Section**" headings and
-// "- **Author** - [tickets] description (status)" lines, with "-" or "*" bullets.
-// Lines without a bold author (plan outlines) are skipped.
+// Parse reads "### Area" / "#### Category" / "- **Section**" headings and "- **Author** - …"
+// lines ("-" or "*" bullets); lines without a bold author (plan outlines) are skipped.
 func Parse(markdown string) Report {
 	var r Report
 	var area, category, section string
@@ -112,31 +111,10 @@ func Parse(markdown string) Report {
 
 // LineStatus maps a line's status text; free text is kept as the Status Note.
 func LineStatus(text string) (status, note string) {
-	if s, ok := filing.MapStatus(text); ok {
+	if s, ok := domain.StatusFromWord(text); ok {
 		return s, ""
 	}
-	return RuleStatus(text), strings.TrimSpace(text)
-}
-
-// RuleStatus maps free-text V1 statuses without a model, for the one-off migration.
-func RuleStatus(text string) string {
-	if s, ok := filing.MapStatus(text); ok {
-		return s
-	}
-	t := strings.ToLower(text)
-	switch {
-	case strings.TrimSpace(t) == "":
-		return domain.StatusDone
-	case strings.Contains(t, "block"):
-		return domain.StatusBlocked
-	case strings.Contains(t, "review"), strings.Contains(t, "test"), strings.Contains(t, "verif"):
-		return domain.StatusInTesting
-	case strings.Contains(t, "resolved"), strings.Contains(t, "reverted"), strings.Contains(t, "fixed"),
-		strings.Contains(t, "done"), strings.Contains(t, "complete"), strings.Contains(t, "merged"):
-		return domain.StatusDone
-	default:
-		return domain.StatusInProgress
-	}
+	return domain.GuessStatus(text), strings.TrimSpace(text)
 }
 
 var (

@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"reportbot/internal/domain"
+	"reportbot/internal/filing"
+	gl "reportbot/internal/integrations/gitlab"
 	"reportbot/internal/storage/sqlite"
 
 	"github.com/robfig/cron/v3"
@@ -86,7 +88,7 @@ func FetchAndImportMRs(cfg Config, db *sql.DB, hooks Hooks) (FetchResult, error)
 					continue
 				}
 				changes = append(changes, fetched{cc: domain.CodeChange{Source: "github", SourceRef: pr.HTMLURL, Title: pr.Title,
-					Author: pr.AuthorName, State: codeChangeState(pr.State), MergedAt: pr.MergedAt},
+					Author: pr.AuthorName, TicketIDs: githubTicketIDs(pr, cfg.GitLabRefTicketLabel), State: codeChangeState(pr.State), MergedAt: pr.MergedAt},
 					host: "github", accountID: pr.AuthorID, reportedAt: prReportedAt(pr, cfg.Location)})
 			}
 		}
@@ -102,6 +104,16 @@ func FetchAndImportMRs(cfg Config, db *sql.DB, hooks Hooks) (FetchResult, error)
 		hooks.Wake()
 	}
 	return result, nil
+}
+
+// githubTicketIDs reads tickets from the PR description's ticket field, as for GitLab,
+// and otherwise from the title; the search API returns no branch name.
+func githubTicketIDs(pr GitHubPR, fieldLabel string) string {
+	if t := gl.ParseTicketIDs(pr.Body, fieldLabel); t != "" {
+		return t
+	}
+	certain, _ := filing.FindTickets(pr.Title)
+	return strings.Join(certain, ",")
 }
 
 type fetched struct {
@@ -174,7 +186,7 @@ func importCodeChanges(db *sql.DB, changes []fetched, hooks Hooks, result *Fetch
 		}
 		item := WorkItem{Description: cc.Title, Author: cc.Author, AuthorID: cc.AuthorID, Source: cc.Source,
 			Status: statusForCodeChange(cc.State), TicketIDs: cc.TicketIDs, ReportedAt: f.reportedAt}
-		if _, _, err := sqlite.InsertCodeChangeWithItem(db, cc, item, `{"kind":"code_change"}`); err != nil {
+		if _, _, err := sqlite.InsertCodeChangeWithItem(db, cc, item, filing.Payload{Kind: filing.KindCodeChange}.JSON()); err != nil {
 			return err
 		}
 		result.Inserted++
@@ -242,7 +254,7 @@ func FormatFetchSummary(result FetchResult) string {
 	var summary []string
 	summary = append(summary, fmt.Sprintf("%d new", result.Inserted))
 	if result.Linked > 0 {
-		summary = append(summary, fmt.Sprintf("%d linked to open items", result.Linked))
+		summary = append(summary, fmt.Sprintf("%d linked to open Work Items", result.Linked))
 	}
 	if result.MovedToTesting > 0 {
 		summary = append(summary, fmt.Sprintf("%d moved to in testing", result.MovedToTesting))

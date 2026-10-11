@@ -17,11 +17,11 @@ func TestSplitAndMapStatus(t *testing.T) {
 	}
 	for text, want := range map[string]string{"Done": domain.StatusDone, " in  testing ": domain.StatusInTesting,
 		"WIP": domain.StatusInProgress, "blocked": domain.StatusBlocked, "on hold": domain.StatusBlocked} {
-		if got, ok := MapStatus(text); !ok || got != want {
-			t.Errorf("MapStatus(%q) = %q,%v", text, got, ok)
+		if got, ok := domain.StatusFromWord(text); !ok || got != want {
+			t.Errorf("StatusFromWord(%q) = %q,%v", text, got, ok)
 		}
 	}
-	if _, ok := MapStatus("root cause analysis in progress"); ok {
+	if _, ok := domain.StatusFromWord("root cause analysis in progress"); ok {
 		t.Error("free text must go to the model")
 	}
 }
@@ -34,9 +34,10 @@ func TestFindTickets(t *testing.T) {
 	}{
 		{"[1234567, 7654321] fix", []string{"1234567", "7654321"}, nil},
 		{"fix crash 1234567 on upgrade", []string{"1234567"}, nil},
-		{"7.6.3 build 1459 verified", nil, []string{"1459"}},
-		{"backport 1234567 after MR !98765", nil, []string{"1234567", "98765"}},
-		{"build 1234567 nightly", nil, []string{"1234567"}},
+		{"7.6.3 build 1459 verified", nil, nil},
+		{"backport 1234567 after MR !98765", []string{"1234567"}, nil},
+		{"build 1234567 nightly", nil, nil},
+		{"crash 1234567 also seen as 7654321", nil, []string{"1234567", "7654321"}},
 		{"no numbers at all", nil, nil},
 		{"upgrade to 7.6.3", nil, nil},
 	}

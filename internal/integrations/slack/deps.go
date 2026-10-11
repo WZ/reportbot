@@ -84,3 +84,30 @@ func sendNudges(api *slack.Client, db *sql.DB, cfg Config, memberIDs []string, r
 func RenderNudgeForUser(api *slack.Client, db *sql.DB, cfg Config, userID, reportChannelID string, now time.Time, page int, updated bool) (RenderedNudge, error) {
 	return nudge.RenderNudgeForUser(api, db, cfg, userID, reportChannelID, now, page, updated)
 }
+
+type Placement = sqlite.Placement
+type WeekStats = sqlite.WeekStats
+
+const (
+	reasonButton = sqlite.ReasonButton
+	reasonEdit   = sqlite.ReasonEdit
+	reasonUndo   = sqlite.ReasonUndo
+)
+
+// Storage seams, swappable in tests.
+var (
+	insertWorkItemsForFiling = sqlite.InsertWorkItemsForFiling
+	updateWorkItemFields     = sqlite.UpdateWorkItemFields
+	setFilingPending         = sqlite.SetFilingPending
+	setPlacement             = sqlite.SetPlacement
+	applyUpdate              = sqlite.ApplyUpdate
+	getPlacementEvent        = sqlite.GetPlacementEvent
+	getCodeChange            = sqlite.GetCodeChange
+	getCodeChangesForItem    = sqlite.GetCodeChangesForItem
+	confirmCodeChangeLink    = sqlite.ConfirmCodeChangeLink
+	rejectCodeChangeLink     = sqlite.RejectCodeChangeLink
+	getRecentCorrections     = sqlite.GetRecentCorrections
+	getWeekStats             = sqlite.GetWeekStats
+	setSectionDescription    = sqlite.SetSectionDescription
+	enqueueReclassify        = sqlite.EnqueueReclassify
+)

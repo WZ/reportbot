@@ -287,9 +287,9 @@ func DeleteWorkItemByID(db *sql.DB, id int64) error {
 	return tx.Commit()
 }
 
-// MergeUpdate applies a confirmed Update: the existing item takes the new report's text,
+// ApplyUpdate applies a confirmed Update: the existing item takes the new report's text,
 // Status, Status Note and tickets, and the new report row is deleted.
-func MergeUpdate(db *sql.DB, existingID, newID int64) (WorkItem, error) {
+func ApplyUpdate(db *sql.DB, existingID, newID int64) (WorkItem, error) {
 	newItem, err := GetWorkItemByID(db, newID)
 	if err != nil {
 		return WorkItem{}, err

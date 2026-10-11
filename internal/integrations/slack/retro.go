@@ -11,7 +11,6 @@ import (
 
 	"reportbot/internal/domain"
 	"reportbot/internal/integrations/llm"
-	"reportbot/internal/storage/sqlite"
 
 	"github.com/slack-go/slack"
 )
@@ -24,7 +23,7 @@ func handleRetrospective(api *slack.Client, db *sql.DB, cfg Config, cmd slack.Sl
 		log.Printf("retrospective denied user=%s", cmd.UserID)
 		return
 	}
-	corrections, err := sqlite.GetRecentCorrections(db, time.Now().In(cfg.Location).AddDate(0, 0, -28), 200)
+	corrections, err := getRecentCorrections(db, time.Now().In(cfg.Location).AddDate(0, 0, -28), 200)
 	if err != nil {
 		postEphemeral(api, cmd, fmt.Sprintf("Error loading corrections: %v", err))
 		return
@@ -89,15 +88,15 @@ func handleRetroApply(api *slack.Client, db *sql.DB, cfg Config, cb slack.Intera
 		replyToAction(api, cb, "Invalid suggestion data.")
 		return
 	}
-	if err := sqlite.SetSectionDescription(db, sectionID, description); err != nil {
+	if err := setSectionDescription(db, sectionID, description); err != nil {
 		replyToAction(api, cb, fmt.Sprintf("Error applying the description: %v", err))
 		return
 	}
-	if err := sqlite.EnqueueReclassify(db); err != nil {
+	if err := enqueueReclassify(db); err != nil {
 		log.Printf("retrospective reclassify enqueue error: %v", err)
 	}
 	wakeFiling()
-	replyToAction(api, cb, "Applied. Open items will be re-classified with the new description.")
+	replyToAction(api, cb, "Applied. Open Work Items will be re-filed with the new description.")
 	log.Printf("retrospective applied section=%d by=%s", sectionID, cb.User.ID)
 }
 
@@ -108,7 +107,7 @@ func handleReportStats(api *slack.Client, db *sql.DB, cfg Config, cmd slack.Slas
 		return
 	}
 	monday, nextMonday := ReportWeekRange(cfg, time.Now().In(cfg.Location))
-	st, err := sqlite.GetWeekStats(db, monday, nextMonday)
+	st, err := getWeekStats(db, monday, nextMonday)
 	if err != nil {
 		postEphemeral(api, cmd, fmt.Sprintf("Error loading stats: %v", err))
 		return
@@ -117,7 +116,7 @@ func handleReportStats(api *slack.Client, db *sql.DB, cfg Config, cmd slack.Slas
 	postEphemeral(api, cmd, formatStats(st, tax, monday, nextMonday))
 }
 
-func formatStats(st sqlite.WeekStats, tax domain.Taxonomy, monday, nextMonday time.Time) string {
+func formatStats(st WeekStats, tax domain.Taxonomy, monday, nextMonday time.Time) string {
 	pct := func(n int) string {
 		if st.ItemsThisWeek == 0 {
 			return "0%"
@@ -126,7 +125,7 @@ func formatStats(st sqlite.WeekStats, tax domain.Taxonomy, monday, nextMonday ti
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "*Filing for %s - %s*\n", monday.Format("Jan 2"), nextMonday.AddDate(0, 0, -1).Format("Jan 2"))
-	fmt.Fprintf(&b, "- Items reported or fetched: %d\n", st.ItemsThisWeek)
+	fmt.Fprintf(&b, "- Work Items reported or fetched: %d\n", st.ItemsThisWeek)
 	fmt.Fprintf(&b, "- Filed automatically: %d (%s)\n", st.FiledByModel, pct(st.FiledByModel))
 	fmt.Fprintf(&b, "- Asked \"Where does this go?\": %d (%s)\n", st.Asked, pct(st.Asked))
 	if st.FailedFiling > 0 {

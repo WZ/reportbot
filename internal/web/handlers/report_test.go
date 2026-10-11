@@ -474,13 +474,13 @@ func TestTaxonomyPage(t *testing.T) {
 			t.Errorf("expected taxonomy page to contain %q", want)
 		}
 	}
-	if strings.Contains(body, "Re-classifying") {
+	if strings.Contains(body, "Re-filing") {
 		t.Error("expected no re-classifying note while nothing is queued")
 	}
 	if err := sqlite.EnqueueReclassify(e.db); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(e.do(http.MethodGet, "/taxonomy", manager, nil).Body.String(), "Re-classifying Open Work Items") {
+	if !strings.Contains(e.do(http.MethodGet, "/taxonomy", manager, nil).Body.String(), "Re-filing Open Work Items") {
 		t.Error("expected the re-classifying note while a job is queued")
 	}
 }
@@ -582,4 +582,17 @@ func TestTaxonomyMerge(t *testing.T) {
 
 	expectCode(t, e.do(http.MethodPost, fmt.Sprintf("/taxonomy/nodes/%d/merge", e.sec["Ingest"]), manager, url.Values{"into": {fmt.Sprint(e.sec["Ingest"])}}), http.StatusBadRequest)
 	expectCode(t, e.do(http.MethodPost, fmt.Sprintf("/taxonomy/nodes/%d/merge", e.sec["Ingest"]), manager, url.Values{"into": {fmt.Sprint(e.sec["Query"])}}), http.StatusBadRequest)
+}
+
+func TestLivePage_CutoverBannerWithoutTaxonomy(t *testing.T) {
+	e := newEnv(t)
+	if _, err := e.db.Exec(`DELETE FROM taxonomy_nodes`); err != nil {
+		t.Fatal(err)
+	}
+	rr := e.do(http.MethodGet, "/", alice, nil)
+	expectCode(t, rr, http.StatusOK)
+	body := rr.Body.String()
+	if !strings.Contains(body, "reportbot migrate-v2") || strings.Contains(body, "Fix ingest lag") {
+		t.Fatalf("expected only the cut-over banner before the Taxonomy exists:\n%s", body)
+	}
 }

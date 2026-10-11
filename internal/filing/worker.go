@@ -149,7 +149,7 @@ func (q *Queue) Sweep() int {
 		return 0
 	}
 	for _, it := range items {
-		if err := sqlite.SetFilingPending(f.DB, it.ID, Payload{Kind: "retry"}.JSON()); err != nil {
+		if err := sqlite.SetFilingPending(f.DB, it.ID, Payload{Kind: KindRetry}.JSON()); err != nil {
 			log.Printf("filing sweep item=%d: %v", it.ID, err)
 		}
 	}
@@ -159,9 +159,8 @@ func (q *Queue) Sweep() int {
 	return len(items)
 }
 
-// Reclassify re-files every Open Work Item after a Taxonomy edit: the LLM picks in
-// batches, the decision model checks each changed pick, and passing items move —
-// including person-placed ones, whose owner is told and can undo.
+// Reclassify re-files Open Work Items after a Taxonomy edit; checked moves apply even to
+// person-placed items, whose owner is told and can undo.
 func (f *Filer) Reclassify(ctx context.Context) error {
 	c, err := f.loadContext()
 	if err != nil {

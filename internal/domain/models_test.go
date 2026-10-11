@@ -134,3 +134,20 @@ func TestFridayOfWeekWithDifferentTimezones(t *testing.T) {
 		})
 	}
 }
+
+func TestStatusMapping(t *testing.T) {
+	for text, want := range map[string]string{"Done": StatusDone, " in  testing ": StatusInTesting, "WIP": StatusInProgress, "on hold": StatusBlocked} {
+		if got, ok := StatusFromWord(text); !ok || got != want {
+			t.Errorf("StatusFromWord(%q) = %q,%v", text, got, ok)
+		}
+	}
+	if _, ok := StatusFromWord("root cause analysis in progress"); ok {
+		t.Error("free text is not a status word")
+	}
+	for text, want := range map[string]string{"": StatusDone, "mr review": StatusInTesting, "resolved in session": StatusDone,
+		"waiting, blocked on lab": StatusBlocked, "root cause analysis": StatusInProgress, "merged": StatusDone} {
+		if got := GuessStatus(text); got != want {
+			t.Errorf("GuessStatus(%q) = %q, want %q", text, got, want)
+		}
+	}
+}

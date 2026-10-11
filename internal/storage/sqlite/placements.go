@@ -124,6 +124,11 @@ func ApplyFiling(db *sql.DB, itemID int64, o FilingOutcome) error {
 	if err := applyPlacement(tx, itemID, o.Placement); err != nil {
 		return err
 	}
+	if o.Placement.FilingState != domain.FilingFailed {
+		if _, err := tx.Exec(`UPDATE work_items SET failure_notified_at = NULL WHERE id = ?`, itemID); err != nil {
+			return err
+		}
+	}
 	if o.Status != "" {
 		if _, err := tx.Exec(
 			`UPDATE work_items SET status = ?, status_note = ?,
@@ -290,4 +295,22 @@ func GetWeekStats(db *sql.DB, monday, nextMonday time.Time) (WeekStats, error) {
 		s.PersonCorrections[c.FromSection]++
 	}
 	return s, nil
+}
+
+// MarkFailureNotified records that the author was told filing failed; it reports
+// false when they already were and the item has not been filed since.
+func MarkFailureNotified(db *sql.DB, itemID int64) (bool, error) {
+	res, err := db.Exec(`UPDATE work_items SET failure_notified_at = ? WHERE id = ? AND failure_notified_at IS NULL`, time.Now(), itemID)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
+}
+
+// HasBeenFiled reports whether the LLM has ever picked a Section for the item.
+func HasBeenFiled(db *sql.DB, itemID int64) (bool, error) {
+	var n int
+	err := db.QueryRow(`SELECT COUNT(*) FROM model_judgments WHERE work_item_id = ? AND kind = 'section_pick'`, itemID).Scan(&n)
+	return n > 0, err
 }

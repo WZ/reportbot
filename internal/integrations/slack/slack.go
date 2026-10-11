@@ -16,7 +16,6 @@ import (
 	"reportbot/internal/filing"
 	"reportbot/internal/publish"
 	"reportbot/internal/report"
-	"reportbot/internal/storage/sqlite"
 
 	"github.com/slack-go/slack"
 	"github.com/slack-go/slack/slackevents"
@@ -154,12 +153,12 @@ func handleMemberJoined(api *slack.Client, cfg Config, ev *slackevents.MemberJoi
 		teamName = "the team"
 	}
 
-	intro := fmt.Sprintf("Welcome to %s! I'm ReportAgent — I help track work items and generate weekly reports.\n\n"+
+	intro := fmt.Sprintf("Welcome to %s! I'm ReportAgent — I help track Work Items and file them into the weekly report.\n\n"+
 		"Here's how to get started:\n"+
-		"• `/report <description> (status)` — Report a work item (e.g. `/report Fix login bug (done)`)\n"+
-		"• `/list` — View your items for this week (`/list all` for the team)\n"+
+		"• `/report <description> (status)` — Report a Work Item (e.g. `/report Fix login bug (done)`)\n"+
+		"• `/list` — View your Work Items on this week's report (`/list all` for the team)\n"+
 		"• `/help` — See all available commands\n\n"+
-		"You can report multiple items at once with newlines, and set a shared status on the last line.",
+		"You can report several Work Items at once with newlines, and set a shared status on the last line.",
 		teamName,
 	)
 
@@ -223,18 +222,18 @@ func handleReport(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashComm
 		items[i].AuthorID = authorID
 	}
 
-	saved := "Saved — filing it…"
-	if len(items) > 1 {
-		saved = fmt.Sprintf("Saved %d items — filing them…", len(items))
-	}
-	respond(api, cmd.ResponseURL, cmd.ChannelID, cmd.UserID, false, saved, nil)
-
-	payload := filing.Payload{Kind: "arrival", ResponseURL: cmd.ResponseURL, ChannelID: cmd.ChannelID, UserID: cmd.UserID, Replace: len(items) == 1}
-	if _, err := sqlite.InsertWorkItemsForFiling(db, items, payload.JSON()); err != nil {
-		postEphemeral(api, cmd, fmt.Sprintf("Error saving items: %v", err))
+	payload := filing.Payload{Kind: filing.KindArrival, ResponseURL: cmd.ResponseURL, ChannelID: cmd.ChannelID, UserID: cmd.UserID, Replace: len(items) == 1}
+	if _, err := insertWorkItemsForFiling(db, items, payload.JSON()); err != nil {
+		postEphemeral(api, cmd, fmt.Sprintf("Error saving your Work Items: %v", err))
 		log.Printf("report insert error user=%s: %v", cmd.UserID, err)
 		return
 	}
+	saved := "Saved — filing it…"
+	if len(items) > 1 {
+		saved = fmt.Sprintf("Saved %d Work Items — filing them…", len(items))
+	}
+	// Reply before waking the workers so "Saved" comes before the filed reply.
+	respond(api, cmd.ResponseURL, cmd.ChannelID, cmd.UserID, false, saved, nil)
 	wakeFiling()
 
 	notifyManagersOnMemberReport(api, cfg, cmd, author, items)
@@ -324,7 +323,7 @@ func parseReportItems(reportText, author string, loc *time.Location) ([]WorkItem
 			statusText = sharedStatus
 		}
 		if description == "" {
-			return nil, fmt.Errorf("Error: empty report item line.")
+			return nil, fmt.Errorf("Error: empty Work Item line.")
 		}
 		items = append(items, newReportedItem(description, statusText, author, now))
 	}
@@ -335,7 +334,7 @@ func parseReportItems(reportText, author string, loc *time.Location) ([]WorkItem
 // with the reporter's wording kept as the Status Note.
 func newReportedItem(description, statusText, author string, at time.Time) WorkItem {
 	item := WorkItem{Description: description, Author: author, Source: "slack", ReportedAt: at}
-	if status, ok := filing.MapStatus(statusText); ok {
+	if status, ok := domain.StatusFromWord(statusText); ok {
 		item.Status = status
 	} else {
 		item.StatusNote = statusText
@@ -482,11 +481,11 @@ func publishReport(api *slack.Client, db *sql.DB, cfg Config, channelID, userID,
 		return
 	}
 	if live.View.ItemCount() == 0 {
-		postEphemeralTo(api, channelID, userID, "No work items found for this week.")
+		postEphemeralTo(api, channelID, userID, "No Work Items found for this week.")
 		return
 	}
 	if n := len(live.View.Undetermined); n > 0 && !confirmed {
-		text := fmt.Sprintf("%d item(s) are still in Undetermined.", n)
+		text := fmt.Sprintf("%d Work Item(s) are still in Undetermined.", n)
 		if link := liveReportLink(cfg); link != "" {
 			text += " " + link
 		}
@@ -517,7 +516,7 @@ func publishReport(api *slack.Client, db *sql.DB, cfg Config, channelID, userID,
 		postEphemeralTo(api, channelID, userID, err.Error())
 		return
 	}
-	postEphemeralTo(api, channelID, userID, fmt.Sprintf("Published %d items (mode: %s). Saved to: %s", live.View.ItemCount(), mode, filePath))
+	postEphemeralTo(api, channelID, userID, fmt.Sprintf("Published %d Work Items (mode: %s). Saved to: %s", live.View.ItemCount(), mode, filePath))
 	log.Printf("generate-report done items=%d mode=%s", live.View.ItemCount(), mode)
 }
 
@@ -704,10 +703,10 @@ func renderListItems(api *slack.Client, db *sql.DB, cfg Config, channelID, userI
 	}
 
 	if len(items) == 0 {
-		msg := fmt.Sprintf("No items for this week (%s - %s)",
+		msg := fmt.Sprintf("No Work Items for this week (%s - %s)",
 			monday.Format("Jan 2"), nextMonday.AddDate(0, 0, -1).Format("Jan 2"))
 		if scope == listScopeMine {
-			msg = fmt.Sprintf("You have no items for this week (%s - %s)",
+			msg = fmt.Sprintf("You have no Work Items for this week (%s - %s)",
 				monday.Format("Jan 2"), nextMonday.AddDate(0, 0, -1).Format("Jan 2"))
 		}
 		postEphemeralTo(api, channelID, userID, msg)
@@ -739,9 +738,9 @@ func renderListItems(api *slack.Client, db *sql.DB, cfg Config, channelID, userI
 	}
 	end := min(start+listItemsPageSize, len(items))
 
-	titlePrefix := "Your items"
+	titlePrefix := "Your Work Items"
 	if scope == listScopeAll {
-		titlePrefix = "Team items"
+		titlePrefix = "Team Work Items"
 	}
 	blocks := []slack.Block{slack.NewHeaderBlock(
 		slack.NewTextBlockObject(slack.PlainTextType,
@@ -850,7 +849,7 @@ func handleListMissing(api *slack.Client, db *sql.DB, cfg Config, cmd slack.Slas
 	monday, nextMonday := ReportWeekRange(cfg, time.Now().In(cfg.Location))
 	weekItems, err := GetItemsByDateRange(db, monday, nextMonday)
 	if err != nil {
-		postEphemeral(api, cmd, fmt.Sprintf("Error loading items: %v", err))
+		postEphemeral(api, cmd, fmt.Sprintf("Error loading Work Items: %v", err))
 		log.Printf("list-missing load error: %v", err)
 		return
 	}
@@ -858,7 +857,7 @@ func handleListMissing(api *slack.Client, db *sql.DB, cfg Config, cmd slack.Slas
 
 	reportedAuthorIDs, err := GetSlackAuthorIDsByDateRange(db, monday, nextMonday)
 	if err != nil {
-		postEphemeral(api, cmd, fmt.Sprintf("Error loading items: %v", err))
+		postEphemeral(api, cmd, fmt.Sprintf("Error loading Work Items: %v", err))
 		log.Printf("list-missing load error: %v", err)
 		return
 	}
@@ -1040,7 +1039,7 @@ func handleBlockActions(api *slack.Client, db *sql.DB, cfg Config, cb slack.Inte
 	case actionPlaceOther:
 		itemID, err := strconv.ParseInt(strings.TrimSpace(act.Value), 10, 64)
 		if err != nil {
-			postEphemeralTo(api, channelID, userID, "Invalid item id.")
+			postEphemeralTo(api, channelID, userID, "Invalid Work Item id.")
 			return
 		}
 		openEditModal(api, db, cfg, cb.TriggerID, channelID, userID, itemID, listScopeMine)
@@ -1076,14 +1075,14 @@ func handleBlockActions(api *slack.Client, db *sql.DB, cfg Config, cb slack.Inte
 	case actionDeleteItem:
 		itemID, err := strconv.ParseInt(strings.TrimSpace(act.Value), 10, 64)
 		if err != nil {
-			postEphemeralTo(api, channelID, userID, "Invalid item id.")
+			postEphemeralTo(api, channelID, userID, "Invalid Work Item id.")
 			return
 		}
 		deleteItemAction(api, db, cfg, channelID, userID, itemID, listScopeMine)
 	case actionEditItemOpen:
 		itemID, err := strconv.ParseInt(strings.TrimSpace(act.Value), 10, 64)
 		if err != nil {
-			postEphemeralTo(api, channelID, userID, "Invalid item id.")
+			postEphemeralTo(api, channelID, userID, "Invalid Work Item id.")
 			return
 		}
 		openEditModal(api, db, cfg, cb.TriggerID, channelID, userID, itemID, listScopeMine)
@@ -1120,7 +1119,7 @@ func handleBlockActions(api *slack.Client, db *sql.DB, cfg Config, cb slack.Inte
 		if strings.HasPrefix(val, "edit:") {
 			scope, itemID, ok := parseListRowAction(val, "edit")
 			if !ok {
-				postEphemeralTo(api, channelID, userID, "Invalid item id.")
+				postEphemeralTo(api, channelID, userID, "Invalid Work Item id.")
 				return
 			}
 			openEditModal(api, db, cfg, cb.TriggerID, channelID, userID, itemID, scope)
@@ -1129,7 +1128,7 @@ func handleBlockActions(api *slack.Client, db *sql.DB, cfg Config, cb slack.Inte
 		if strings.HasPrefix(val, "delete:") {
 			scope, itemID, ok := parseListRowAction(val, "delete")
 			if !ok {
-				postEphemeralTo(api, channelID, userID, "Invalid item id.")
+				postEphemeralTo(api, channelID, userID, "Invalid Work Item id.")
 				return
 			}
 			openDeleteModal(api, db, cfg, cb.TriggerID, channelID, userID, itemID, scope)
@@ -1215,7 +1214,7 @@ func handleViewSubmission(api *slack.Client, db *sql.DB, cfg Config, cb slack.In
 		channelID = cb.Channel.ID
 	}
 
-	if err := sqlite.UpdateWorkItemFields(db, itemID, description, status, statusNote, item.TicketIDs); err != nil {
+	if err := updateWorkItemFields(db, itemID, description, status, statusNote, item.TicketIDs); err != nil {
 		log.Printf("edit modal update error id=%d: %v", itemID, err)
 		return
 	}
@@ -1223,14 +1222,14 @@ func handleViewSubmission(api *slack.Client, db *sql.DB, cfg Config, cb slack.In
 	switch {
 	case sectionValue != "" && newSection != item.SectionID:
 		// A Section the person chose is final for this edit; no re-filing.
-		if err := sqlite.SetPlacement(db, itemID, sqlite.Placement{SectionID: newSection, PlacedBy: domain.PlacedByPerson,
-			HistoryNote: sqlite.ReasonEdit, ActorID: userID}); err != nil {
+		if err := setPlacement(db, itemID, Placement{SectionID: newSection, PlacedBy: domain.PlacedByPerson,
+			HistoryNote: reasonEdit, ActorID: userID}); err != nil {
 			log.Printf("edit modal placement error id=%d: %v", itemID, err)
 		}
 	case description != item.Description:
 		// New text may belong elsewhere: file it again.
-		payload := filing.Payload{Kind: "edit", ChannelID: channelID, UserID: userID}
-		if err := sqlite.SetFilingPending(db, itemID, payload.JSON()); err != nil {
+		payload := filing.Payload{Kind: filing.KindEdit, ChannelID: channelID, UserID: userID}
+		if err := setFilingPending(db, itemID, payload.JSON()); err != nil {
 			log.Printf("edit modal refile error id=%d: %v", itemID, err)
 		}
 		wakeFiling()
@@ -1241,7 +1240,7 @@ func handleViewSubmission(api *slack.Client, db *sql.DB, cfg Config, cb slack.In
 func deleteItemAction(api *slack.Client, db *sql.DB, cfg Config, channelID, userID string, itemID int64, scope string) {
 	item, err := GetWorkItemByID(db, itemID)
 	if err != nil {
-		postEphemeralTo(api, channelID, userID, "Item not found.")
+		postEphemeralTo(api, channelID, userID, "Work Item not found.")
 		return
 	}
 	monday, nextMonday := ReportWeekRange(cfg, time.Now().In(cfg.Location))
@@ -1252,7 +1251,7 @@ func deleteItemAction(api *slack.Client, db *sql.DB, cfg Config, channelID, user
 
 	isManager, _ := isManagerUser(api, cfg, userID)
 	if !canManageItem(item, isManager, userID) {
-		postEphemeralTo(api, channelID, userID, "You are not allowed to delete this item.")
+		postEphemeralTo(api, channelID, userID, "You are not allowed to delete this Work Item.")
 		return
 	}
 
@@ -1266,7 +1265,7 @@ func deleteItemAction(api *slack.Client, db *sql.DB, cfg Config, channelID, user
 func openEditModal(api *slack.Client, db *sql.DB, cfg Config, triggerID, channelID, userID string, itemID int64, scope string) {
 	item, err := GetWorkItemByID(db, itemID)
 	if err != nil {
-		postEphemeralTo(api, channelID, userID, "Item not found.")
+		postEphemeralTo(api, channelID, userID, "Work Item not found.")
 		return
 	}
 	monday, nextMonday := ReportWeekRange(cfg, time.Now().In(cfg.Location))
@@ -1277,7 +1276,7 @@ func openEditModal(api *slack.Client, db *sql.DB, cfg Config, triggerID, channel
 
 	isManager, _ := isManagerUser(api, cfg, userID)
 	if !canManageItem(item, isManager, userID) {
-		postEphemeralTo(api, channelID, userID, "You are not allowed to edit this item.")
+		postEphemeralTo(api, channelID, userID, "You are not allowed to edit this Work Item.")
 		return
 	}
 
@@ -1290,7 +1289,7 @@ func openEditModal(api *slack.Client, db *sql.DB, cfg Config, triggerID, channel
 
 	view := slack.ModalViewRequest{
 		Type:            slack.VTModal,
-		Title:           slack.NewTextBlockObject(slack.PlainTextType, "Edit item", false, false),
+		Title:           slack.NewTextBlockObject(slack.PlainTextType, "Edit Work Item", false, false),
 		Close:           slack.NewTextBlockObject(slack.PlainTextType, "Cancel", false, false),
 		Submit:          slack.NewTextBlockObject(slack.PlainTextType, "Save", false, false),
 		CallbackID:      modalEditCallbackID,
@@ -1308,7 +1307,7 @@ func openEditModal(api *slack.Client, db *sql.DB, cfg Config, triggerID, channel
 func openDeleteModal(api *slack.Client, db *sql.DB, cfg Config, triggerID, channelID, userID string, itemID int64, scope string) {
 	item, err := GetWorkItemByID(db, itemID)
 	if err != nil {
-		postEphemeralTo(api, channelID, userID, "Item not found.")
+		postEphemeralTo(api, channelID, userID, "Work Item not found.")
 		return
 	}
 	monday, nextMonday := ReportWeekRange(cfg, time.Now().In(cfg.Location))
@@ -1318,13 +1317,13 @@ func openDeleteModal(api *slack.Client, db *sql.DB, cfg Config, triggerID, chann
 	}
 	isManager, _ := isManagerUser(api, cfg, userID)
 	if !canManageItem(item, isManager, userID) {
-		postEphemeralTo(api, channelID, userID, "You are not allowed to delete this item.")
+		postEphemeralTo(api, channelID, userID, "You are not allowed to delete this Work Item.")
 		return
 	}
 
 	view := slack.ModalViewRequest{
 		Type:            slack.VTModal,
-		Title:           slack.NewTextBlockObject(slack.PlainTextType, "Delete item", false, false),
+		Title:           slack.NewTextBlockObject(slack.PlainTextType, "Delete Work Item", false, false),
 		Close:           slack.NewTextBlockObject(slack.PlainTextType, "Cancel", false, false),
 		Submit:          slack.NewTextBlockObject(slack.PlainTextType, "Delete", false, false),
 		CallbackID:      modalDeleteCallbackID,
@@ -1333,7 +1332,7 @@ func openDeleteModal(api *slack.Client, db *sql.DB, cfg Config, triggerID, chann
 			slack.NewSectionBlock(
 				slack.NewTextBlockObject(
 					slack.MarkdownType,
-					fmt.Sprintf("Delete this item?\n\n*%s*: %s (%s)", item.Author, item.Description, item.Status),
+					fmt.Sprintf("Delete this Work Item?\n\n*%s*: %s (%s)", item.Author, item.Description, item.Status),
 					false,
 					false,
 				),
@@ -1761,20 +1760,20 @@ func handleHelp(api *slack.Client, cfg Config, cmd slack.SlashCommand) {
 	lines := []string{
 		"*ReportBot Commands*",
 		"",
-		"`/report <description> (status)` — Report a work item.",
+		"`/report <description> (status)` — Report a Work Item.",
 		"`/rpt` — Alias of `/report`.",
 		">*Example:* `/report [ticket_id] Add pagination to user list API (done)`",
 		">*Multiline* (each with own status, use Shift+Enter for newlines):",
 		">```/report Item A (in progress)",
 		">Item B (done)```",
-		">*Shared status* (last line applies to all items):",
+		">*Shared status* (last line applies to all Work Items):",
 		">```/report Item A",
 		">Item B",
 		">(in progress)```",
 		"",
-		"Each item is filed into the report as it arrives; you get a reply showing where it went.",
+		"Each Work Item is filed into the report as it arrives; you get a reply showing where it went.",
 		"",
-		"`/list` — List your items on this week's report (`/list all` for the team).",
+		"`/list` — List your Work Items on this week's report (`/list all` for the team).",
 		"`/nudge` — Send yourself a test nudge DM.",
 		"`/help` — Show this help.",
 	}

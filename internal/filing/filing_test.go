@@ -179,7 +179,7 @@ func (e *env) placed(t *testing.T, desc, author, section string, status string) 
 func (e *env) report(t *testing.T, item domain.WorkItem) int64 {
 	t.Helper()
 	item.Source, item.ReportedAt = "slack", time.Now()
-	ids, err := sqlite.InsertWorkItemsForFiling(e.db, []domain.WorkItem{item}, Payload{Kind: "arrival"}.JSON())
+	ids, err := sqlite.InsertWorkItemsForFiling(e.db, []domain.WorkItem{item}, Payload{Kind: KindArrival}.JSON())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -289,7 +289,7 @@ func TestArrivalAsksStatusTicketAndUpdate(t *testing.T) {
 			return map[string]any{"type": "noul", "noul": 0.9}
 		}
 	}
-	id := e.report(t, domain.WorkItem{Description: "Shard rebalance timeout 1234567 seen on build 7613", Author: "Dev A",
+	id := e.report(t, domain.WorkItem{Description: "Shard rebalance timeout 1234567 (dup of 7654321) seen on build 7613", Author: "Dev A",
 		StatusNote: "waiting on hardware team"})
 	e.drain(t)
 
@@ -430,12 +430,67 @@ func TestRefileWithoutConfidenceKeepsCurrentSection(t *testing.T) {
 	e := newEnv(t)
 	id := e.placed(t, "rack cabling", "Dev A", "infra", domain.StatusInProgress)
 	e.gw.answer = func(string, decision.Question) map[string]any { return map[string]any{"type": "noul", "noul": 0.3} }
-	if err := sqlite.SetFilingPending(e.db, id, Payload{Kind: "edit"}.JSON()); err != nil {
+	if err := sqlite.SetFilingPending(e.db, id, Payload{Kind: KindEdit}.JSON()); err != nil {
 		t.Fatal(err)
 	}
 	e.drain(t)
 	it, _ := sqlite.GetWorkItemByID(e.db, id)
 	if it.SectionID != e.section["infra"] || it.PlacedBy != domain.PlacedByPerson || it.FilingState != domain.FilingFiled {
 		t.Fatalf("an unsure re-file keeps the person's Section: %+v", it)
+	}
+	r := e.notes.filed[0]
+	if r.Kept == nil || r.Kept.ID != e.section["infra"] || len(r.Choices) == 0 || r.Section != nil {
+		t.Fatalf("the reporter is still asked, with the kept Section: %+v", r)
+	}
+	if len(e.gw.requests[0].Questions) != 1 {
+		t.Fatalf("an edit asks no Update question: %v", e.gw.requests[0].Questions)
+	}
+}
+
+func TestFailureNotifiedOncePerWorkItem(t *testing.T) {
+	e := newEnv(t)
+	e.llm.fail = true
+	id := e.report(t, domain.WorkItem{Description: "anything", Author: "Dev A", Status: domain.StatusDone})
+	now := time.Now()
+	e.filer.Now = func() time.Time { return now }
+	fail := func() {
+		for i := 0; i < maxAttempts; i++ {
+			e.queue.RunOne(context.Background())
+			now = now.Add(retryMax + time.Minute)
+		}
+	}
+	fail()
+	if e.queue.Sweep() != 1 {
+		t.Fatal("expected the sweep to re-queue the failed item")
+	}
+	fail()
+	if len(e.notes.filed) != 1 {
+		t.Fatalf("a repeated failure must not notify again, got %d notifications", len(e.notes.filed))
+	}
+	e.llm.fail = false
+	e.queue.Sweep()
+	e.drain(t)
+	if it, _ := sqlite.GetWorkItemByID(e.db, id); it.SectionID == 0 || len(e.notes.filed) != 2 {
+		t.Fatalf("a successful retry files and notifies: %+v (%d notifications)", it, len(e.notes.filed))
+	}
+}
+
+func TestRetryOfNewItemAsksUpdateQuestions(t *testing.T) {
+	e := newEnv(t)
+	existing := e.placed(t, "Shard rebalance timeout", "Dev A", "cluster", domain.StatusInProgress)
+	e.llm.fail = true
+	e.report(t, domain.WorkItem{Description: "Shard rebalance timeout fixed", Author: "Dev A", Status: domain.StatusInTesting})
+	now := time.Now()
+	e.filer.Now = func() time.Time { return now }
+	for i := 0; i < maxAttempts; i++ {
+		e.queue.RunOne(context.Background())
+		now = now.Add(retryMax + time.Minute)
+	}
+	e.llm.fail = false
+	e.queue.Sweep()
+	e.drain(t)
+	req := e.gw.requests[len(e.gw.requests)-1]
+	if _, ok := req.Questions[UpdateQuestionID(existing)]; !ok {
+		t.Fatalf("the first successful filing through a retry asks Update questions: %v", req.Questions)
 	}
 }

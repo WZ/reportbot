@@ -61,9 +61,8 @@ func (v View) ItemCount() int {
 	return n
 }
 
-// BuildView places items into the Taxonomy. Items whose Section is unknown or
-// retired render under their last known Section only if it is still active;
-// otherwise they are Undetermined.
+// BuildView places Work Items into the active Taxonomy; those without an active Section
+// are Undetermined.
 func BuildView(tax domain.Taxonomy, items []WorkItem) View {
 	bySection := map[int64][]WorkItem{}
 	var v View

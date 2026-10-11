@@ -130,6 +130,7 @@ type GitHubPR struct {
 	CreatedAt    time.Time
 	ClosedAt     time.Time
 	State        string // "open", "merged" (derived), or "closed"
+	Body         string // PR description
 	Labels       []string
 	RepoFullName string // e.g. "org/repo-name"
 }

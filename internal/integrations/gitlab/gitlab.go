@@ -132,6 +132,12 @@ func FetchMRs(cfg Config, from, to time.Time) ([]GitLabMR, error) {
 	return allMRs, nil
 }
 
+// ParseTicketIDs reads the ticket field (gitlab_ref_ticket_label) of a merge or pull
+// request description.
+func ParseTicketIDs(description, fieldLabel string) string {
+	return parseTicketIDsFromDescription(description, fieldLabel)
+}
+
 func parseTicketIDsFromDescription(description, fieldLabel string) string {
 	description = strings.TrimSpace(description)
 	fieldLabel = strings.TrimSpace(fieldLabel)

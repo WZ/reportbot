@@ -106,6 +106,9 @@ func loadReportBody(cfg web.Config, db *sql.DB, r *http.Request, monday time.Tim
 	if err != nil {
 		return templates.ReportBodyData{}, err
 	}
+	if len(live.Taxonomy.Sections()) == 0 {
+		return templates.ReportBodyData{NeedsCutover: true, WeekParam: monday.Format("2006-01-02"), Version: version}, nil
+	}
 	groups := sectionGroups(live.Taxonomy)
 	toItems := func(items []web.WorkItem) []templates.ItemData {
 		out := make([]templates.ItemData, 0, len(items))
@@ -272,7 +275,7 @@ func UpdateItem(cfg web.Config, db *sql.DB, wake func()) http.HandlerFunc {
 				return
 			}
 		case desc != item.Description:
-			if err := web.SetFilingPending(db, item.ID, filing.Payload{Kind: "edit"}.JSON()); err != nil {
+			if err := web.SetFilingPending(db, item.ID, filing.Payload{Kind: filing.KindEdit}.JSON()); err != nil {
 				log.Printf("Error re-queuing filing for item %d: %v", item.ID, err)
 				http.Error(w, "Saved, but failed to re-file the Work Item", http.StatusInternalServerError)
 				return

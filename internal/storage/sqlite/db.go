@@ -32,6 +32,7 @@ var migrations = []migration{
 	{2, migrateTaxonomy},
 	{3, migratePlacement},
 	{4, migrateSupportTables},
+	{5, migrateFailureNotified},
 }
 
 func InitDB(path string) (*sql.DB, error) {
@@ -251,5 +252,10 @@ func migrateSupportTables(tx *sql.Tx) error {
 		published_at       DATETIME NOT NULL
 	);
 	`)
+	return err
+}
+
+func migrateFailureNotified(tx *sql.Tx) error {
+	_, err := tx.Exec(`ALTER TABLE work_items ADD COLUMN failure_notified_at DATETIME`)
 	return err
 }

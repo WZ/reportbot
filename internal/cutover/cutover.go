@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"reportbot/internal/domain"
+	"reportbot/internal/filing"
 	"reportbot/internal/storage/sqlite"
 )
 
@@ -48,6 +49,8 @@ type Summary struct {
 	Unmatched        int
 	Live             int
 	CodeChanges      int
+	Statuses         map[string]int // imported and promoted rows by mapped Status
+	DryRun           bool
 	Backup           string
 	Dropped          bool
 	Skipped          []string
@@ -62,11 +65,19 @@ type Binding struct {
 
 func (s Summary) String() string {
 	b := &strings.Builder{}
+	if s.DryRun {
+		b.WriteString("DRY RUN on a copy of the database; nothing was written.\n")
+	}
 	fmt.Fprintf(b, "sections seeded: %d\nopen lines in latest report: %d (new Work Items: %d, matched existing rows: %d)\n",
 		s.Sections, s.OpenLines, s.ImportedNew, s.ImportedExisting)
 	fmt.Fprintf(b, "existing rows promoted with a person Placement: %d\nexisting rows kept as history (no Placement): %d\n", s.Promoted, s.Unmatched)
 	fmt.Fprintf(b, "rows reported after the latest report, queued for filing: %d\n", s.Live)
 	fmt.Fprintf(b, "code changes recorded: %d\n", s.CodeChanges)
+	b.WriteString("statuses mapped:")
+	for _, st := range domain.Statuses {
+		fmt.Fprintf(b, " %s=%d", st, s.Statuses[st])
+	}
+	b.WriteString("\n")
 	if s.Backup != "" {
 		fmt.Fprintf(b, "backup: %s\n", s.Backup)
 	}
@@ -218,8 +229,9 @@ func Run(db *sql.DB, dbPath string, o Options) (Summary, error) {
 		sum.Bindings = append(sum.Bindings, bd)
 	}
 	if o.DryRun {
-		return sum, nil
+		return dryRun(db, dbPath, o)
 	}
+	sum.Statuses = map[string]int{}
 
 	step := func(version int, name string, fn func(tx *sql.Tx) error) error {
 		done, err := sqlite.MigrationApplied(db, version)
@@ -260,6 +272,7 @@ func Run(db *sql.DB, dbPath string, o Options) (Summary, error) {
 	if err := step(versionImport, "import open lines", func(tx *sql.Tx) error {
 		for _, l := range open {
 			status, note := LineStatus(l.StatusText)
+			sum.Statuses[status]++
 			section := sectionFor(tax, l)
 			placedBy := domain.PlacedByPerson
 			if section == 0 {
@@ -332,13 +345,15 @@ func Run(db *sql.DB, dbPath string, o Options) (Summary, error) {
 					return err
 				}
 				if _, err := tx.Exec(`INSERT INTO jobs (kind, work_item_id, payload, state, attempts, run_after, created_at, updated_at)
-						VALUES ('file', ?, '{"kind":"retry"}', 'queued', 0, ?, ?, ?)`, r.id, o.Now, o.Now, o.Now); err != nil {
+						VALUES ('file', ?, ?, 'queued', 0, ?, ?, ?)`, r.id, filing.Payload{Kind: filing.KindRetry}.JSON(), o.Now, o.Now, o.Now); err != nil {
 					return err
 				}
 				sum.Live++
+				sum.Statuses[status]++
 				continue
 			}
-			// Off the latest report's open lines: history, done as of when it was last seen.
+			// Off the latest report's open lines: its V1 Status is kept; a done row is
+			// done as of the last report showing it.
 			seen, ok := lastSeen[r.norm]
 			doneAt := r.reportedAt
 			section := int64(0)
@@ -355,9 +370,14 @@ func Run(db *sql.DB, dbPath string, o Options) (Summary, error) {
 			} else {
 				sum.Unmatched++
 			}
-			if _, err := tx.Exec(`UPDATE work_items SET status = 'done', status_note = ?, done_at = ?, section_id = ?, placed_by = ?,
+			var doneAtValue any
+			if status == domain.StatusDone {
+				doneAtValue = doneAt
+			}
+			sum.Statuses[status]++
+			if _, err := tx.Exec(`UPDATE work_items SET status = ?, status_note = ?, done_at = ?, section_id = ?, placed_by = ?,
 					filing_state = 'filed', undetermined_reason = '', updated_at = ? WHERE id = ?`,
-				note, doneAt, nullID(section), placedBy, o.Now, r.id); err != nil {
+				status, note, doneAtValue, nullID(section), placedBy, o.Now, r.id); err != nil {
 				return err
 			}
 			if err := recordImport(tx, r.id, section, placedBy, o.Now); err != nil {
@@ -375,7 +395,8 @@ func Run(db *sql.DB, dbPath string, o Options) (Summary, error) {
 			return err
 		}
 		res, err := tx.Exec(`INSERT OR IGNORE INTO code_changes (source, source_ref, title, author, author_id, ticket_ids, state, work_item_id, link_kind, fetched_at)
-			SELECT source, source_ref, description, author, COALESCE(author_id, ''), COALESCE(ticket_ids, ''), 'merged', id, 'own', ?
+			SELECT source, source_ref, description, author, COALESCE(author_id, ''), COALESCE(ticket_ids, ''),
+				CASE WHEN status = 'done' THEN 'merged' ELSE 'open' END, id, 'own', ?
 			FROM work_items WHERE source IN ('gitlab','github') AND source_ref <> ''`, o.Now)
 		if err != nil {
 			return err
@@ -496,4 +517,26 @@ func dropV1(db *sql.DB, dbPath string, now time.Time) (string, error) {
 		}
 		return nil
 	})
+}
+
+// dryRun runs every import step on a temporary copy of the database and reports its counts.
+func dryRun(db *sql.DB, dbPath string, o Options) (Summary, error) {
+	dir, err := os.MkdirTemp("", "migrate-v2-dry-run")
+	if err != nil {
+		return Summary{}, err
+	}
+	defer os.RemoveAll(dir)
+	copyPath := filepath.Join(dir, "copy.db")
+	if _, err := db.Exec(`VACUUM INTO ?`, copyPath); err != nil {
+		return Summary{}, fmt.Errorf("copying the database: %w", err)
+	}
+	cp, err := sqlite.InitDB(copyPath)
+	if err != nil {
+		return Summary{}, err
+	}
+	defer cp.Close()
+	o.DryRun, o.DropV1 = false, false
+	sum, err := Run(cp, copyPath, o)
+	sum.DryRun = true
+	return sum, err
 }

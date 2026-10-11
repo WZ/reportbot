@@ -6,9 +6,8 @@ import (
 	"encoding/hex"
 )
 
-// ReportVersion fingerprints the Work Items, Placements and Taxonomy; any edit changes it.
-// Timestamps are stored with mixed UTC offsets: MAX(julianday) orders them correctly but only
-// to the millisecond, and the raw text MAX adds sub-millisecond changes.
+// ReportVersion fingerprints Work Items, Placements and Taxonomy. Timestamps have mixed UTC
+// offsets: MAX(julianday) orders them (to the ms), MAX(text) catches sub-ms changes.
 func ReportVersion(db *sql.DB) (string, error) {
 	var raw string
 	err := db.QueryRow(`SELECT

@@ -321,7 +321,7 @@ func TestCodeChangesAndUpdates(t *testing.T) {
 
 	newID, _ := InsertWorkItem(db, WorkItem{Description: "shard timeout fixed", Author: "Dev A", Source: "slack",
 		Status: domain.StatusInTesting, StatusNote: "verifying on lab", TicketIDs: "7654321", ReportedAt: time.Now()})
-	merged, err := MergeUpdate(db, existing, newID)
+	merged, err := ApplyUpdate(db, existing, newID)
 	if err != nil {
 		t.Fatal(err)
 	}
