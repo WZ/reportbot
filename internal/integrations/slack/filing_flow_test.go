@@ -142,11 +142,15 @@ func TestNotifierRepliesThroughResponseURL(t *testing.T) {
 		t.Fatalf("expected one response_url reply, got %d", len(rec.responses))
 	}
 	got := rec.responses[0]
-	if got["replace_original"] != true || !strings.Contains(got["text"].(string), "Filed under *Product A › Engineering › Cluster Manager*") ||
-		!strings.Contains(got["text"].(string), "*Dev A* - [1234567] Fix shard timeout (in progress)") {
+	b, _ := json.Marshal(got["blocks"])
+	if got["replace_original"] != true || !strings.Contains(got["text"].(string), "Filed under *Cluster Manager*: [1234567] Fix shard timeout") {
 		t.Fatalf("unexpected reply: %v", got)
 	}
-	b, _ := json.Marshal(got["blocks"])
+	for _, want := range []string{"Filed under *Cluster Manager*", "\\u003e [1234567] Fix shard timeout", "\\u003e _in progress_", "Product A › Engineering"} {
+		if !strings.Contains(string(b), want) {
+			t.Fatalf("missing %q in %s", want, b)
+		}
+	}
 	if !strings.Contains(string(b), "https://report.example/") {
 		t.Fatalf("expected the live report link: %s", b)
 	}
@@ -179,8 +183,13 @@ func TestFiledBlocksAskAndUpdate(t *testing.T) {
 			t.Errorf("missing %s in %s", want, b)
 		}
 	}
-	if !strings.Contains(text, "Where does this go?") || !strings.Contains(text, "Looks like an update to:") {
+	if !strings.Contains(text, "Where does this go?") || !strings.Contains(text, "Is this an update to an earlier Work Item?") {
 		t.Fatalf("unexpected text: %s", text)
+	}
+	for _, want := range []string{"Yes, update it", "No, keep both", "\"style\":\"primary\"", "Updating replaces the earlier Work Item"} {
+		if !strings.Contains(string(b), want) {
+			t.Fatalf("missing %q in %s", want, b)
+		}
 	}
 	kept := domain.Section{ID: 5, Area: "A", Category: "Infra"}
 	_, keptBlocks := FiledBlocks(Config{}, filing.Result{Item: item, Choices: choices, Kept: &kept})

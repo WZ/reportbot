@@ -207,13 +207,17 @@ func FormatTeamItem(it WorkItem) string {
 }
 
 func formatBossItem(it WorkItem) string {
+	return fmt.Sprintf("%s (%s)", ItemText(it), StatusText(it))
+}
+
+// ItemText is a Work Item's report text, "[tickets] Description", without author or status.
+func ItemText(it WorkItem) string {
 	tickets := canonicalTicketIDs(it.TicketIDs)
 	description := synthesizeDescription(stripLeadingTicketPrefixIfSame(it.Description, tickets))
-	ticketPrefix := ""
-	if tickets != "" {
-		ticketPrefix = fmt.Sprintf("[%s] ", tickets)
+	if tickets == "" {
+		return description
 	}
-	return fmt.Sprintf("%s%s (%s)", ticketPrefix, description, StatusText(it))
+	return fmt.Sprintf("[%s] %s", tickets, description)
 }
 
 // SynthesizeName title-cases a person's name and drops aliases in parentheses.

@@ -51,27 +51,24 @@ func button(actionID, value, label string) *slack.ButtonBlockElement {
 
 // FiledBlocks is the reply about one item: where it went, or where it might go.
 func FiledBlocks(cfg Config, r filing.Result) (string, []slack.Block) {
-	line := slackLine(r.Item)
+	// The reply goes to the reporter, who only needs the author named when reporting for someone else.
+	withAuthor := r.Payload.UserID != "" && r.Item.AuthorID != r.Payload.UserID
+	quote := itemQuote(r.Item, withAuthor)
 	var text string
 	var blocks []slack.Block
 	switch {
 	case r.Failed:
-		text = "Saved, but filing failed (model unreachable). It is in Undetermined and will be retried automatically.\n" + line
-		blocks = append(blocks, mdSection(text))
+		text = "Saved, but filing failed (model unreachable). It is in Undetermined and will be retried automatically."
+		blocks = append(blocks, mdSection(text+"\n"+quote))
 	case r.Section != nil:
-		text = fmt.Sprintf("Filed under *%s*\n%s", r.Section.Path(), line)
-		details := []string{"Status: " + r.Item.Status}
-		if r.Item.StatusNote != "" {
-			details[0] += fmt.Sprintf(" · note: \"%s\"", r.Item.StatusNote)
+		blocks = append(blocks, mdSection(fmt.Sprintf("Filed under *%s*\n%s", r.Section.Label(), quote)))
+		text = fmt.Sprintf("Filed under *%s*: %s", r.Section.Label(), report.ItemText(r.Item))
+		if parent := sectionParent(*r.Section); parent != "" {
+			blocks = append(blocks, contextLine(parent))
 		}
-		if r.Item.TicketIDs != "" {
-			details = append(details, "Tickets: "+r.Item.TicketIDs)
-		}
-		text += "\n" + strings.Join(details, "\n")
-		blocks = append(blocks, mdSection(text))
 	default:
-		text = "*Where does this go?*\n" + line
-		blocks = append(blocks, mdSection(text))
+		text = "*Where does this go?*"
+		blocks = append(blocks, mdSection(text+"\n"+quote))
 		var btns []slack.BlockElement
 		// Slack rejects a block whose buttons share an action_id.
 		for i, s := range r.Choices {
@@ -82,20 +79,56 @@ func FiledBlocks(cfg Config, r filing.Result) (string, []slack.Block) {
 		if r.Kept != nil {
 			stays = fmt.Sprintf("It stays in %s until someone picks.", r.Kept.Path())
 		}
-		blocks = append(blocks, slack.NewActionBlock(fmt.Sprintf("place_%d", r.Item.ID), btns...),
-			slack.NewContextBlock("", slack.NewTextBlockObject(slack.MarkdownType, stays, false, false)))
+		blocks = append(blocks, slack.NewActionBlock(fmt.Sprintf("place_%d", r.Item.ID), btns...), contextLine(stays))
 	}
 	if r.Update != nil {
-		u := "Looks like an update to: " + slackLine(r.Update.Item)
+		earlier := r.Update.Item
+		u := "*Is this an update to an earlier Work Item?*"
 		text += "\n" + u
-		value := fmt.Sprintf("%d:%d", r.Update.Item.ID, r.Item.ID)
-		blocks = append(blocks, mdSection(u), slack.NewActionBlock(fmt.Sprintf("update_%d", r.Item.ID),
-			button(actionUpdateConfirm, value, "Update it"), button(actionUpdateReject, value, "It's new")))
+		q := itemQuote(earlier, earlier.AuthorID != r.Item.AuthorID)
+		if !earlier.ReportedAt.IsZero() {
+			q = strings.TrimSuffix(q, "_") + " · reported " + earlier.ReportedAt.Format("Jan 2") + "_"
+		}
+		value := fmt.Sprintf("%d:%d", earlier.ID, r.Item.ID)
+		blocks = append(blocks, mdSection(u+"\n"+q),
+			slack.NewActionBlock(fmt.Sprintf("update_%d", r.Item.ID),
+				button(actionUpdateConfirm, value, "Yes, update it").WithStyle(slack.StylePrimary),
+				button(actionUpdateReject, value, "No, keep both")),
+			contextLine("Updating replaces the earlier Work Item's text and status with this report."))
 	}
 	if link := liveReportLink(cfg); link != "" {
-		blocks = append(blocks, slack.NewContextBlock("", slack.NewTextBlockObject(slack.MarkdownType, link, false, false)))
+		blocks = append(blocks, contextLine(link))
 	}
 	return text, blocks
+}
+
+// itemQuote renders a Work Item as a quote: its report text, then its status and note in italics.
+func itemQuote(item WorkItem, withAuthor bool) string {
+	desc := report.ItemText(item)
+	if name := report.SynthesizeName(item.Author); withAuthor && name != "" {
+		desc = "*" + name + "* - " + desc
+	}
+	var meta []string
+	if item.Status != "" {
+		status := item.Status
+		if item.StatusNote != "" {
+			status += fmt.Sprintf(" (%s)", item.StatusNote)
+		}
+		meta = append(meta, status)
+	}
+	if len(meta) == 0 {
+		return "> " + desc
+	}
+	return "> " + desc + "\n> _" + strings.Join(meta, " · ") + "_"
+}
+
+// sectionParent is the Section's path without its own name, shown under the bold name.
+func sectionParent(s domain.Section) string {
+	return strings.TrimSuffix(strings.TrimSuffix(s.Path(), s.Label()), domain.PathSeparator)
+}
+
+func contextLine(md string) slack.Block {
+	return slack.NewContextBlock("", slack.NewTextBlockObject(slack.MarkdownType, md, false, false))
 }
 
 // Filed implements filing.Notifier.
