@@ -44,7 +44,6 @@ const (
 // Reasons a Work Item sits in Undetermined.
 const (
 	ReasonLowConfidence    = "low_confidence"
-	ReasonLLMUndetermined  = "llm_undetermined"
 	ReasonModelUnreachable = "model_unreachable"
 	ReasonSectionRetired   = "section_retired"
 	ReasonNoTaxonomy       = "no_taxonomy"
@@ -65,7 +64,7 @@ type WorkItem struct {
 
 	SectionID          int64 // 0 = Undetermined
 	PlacedBy           string
-	Confidence         *float64 // Section check probability; nil when no check was made
+	Confidence         *float64 // decision-model confidence in the Section; nil when a person placed it without one
 	FilingState        string
 	UndeterminedReason string
 }

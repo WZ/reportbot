@@ -33,6 +33,7 @@ var migrations = []migration{
 	{3, migratePlacement},
 	{4, migrateSupportTables},
 	{5, migrateFailureNotified},
+	{6, migrateModelSectionColumn},
 }
 
 func InitDB(path string) (*sql.DB, error) {
@@ -257,5 +258,11 @@ func migrateSupportTables(tx *sql.Tx) error {
 
 func migrateFailureNotified(tx *sql.Tx) error {
 	_, err := tx.Exec(`ALTER TABLE work_items ADD COLUMN failure_notified_at DATETIME`)
+	return err
+}
+
+// The decision model, not an LLM, picks Sections.
+func migrateModelSectionColumn(tx *sql.Tx) error {
+	_, err := tx.Exec(`ALTER TABLE work_items RENAME COLUMN llm_section_id TO model_section_id`)
 	return err
 }

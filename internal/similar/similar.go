@@ -1,4 +1,4 @@
-package llm
+package similar
 
 import (
 	"math"
@@ -10,8 +10,8 @@ import (
 
 type sparseVec = map[int]float64
 
-// SimilarIndex finds the placed Work Items most similar to a text (TF-IDF cosine).
-type SimilarIndex struct {
+// Index finds the placed Work Items most similar to a text (TF-IDF cosine).
+type Index struct {
 	vocab map[string]int
 	idf   []float64
 	docs  []sparseVec
@@ -38,9 +38,9 @@ func tokenize(s string) []string {
 	return tokens
 }
 
-func NewSimilarIndex(items []domain.PlacedItem) *SimilarIndex {
+func NewIndex(items []domain.PlacedItem) *Index {
 	if len(items) == 0 {
-		return &SimilarIndex{vocab: make(map[string]int)}
+		return &Index{vocab: make(map[string]int)}
 	}
 
 	// Build vocabulary.
@@ -89,7 +89,7 @@ func NewSimilarIndex(items []domain.PlacedItem) *SimilarIndex {
 		}
 	}
 
-	return &SimilarIndex{
+	return &Index{
 		vocab: vocab,
 		idf:   idf,
 		docs:  docs,
@@ -97,7 +97,7 @@ func NewSimilarIndex(items []domain.PlacedItem) *SimilarIndex {
 	}
 }
 
-func (idx *SimilarIndex) queryVec(query string) sparseVec {
+func (idx *Index) queryVec(query string) sparseVec {
 	tokens := tokenize(query)
 	tf := make(map[int]int)
 	for _, tok := range tokens {
@@ -114,7 +114,7 @@ func (idx *SimilarIndex) queryVec(query string) sparseVec {
 
 // TopK returns up to k items most similar to query, skipping items keep rejects.
 // Ties go to person-decided items.
-func (idx *SimilarIndex) TopK(query string, k int, keep func(domain.PlacedItem) bool) []domain.PlacedItem {
+func (idx *Index) TopK(query string, k int, keep func(domain.PlacedItem) bool) []domain.PlacedItem {
 	if idx == nil || len(idx.items) == 0 || k <= 0 {
 		return nil
 	}

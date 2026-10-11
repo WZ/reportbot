@@ -22,7 +22,7 @@ const (
 // Judgment is one raw model answer kept for re-tuning thresholds.
 type Judgment struct {
 	WorkItemID   int64
-	Kind         string // "section_pick" | "section_check" | "status" | "ticket" | "update_candidate" | "link_candidate"
+	Kind         string // "section_choice" | "status" | "ticket" | "update_candidate" | "link_candidate"
 	Subject      string
 	AnswerJSON   string
 	Model        string
@@ -33,14 +33,14 @@ type Judgment struct {
 
 // Placement is a decision to put a Work Item in a Section (0 = Undetermined).
 type Placement struct {
-	SectionID    int64
-	PlacedBy     string
-	Confidence   *float64
-	LLMSectionID int64 // the LLM's pick behind this decision, 0 if none
-	FilingState  string
-	Reason       string // Undetermined reason, empty when filed in a Section
-	HistoryNote  string // placement_history.reason
-	ActorID      string
+	SectionID      int64
+	PlacedBy       string
+	Confidence     *float64
+	ModelSectionID int64 // the decision model's pick behind this decision, 0 if none
+	FilingState    string
+	Reason         string // Undetermined reason, empty when filed in a Section
+	HistoryNote    string // placement_history.reason
+	ActorID        string
 }
 
 // FilingOutcome is everything one filing pass decided for a Work Item.
@@ -85,16 +85,16 @@ func InsertJudgments(db *sql.DB, js []Judgment) error { return insertJudgments(d
 func applyPlacement(q querier, itemID int64, p Placement) error {
 	var fromSection sql.NullInt64
 	var fromBy string
-	var llmSection sql.NullInt64
-	if err := q.QueryRow(`SELECT section_id, placed_by, llm_section_id FROM work_items WHERE id = ?`, itemID).Scan(&fromSection, &fromBy, &llmSection); err != nil {
+	var modelPick sql.NullInt64
+	if err := q.QueryRow(`SELECT section_id, placed_by, model_section_id FROM work_items WHERE id = ?`, itemID).Scan(&fromSection, &fromBy, &modelPick); err != nil {
 		return err
 	}
-	modelSection := p.LLMSectionID
+	modelSection := p.ModelSectionID
 	if modelSection == 0 {
-		modelSection = llmSection.Int64
+		modelSection = modelPick.Int64
 	}
 	if _, err := q.Exec(
-		`UPDATE work_items SET section_id = ?, placed_by = ?, placement_confidence = ?, llm_section_id = ?,
+		`UPDATE work_items SET section_id = ?, placed_by = ?, placement_confidence = ?, model_section_id = ?,
 			filing_state = ?, undetermined_reason = ?, updated_at = ?
 		 WHERE id = ?`,
 		nullID(p.SectionID), p.PlacedBy, nullFloat(p.Confidence), nullID(modelSection),
@@ -192,16 +192,16 @@ func LatestPlacementEventID(db *sql.DB, itemID int64) (int64, error) {
 	return id, err
 }
 
-// Correction is a person putting a Work Item somewhere other than the LLM's pick.
+// Correction is a person putting a Work Item somewhere other than the decision model's pick.
 type Correction struct {
 	WorkItemID  int64
 	Description string
-	FromSection int64 // the LLM's pick
+	FromSection int64 // the decision model's pick
 	ToSection   int64
 	CreatedAt   time.Time
 }
 
-// GetRecentCorrections returns person Placements that disagree with the LLM's pick, newest first.
+// GetRecentCorrections returns person Placements that disagree with the decision model's pick, newest first.
 func GetRecentCorrections(db *sql.DB, since time.Time, limit int) ([]Correction, error) {
 	rows, err := db.Query(
 		`SELECT h.work_item_id, w.description, h.model_section, h.to_section, h.created_at
@@ -256,7 +256,7 @@ type WeekStats struct {
 	Asked             int // check failed: the reporter was asked
 	FailedFiling      int
 	Undetermined      int
-	PersonCorrections map[int64]int // LLM-picked Section -> corrections away from it
+	PersonCorrections map[int64]int // model-picked Section -> corrections away from it
 }
 
 // GetWeekStats counts this week's arrivals by outcome and the Undetermined items on the report.
@@ -265,7 +265,7 @@ func GetWeekStats(db *sql.DB, monday, nextMonday time.Time) (WeekStats, error) {
 	err := db.QueryRow(
 		`SELECT COUNT(*),
 		    COALESCE(SUM(EXISTS (SELECT 1 FROM placement_history h WHERE h.work_item_id = w.id AND h.reason IN ('arrival','reclassify') AND h.placed_by = 'model' AND h.to_section IS NOT NULL)), 0),
-		    COALESCE(SUM(EXISTS (SELECT 1 FROM model_judgments j WHERE j.work_item_id = w.id AND j.kind = 'section_check')
+		    COALESCE(SUM(EXISTS (SELECT 1 FROM model_judgments j WHERE j.work_item_id = w.id AND j.kind = 'section_choice')
 		         AND NOT EXISTS (SELECT 1 FROM placement_history h WHERE h.work_item_id = w.id AND h.placed_by = 'model' AND h.to_section IS NOT NULL)), 0),
 		    COALESCE(SUM(w.filing_state = 'failed'), 0)
 		 FROM work_items w
@@ -308,9 +308,9 @@ func MarkFailureNotified(db *sql.DB, itemID int64) (bool, error) {
 	return n == 1, err
 }
 
-// HasBeenFiled reports whether the LLM has ever picked a Section for the item.
+// HasBeenFiled reports whether the decision model has ever picked a Section for the item.
 func HasBeenFiled(db *sql.DB, itemID int64) (bool, error) {
 	var n int
-	err := db.QueryRow(`SELECT COUNT(*) FROM model_judgments WHERE work_item_id = ? AND kind = 'section_pick'`, itemID).Scan(&n)
+	err := db.QueryRow(`SELECT COUNT(*) FROM model_judgments WHERE work_item_id = ? AND kind = 'section_choice'`, itemID).Scan(&n)
 	return n > 0, err
 }

@@ -19,8 +19,24 @@ type RetroSuggestion struct {
 
 const maxRetroSuggestions = 5
 
+// CorrectionLine is a person moving a Work Item away from the model's Section.
+type CorrectionLine struct {
+	Description string
+	From        int64
+	To          int64
+}
+
+func truncateRunes(s string, max int) string {
+	s = strings.TrimSpace(s)
+	r := []rune(s)
+	if max <= 0 || len(r) <= max {
+		return s
+	}
+	return string(r[:max]) + "..."
+}
+
 // SuggestSectionDescriptions analyses recent corrections and proposes better one-line
-// Section descriptions, which both models then see.
+// Section descriptions, which the decision model then sees.
 func SuggestSectionDescriptions(cfg Config, sections []domain.Section, corrections []CorrectionLine) ([]RetroSuggestion, LLMUsage, error) {
 	if len(corrections) == 0 {
 		return nil, LLMUsage{}, nil
@@ -49,7 +65,7 @@ func buildRetroPrompts(sections []domain.Section, corrections []CorrectionLine) 
 	paths := make(map[int64]string, len(sections))
 	for _, s := range sections {
 		paths[s.ID] = s.Path()
-		line := fmt.Sprintf("- %s: %s", SectionKey(s.ID), s.Path())
+		line := fmt.Sprintf("- %s: %s", domain.SectionKey(s.ID), s.Path())
 		if d := strings.TrimSpace(s.Description); d != "" {
 			line += " — current description: " + d
 		}
@@ -59,7 +75,7 @@ func buildRetroPrompts(sections []domain.Section, corrections []CorrectionLine) 
 
 Sections:
 ` + secLines.String() + `
-Below are work items that people moved out of the section an AI filed them in.
+Below are work items that people moved out of the section a model filed them in.
 Find sections that people keep correcting (2 or more corrections into or out of the same section).
 For each, write a one-line description (under 200 characters) for the section that would have
 filed these items correctly: what belongs there, and what belongs in the neighbouring section instead.
@@ -72,7 +88,7 @@ Respond with JSON only (no markdown):
 	user.WriteString("Recent corrections:\n")
 	for _, c := range corrections {
 		user.WriteString(fmt.Sprintf("- %q: %s (%s) -> %s (%s)\n",
-			truncateRunes(c.Description, 150), SectionKey(c.From), paths[c.From], SectionKey(c.To), paths[c.To]))
+			truncateRunes(c.Description, 150), domain.SectionKey(c.From), paths[c.From], domain.SectionKey(c.To), paths[c.To]))
 	}
 	return system, user.String()
 }
@@ -98,7 +114,7 @@ func parseRetroResponse(text string, sections []domain.Section) ([]RetroSuggesti
 	}
 	var out []RetroSuggestion
 	for _, r := range raw {
-		id, ok := parseSectionKey(r.SectionID)
+		id, ok := domain.ParseSectionKey(r.SectionID)
 		desc := strings.TrimSpace(r.Description)
 		if !ok || !valid[id] || desc == "" {
 			continue

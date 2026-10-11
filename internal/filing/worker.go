@@ -9,7 +9,6 @@ import (
 
 	"reportbot/internal/domain"
 	"reportbot/internal/integrations/decision"
-	"reportbot/internal/integrations/llm"
 	"reportbot/internal/storage/sqlite"
 )
 
@@ -159,7 +158,7 @@ func (q *Queue) Sweep() int {
 	return len(items)
 }
 
-// Reclassify re-files Open Work Items after a Taxonomy edit; checked moves apply even to
+// Reclassify re-files Open Work Items after a Taxonomy edit; confident moves apply even to
 // person-placed items, whose owner is told and can undo.
 func (f *Filer) Reclassify(ctx context.Context) error {
 	c, err := f.loadContext()
@@ -179,75 +178,39 @@ func (f *Filer) Reclassify(ctx context.Context) error {
 	if len(c.sections) == 0 || len(items) == 0 {
 		return nil
 	}
-	batch := max(f.Cfg.LLMBatchSize, 1)
-	similar := map[int64][]domain.PlacedItem{}
-	picks := map[int64]int64{}
-	for start := 0; start < len(items); start += batch {
-		end := min(start+batch, len(items))
-		var prompt []llm.PromptItem
-		for _, it := range items[start:end] {
-			similar[it.ID] = c.similar(it, max(similarForCheck, f.exampleCount()))
-			prompt = append(prompt, f.promptItem(c, it, similar[it.ID]))
-		}
-		res, err := f.Classify(f.Cfg, c.sections, c.recent, prompt, c.corrections)
-		if err != nil {
-			return fmt.Errorf("llm: %w", err)
-		}
-		for id, p := range res.Picks {
-			picks[id] = p
-		}
-	}
-
 	type outcome struct {
-		item domain.WorkItem
-		pick int64
-		p    float64
-		err  error
 		resp *decision.Response
+		err  error
 	}
 	results := make([]outcome, len(items))
 	var wg sync.WaitGroup
-	sem := make(chan struct{}, 8)
 	for i, it := range items {
-		pick := picks[it.ID]
-		results[i] = outcome{item: it, pick: pick}
-		if _, ok := c.active[pick]; !ok || pick == it.SectionID {
-			continue
-		}
 		wg.Add(1)
-		go func(i int, it domain.WorkItem, pick int64) {
+		go func(i int, it domain.WorkItem) { // the decision client bounds concurrency
 			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			s := c.active[pick]
-			sim := similar[it.ID]
-			state, qs := BuildRequest(RequestInput{Item: it, Proposed: &s,
-				Similar: c.filedLines(sim[:min(similarForCheck, len(sim))]), AuthorRecent: c.filedLines(c.authorRecent(it))})
-			resp, err := f.Decision.Ask(ctx, state, qs)
-			results[i].err, results[i].resp = err, resp
-			if err == nil {
-				results[i].p = resp.Answers[QSectionCheck].Noul
-			}
-		}(i, it, pick)
+			state, qs := BuildRequest(RequestInput{Item: it, Sections: c.sections, Similar: c.similarLines(it, f.similarCount())})
+			results[i].resp, results[i].err = f.Decision.Ask(ctx, state, qs)
+		}(i, it)
 	}
 	wg.Wait()
 
 	moved := 0
-	for _, r := range results {
+	for i, r := range results {
 		if r.err != nil {
 			return fmt.Errorf("decision model: %w", r.err)
 		}
-		_, currentActive := c.active[r.item.SectionID]
+		it := items[i]
+		pick, conf, _ := c.sectionAnswer(r.resp.Answers[QSection])
+		_, currentActive := c.active[it.SectionID]
 		switch {
-		case r.resp != nil && r.p >= f.Cfg.DecisionModelConfidence:
-			p := r.p
-			if err := f.move(c, r.item, sqlite.Placement{SectionID: r.pick, PlacedBy: domain.PlacedByModel, Confidence: &p,
-				LLMSectionID: r.pick, FilingState: domain.FilingFiled, HistoryNote: sqlite.ReasonReclassify}, r.resp); err != nil {
+		case pick != 0 && pick != it.SectionID && conf >= f.Cfg.DecisionModelConfidence:
+			if err := f.move(c, it, sqlite.Placement{SectionID: pick, PlacedBy: domain.PlacedByModel, Confidence: &conf,
+				ModelSectionID: pick, FilingState: domain.FilingFiled, HistoryNote: sqlite.ReasonReclassify}, r.resp); err != nil {
 				return err
 			}
 			moved++
-		case r.item.SectionID != 0 && !currentActive:
-			if err := sqlite.SetPlacement(f.DB, r.item.ID, sqlite.Placement{PlacedBy: domain.PlacedByModel, LLMSectionID: r.pick,
+		case it.SectionID != 0 && !currentActive:
+			if err := sqlite.SetPlacement(f.DB, it.ID, sqlite.Placement{PlacedBy: domain.PlacedByModel, ModelSectionID: pick,
 				FilingState: domain.FilingFiled, Reason: domain.ReasonSectionRetired, HistoryNote: sqlite.ReasonReclassify}); err != nil {
 				return err
 			}
@@ -258,10 +221,7 @@ func (f *Filer) Reclassify(ctx context.Context) error {
 }
 
 func (f *Filer) move(c *filingContext, it domain.WorkItem, p sqlite.Placement, resp *decision.Response) error {
-	if err := sqlite.ApplyFiling(f.DB, it.ID, sqlite.FilingOutcome{Placement: p, Judgments: []sqlite.Judgment{{
-		Kind: QSectionCheck, Subject: llm.SectionKey(p.SectionID), AnswerJSON: string(resp.Answers[QSectionCheck].Raw),
-		Model: resp.Model, InputTokens: resp.Usage.InputTokens, OutputTokens: resp.Usage.OutputTokens, LatencyMS: resp.Latency.Milliseconds(),
-	}}}); err != nil {
+	if err := sqlite.ApplyFiling(f.DB, it.ID, sqlite.FilingOutcome{Placement: p, Judgments: judgments(resp)}); err != nil {
 		return err
 	}
 	if it.PlacedBy != domain.PlacedByPerson || f.Notify == nil {

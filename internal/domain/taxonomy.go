@@ -2,6 +2,7 @@ package domain
 
 import (
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -141,4 +142,17 @@ func (t Taxonomy) SectionAny(id int64) (Section, bool) {
 		s.Area, s.AreaID = a.Name, a.ID
 	}
 	return s, true
+}
+
+// SectionKey is the stable key a model sees for a Section.
+func SectionKey(id int64) string { return "S" + strconv.FormatInt(id, 10) }
+
+// ParseSectionKey reverses SectionKey.
+func ParseSectionKey(key string) (int64, bool) {
+	key = strings.TrimSpace(key)
+	if !strings.HasPrefix(key, "S") {
+		return 0, false
+	}
+	id, err := strconv.ParseInt(key[1:], 10, 64)
+	return id, err == nil && id > 0
 }

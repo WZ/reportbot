@@ -23,6 +23,10 @@ func handleRetrospective(api *slack.Client, db *sql.DB, cfg Config, cmd slack.Sl
 		log.Printf("retrospective denied user=%s", cmd.UserID)
 		return
 	}
+	if !cfg.LLMConfigured() {
+		postEphemeral(api, cmd, "The LLM isn't configured (llm_provider and its API key), so /retrospect is unavailable.")
+		return
+	}
 	corrections, err := getRecentCorrections(db, time.Now().In(cfg.Location).AddDate(0, 0, -28), 200)
 	if err != nil {
 		postEphemeral(api, cmd, fmt.Sprintf("Error loading corrections: %v", err))
@@ -76,8 +80,8 @@ func handleRetrospective(api *slack.Client, db *sql.DB, cfg Config, cmd slack.Sl
 	postEphemeral(api, cmd, fmt.Sprintf("Found %d suggestions (tokens used: %s).", len(suggestions), formatTokenCount(usage.TotalTokens())))
 }
 
-// handleRetroApply writes the suggested description to the Section; both models see it
-// from the next filing on, and Open Work Items are re-classified.
+// handleRetroApply writes the suggested description to the Section; the decision model sees it
+// from the next filing on, and Open Work Items are re-filed.
 func handleRetroApply(api *slack.Client, db *sql.DB, cfg Config, cb slack.InteractionCallback, act *slack.BlockAction) {
 	if !cfg.IsManagerID(cb.User.ID) {
 		return

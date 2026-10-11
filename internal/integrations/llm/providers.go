@@ -133,28 +133,6 @@ type openAIResponsesResponse struct {
 	} `json:"error"`
 }
 
-func callOpenAIStructured(apiKey, baseURL, model, effort, systemPrompt, userPrompt, schemaName string, schema map[string]any) (string, LLMUsage, error) {
-	reqBody := openAIResponsesRequest{
-		Model:     model,
-		Input:     buildResponsesInput(systemPrompt, userPrompt),
-		Reasoning: reasoningParam(effort),
-		Text: &openAIResponsesTextParam{
-			Format: openAIResponsesFormatParam{
-				Type:   "json_schema",
-				Name:   schemaName,
-				Strict: true,
-				Schema: schema,
-			},
-		},
-	}
-	responseText, usage, err := doOpenAIResponsesRequest(apiKey, baseURL, reqBody)
-	if err != nil {
-		return "", usage, err
-	}
-	log.Printf("llm openai responses size=%d tokens_in=%d tokens_out=%d", len(responseText), usage.InputTokens, usage.OutputTokens)
-	return responseText, usage, nil
-}
-
 func buildResponsesInput(systemPrompt, userPrompt string) string {
 	systemPrompt = strings.TrimSpace(systemPrompt)
 	userPrompt = strings.TrimSpace(userPrompt)

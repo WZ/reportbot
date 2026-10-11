@@ -55,7 +55,7 @@ func TestLoadConfigFromEnvWithDefaults(t *testing.T) {
 	if cfg.GitLabRefTicketLabel != "" {
 		t.Fatalf("unexpected gitlab ref ticket label default: %q", cfg.GitLabRefTicketLabel)
 	}
-	if cfg.DecisionModelConfidence != 0.95 {
+	if cfg.DecisionModelConfidence != 0.91 {
 		t.Fatalf("unexpected decision model confidence default: %v", cfg.DecisionModelConfidence)
 	}
 	if cfg.DecisionModelURL != "https://api.compat.example" || cfg.DecisionModelName != "test-model" || cfg.DecisionModelAPIKey != "dm-test" {
@@ -260,5 +260,16 @@ func TestNormalizeAuthorIDs(t *testing.T) {
 	}
 	if c.AuthorID("gitlab:42") != "" {
 		t.Fatal("a report name never reaches an account key")
+	}
+}
+
+func TestLLMIsOptional(t *testing.T) {
+	t.Setenv("CONFIG_PATH", filepath.Join(t.TempDir(), "missing-config.yaml"))
+	setMinimalValidConfigEnv(t)
+	t.Setenv("LLM_PROVIDER", "")
+	t.Setenv("OPENAI_API_KEY", "")
+	cfg := LoadConfig()
+	if cfg.LLMConfigured() || cfg.SimilarItemCount != 30 {
+		t.Fatalf("no LLM configured and the default similar-item count: %+v", cfg)
 	}
 }

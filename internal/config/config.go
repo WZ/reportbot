@@ -29,11 +29,9 @@ type Config struct {
 	GitHubOrg   string   `yaml:"github_org"`
 	GitHubRepos []string `yaml:"github_repos"`
 
-	LLMProvider      string `yaml:"llm_provider"`
-	LLMModel         string `yaml:"llm_model"`
-	LLMBatchSize     int    `yaml:"llm_batch_size"`
-	LLMExampleCount  int    `yaml:"llm_example_count"`
-	LLMExampleMaxLen int    `yaml:"llm_example_max_chars"`
+	// The LLM is optional; only /retrospect uses it. Empty llm_provider means none.
+	LLMProvider string `yaml:"llm_provider"`
+	LLMModel    string `yaml:"llm_model"`
 	// Reasoning effort sent to OpenAI-compatible providers; empty sends none.
 	LLMReasoningEffort string `yaml:"llm_reasoning_effort"`
 	AnthropicAPIKey    string `yaml:"anthropic_api_key"`
@@ -44,6 +42,8 @@ type Config struct {
 	DecisionModelAPIKey     string  `yaml:"decision_model_api_key"`
 	DecisionModelName       string  `yaml:"decision_model_name"`
 	DecisionModelConfidence float64 `yaml:"decision_model_confidence"`
+	// Similar past Work Items (and their Sections) the decision model sees when filing.
+	SimilarItemCount int `yaml:"similar_item_count"`
 
 	DBPath                     string `yaml:"db_path"`
 	ReportOutputDir            string `yaml:"report_output_dir"`
@@ -108,9 +108,7 @@ func LoadConfig() Config {
 	}
 	envOverride(&cfg.LLMProvider, "LLM_PROVIDER")
 	envOverride(&cfg.LLMModel, "LLM_MODEL")
-	envOverrideInt(&cfg.LLMBatchSize, "LLM_BATCH_SIZE")
-	envOverrideInt(&cfg.LLMExampleCount, "LLM_EXAMPLE_COUNT")
-	envOverrideInt(&cfg.LLMExampleMaxLen, "LLM_EXAMPLE_MAX_CHARS")
+	envOverrideInt(&cfg.SimilarItemCount, "SIMILAR_ITEM_COUNT")
 	envOverride(&cfg.LLMReasoningEffort, "LLM_REASONING_EFFORT")
 	envOverride(&cfg.AnthropicAPIKey, "ANTHROPIC_API_KEY")
 	envOverride(&cfg.OpenAIAPIKey, "OPENAI_API_KEY")
@@ -154,20 +152,11 @@ func LoadConfig() Config {
 		}
 	}
 
-	if cfg.LLMProvider == "" {
-		cfg.LLMProvider = "anthropic"
-	}
-	if cfg.LLMBatchSize == 0 {
-		cfg.LLMBatchSize = 50
-	}
 	if cfg.DecisionModelConfidence == 0 {
-		cfg.DecisionModelConfidence = 0.95
+		cfg.DecisionModelConfidence = 0.91
 	}
-	if cfg.LLMExampleCount == 0 {
-		cfg.LLMExampleCount = 20
-	}
-	if cfg.LLMExampleMaxLen == 0 {
-		cfg.LLMExampleMaxLen = 140
+	if cfg.SimilarItemCount == 0 {
+		cfg.SimilarItemCount = 30
 	}
 	if cfg.DBPath == "" {
 		cfg.DBPath = "./reportbot.db"
@@ -244,6 +233,7 @@ func LoadConfig() Config {
 	}
 
 	switch cfg.LLMProvider {
+	case "":
 	case "anthropic":
 		if cfg.AnthropicAPIKey == "" {
 			log.Fatalf("anthropic_api_key is required when llm_provider=anthropic")
@@ -281,17 +271,11 @@ func LoadConfig() Config {
 	if _, _, err := parseClock(cfg.MondayCutoffTime); err != nil {
 		log.Fatalf("invalid monday_cutoff_time '%s': %v", cfg.MondayCutoffTime, err)
 	}
-	if cfg.LLMBatchSize < 1 {
-		log.Fatalf("invalid llm_batch_size '%d': must be >= 1", cfg.LLMBatchSize)
-	}
 	if cfg.DecisionModelConfidence <= 0 || cfg.DecisionModelConfidence >= 1 {
 		log.Fatalf("invalid decision_model_confidence '%f': must be between 0 and 1 (exclusive)", cfg.DecisionModelConfidence)
 	}
-	if cfg.LLMExampleCount < 0 {
-		log.Fatalf("invalid llm_example_count '%d': must be >= 0", cfg.LLMExampleCount)
-	}
-	if cfg.LLMExampleMaxLen < 20 {
-		log.Fatalf("invalid llm_example_max_chars '%d': must be >= 20", cfg.LLMExampleMaxLen)
+	if cfg.SimilarItemCount < 1 {
+		log.Fatalf("invalid similar_item_count '%d': must be >= 1", cfg.SimilarItemCount)
 	}
 	authorIDs, err := normalizeAuthorIDs(cfg.AuthorIDs)
 	if err != nil {
@@ -415,6 +399,9 @@ func (c Config) AccountAuthorID(host string, accountID int64) string {
 	}
 	return c.AuthorIDs[fmt.Sprintf("%s:%d", host, accountID)]
 }
+
+// LLMConfigured reports whether an LLM is set up for /retrospect.
+func (c Config) LLMConfigured() bool { return c.LLMProvider != "" }
 
 func (c Config) GitLabConfigured() bool {
 	return c.GitLabURL != "" && c.GitLabToken != "" && c.GitLabGroupID != ""

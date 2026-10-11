@@ -1,4 +1,4 @@
-package llm
+package similar
 
 import (
 	"testing"
@@ -6,13 +6,13 @@ import (
 	"reportbot/internal/domain"
 )
 
-func TestSimilarIndexTopK(t *testing.T) {
+func TestIndexTopK(t *testing.T) {
 	items := []domain.PlacedItem{
 		{WorkItemID: 1, Description: "Fix database connection pool timeout", SectionID: 10},
 		{WorkItemID: 2, Description: "Add user authentication OAuth flow", SectionID: 11},
 		{WorkItemID: 3, Description: "Database migration for new schema", SectionID: 10},
 	}
-	idx := NewSimilarIndex(items)
+	idx := NewIndex(items)
 
 	results := idx.TopK("database connection issue", 2, nil)
 	if len(results) == 0 {
@@ -23,13 +23,13 @@ func TestSimilarIndexTopK(t *testing.T) {
 	}
 }
 
-func TestSimilarIndexTopKFilterAndPersonTieBreak(t *testing.T) {
+func TestIndexTopKFilterAndPersonTieBreak(t *testing.T) {
 	items := []domain.PlacedItem{
 		{WorkItemID: 1, Description: "upgrade cluster nodes", SectionID: 10},
 		{WorkItemID: 2, Description: "upgrade cluster nodes", SectionID: 11, ByPerson: true},
 		{WorkItemID: 3, Description: "upgrade cluster nodes", SectionID: 12},
 	}
-	idx := NewSimilarIndex(items)
+	idx := NewIndex(items)
 	results := idx.TopK("upgrade cluster", 3, func(p domain.PlacedItem) bool { return p.WorkItemID != 3 })
 	if len(results) != 2 {
 		t.Fatalf("expected filter to drop one item, got %d", len(results))
@@ -80,8 +80,8 @@ func TestCosineSim_Identical(t *testing.T) {
 	}
 }
 
-func TestSimilarIndexEmpty(t *testing.T) {
-	idx := NewSimilarIndex(nil)
+func TestIndexEmpty(t *testing.T) {
+	idx := NewIndex(nil)
 	results := idx.TopK("anything", 5, nil)
 	if len(results) != 0 {
 		t.Fatalf("expected no results from empty index")

@@ -154,10 +154,10 @@ func TestApplyFilingHistoryAndCorrections(t *testing.T) {
 
 	p := 0.42
 	err = ApplyFiling(db, id, FilingOutcome{
-		Placement: Placement{PlacedBy: domain.PlacedByModel, Confidence: &p, LLMSectionID: s763,
+		Placement: Placement{PlacedBy: domain.PlacedByModel, Confidence: &p, ModelSectionID: s763,
 			FilingState: domain.FilingAsking, Reason: domain.ReasonLowConfidence, HistoryNote: ReasonArrival},
 		Status: domain.StatusBlocked, StatusNote: "waiting on vendor", TicketIDs: "1234567",
-		Judgments: []Judgment{{Kind: "section_check", AnswerJSON: `{"noul":0.42}`, Model: "m"}},
+		Judgments: []Judgment{{Kind: "section_choice", AnswerJSON: `{"confidence":0.42}`, Model: "m"}},
 	})
 	if err != nil {
 		t.Fatal(err)

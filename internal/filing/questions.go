@@ -3,6 +3,7 @@ package filing
 import (
 	"fmt"
 	"strconv"
+	"strings"
 
 	"reportbot/internal/domain"
 	"reportbot/internal/integrations/decision"
@@ -10,14 +11,14 @@ import (
 
 // Question IDs and texts. Instructions are plain text that reference state by path.
 const (
-	QSectionCheck = "section_check"
+	QSection      = "section"
 	QStatus       = "status"
 	QTicket       = "ticket"
 	qUpdatePrefix = "update_w"
 	qLinkPrefix   = "link_w"
 
-	SectionCheckInstructions = "Does `work_item` belong in `proposed_section` of the team's weekly status report? " +
-		"`similar_past_items` and `same_author_recent_items` show where the team filed earlier items."
+	SectionInstructions = "Which section of the team's weekly status report should `work_item` be filed under? " +
+		"`similar_past_items` are the most similar items the team filed before and where they were filed; follow the team's filing conventions."
 	statusInstructions = "Which status of `work_item` does `status_text` describe? When `status_text` is empty, judge from the description."
 	ticketInstructions = "Which of `ticket_candidates` is the issue-tracker ticket ID for `work_item`? " +
 		"Version, build and merge request numbers are not ticket IDs."
@@ -59,11 +60,6 @@ type stateWorkItem struct {
 	Source      string `json:"source"`
 }
 
-type stateSection struct {
-	Name        string `json:"name"`
-	Description string `json:"description,omitempty"`
-}
-
 type stateTicket struct {
 	Number  string `json:"number"`
 	Context string `json:"context"`
@@ -85,15 +81,14 @@ type Candidate struct {
 
 // RequestInput is everything one decision-model request asks about a Work Item.
 type RequestInput struct {
-	Item         domain.WorkItem
-	Proposed     *domain.Section // nil: no Section check
-	Similar      []FiledLine
-	AuthorRecent []FiledLine
-	AskStatus    bool
-	StatusText   string
-	Tickets      []TicketCandidate // asked when non-empty
-	Updates      []Candidate
-	Links        []Candidate // Code Change → Open Work Item
+	Item       domain.WorkItem
+	Sections   []domain.Section // the Section Choice; empty: no Section question
+	Similar    []FiledLine
+	AskStatus  bool
+	StatusText string
+	Tickets    []TicketCandidate // asked when non-empty
+	Updates    []Candidate
+	Links      []Candidate // Code Change → Open Work Item
 }
 
 func sourceText(source string) string {
@@ -116,11 +111,13 @@ func BuildRequest(in RequestInput) (map[string]any, map[string]decision.Question
 	}
 	qs := map[string]decision.Question{}
 
-	if in.Proposed != nil {
-		state["proposed_section"] = stateSection{Name: in.Proposed.Path(), Description: in.Proposed.Description}
+	if len(in.Sections) > 0 {
+		criteria := make(map[string]string, len(in.Sections))
+		for _, sec := range in.Sections {
+			criteria[domain.SectionKey(sec.ID)] = SectionOption(sec)
+		}
 		state["similar_past_items"] = nonNil(in.Similar)
-		state["same_author_recent_items"] = nonNil(in.AuthorRecent)
-		qs[QSectionCheck] = decision.Question{Type: "noul", Instructions: SectionCheckInstructions}
+		qs[QSection] = decision.Question{Type: "choice", Instructions: SectionInstructions, Criteria: criteria}
 	}
 	if in.AskStatus {
 		state["status_text"] = in.StatusText
@@ -153,6 +150,14 @@ func BuildRequest(in RequestInput) (map[string]any, map[string]decision.Question
 		state["existing_items"] = existing
 	}
 	return state, qs
+}
+
+// SectionOption is how the decision model sees a Section: its path and any manager-written description.
+func SectionOption(s domain.Section) string {
+	if d := strings.TrimSpace(s.Description); d != "" {
+		return s.Path() + " — " + d
+	}
+	return s.Path()
 }
 
 // TicketFromChoice maps the ticket answer back to a number; "" for none.

@@ -20,7 +20,6 @@ import (
 	"reportbot/internal/integrations/decision"
 	"reportbot/internal/integrations/github"
 	"reportbot/internal/integrations/gitlab"
-	"reportbot/internal/integrations/llm"
 	slackbot "reportbot/internal/integrations/slack"
 	"reportbot/internal/nudge"
 	"reportbot/internal/storage/sqlite"
@@ -38,9 +37,9 @@ func Main() {
 	cfg := config.LoadConfig()
 	appliedHTTPTimeout := httpx.ConfigureExternalHTTPClient(cfg.ExternalHTTPTimeoutSeconds, cfg.TLSSkipVerify)
 	log.Printf(
-		"Config loaded. Team=%s Managers=%d TeamMembers=%d Timezone=%s LLMProvider=%s LLMModel=%s LLMBatchSize=%d LLMExampleCount=%d DecisionModel=%s DecisionModelConfidence=%.2f ExternalHTTPTimeout=%s",
-		cfg.TeamName, len(cfg.ManagerSlackIDs), len(cfg.TeamMembers), cfg.Timezone, cfg.LLMProvider, llm.ModelName(cfg),
-		cfg.LLMBatchSize, cfg.LLMExampleCount, cfg.DecisionModelName, cfg.DecisionModelConfidence, appliedHTTPTimeout,
+		"Config loaded. Team=%s Managers=%d TeamMembers=%d Timezone=%s DecisionModel=%s DecisionModelConfidence=%.2f SimilarItemCount=%d LLMConfigured=%t ExternalHTTPTimeout=%s",
+		cfg.TeamName, len(cfg.ManagerSlackIDs), len(cfg.TeamMembers), cfg.Timezone, cfg.DecisionModelName, cfg.DecisionModelConfidence,
+		cfg.SimilarItemCount, cfg.LLMConfigured(), appliedHTTPTimeout,
 	)
 
 	db, err := sqlite.InitDB(cfg.DBPath)
@@ -65,7 +64,6 @@ func Main() {
 	queue := filing.NewQueue(&filing.Filer{
 		DB:       db,
 		Cfg:      cfg,
-		Classify: llm.ClassifySections,
 		Decision: decision.NewClient(cfg.DecisionModelURL, cfg.DecisionModelAPIKey, cfg.DecisionModelName),
 		Notify:   slackbot.NewNotifier(api, db, cfg),
 	})
