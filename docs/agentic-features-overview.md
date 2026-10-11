@@ -169,6 +169,7 @@ flowchart TB
     end
 
     MGR["Manager"]
+    RETRO["/retrospect<br>LLM drafts Section descriptions<br>(optional)"]
 
     DEV --> Q
     CC --> Q
@@ -181,13 +182,16 @@ flowchart TB
     LIVE --> STATS
     Deliver --> MGR
     ASK -.->|"person decisions"| MEM
-    MGR -.->|"moves, Taxonomy edits,<br>/retrospect descriptions"| MEM
+    MGR -.->|"moves, Taxonomy edits"| MEM
+    MGR -->|"runs"| RETRO
+    RETRO -.->|"descriptions the manager applies"| MEM
 
     style Input fill:#1a5276,stroke:#333,color:#fff
     style File fill:#1a1a2e,stroke:#69f,color:#fff
     style Place fill:#14532d,stroke:#4ade80,color:#fff
     style Deliver fill:#0f3460,stroke:#69f,color:#fff
     style MGR fill:#f96,stroke:#333,color:#000
+    style RETRO fill:#3b2f5c,stroke:#a78bfa,color:#fff,stroke-dasharray: 4 3
 ```
 
 Two loops close the system. The **reporter loop**: whenever the decision model is unsure, the reporter decides, and that decision becomes memory for the next item. The **manager loop**: moves, Taxonomy edits and `/retrospect` descriptions sharpen the context the decision model sees. Only confident answers are filed without a person.
