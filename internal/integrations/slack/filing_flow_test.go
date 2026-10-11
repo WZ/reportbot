@@ -158,7 +158,22 @@ func TestFiledBlocksAskAndUpdate(t *testing.T) {
 	upd := filing.Candidate{Item: domain.WorkItem{ID: 4, Author: "Dev A", Description: "older", Status: domain.StatusInProgress}}
 	text, blocks := FiledBlocks(Config{}, filing.Result{Item: item, Choices: choices, Update: &upd})
 	b, _ := json.Marshal(blocks)
-	for _, want := range []string{`"action_id":"place_pick","value":"9:3"`, `"action_id":"place_pick","value":"9:5"`,
+	for _, blk := range blocks {
+		ab, ok := blk.(*slack.ActionBlock)
+		if !ok {
+			continue
+		}
+		seen := map[string]bool{}
+		for _, el := range ab.Elements.ElementSet {
+			if btn, ok := el.(*slack.ButtonBlockElement); ok {
+				if seen[btn.ActionID] {
+					t.Fatalf("Slack rejects duplicate action_id %q in block %q", btn.ActionID, ab.BlockID)
+				}
+				seen[btn.ActionID] = true
+			}
+		}
+	}
+	for _, want := range []string{`"action_id":"place_pick:0","value":"9:3"`, `"action_id":"place_pick:1","value":"9:5"`,
 		`"action_id":"place_other","value":"9"`, `"action_id":"update_confirm","value":"4:9"`, `"action_id":"update_reject","value":"4:9"`} {
 		if !strings.Contains(string(b), want) {
 			t.Errorf("missing %s in %s", want, b)
@@ -202,11 +217,11 @@ func TestPlacePickUpdateUndoAndCheckDone(t *testing.T) {
 
 	// "Where does this go?": only the owner (or a manager) may pick.
 	asked := insert("rack power", 0)
-	handleBlockActions(api, db, cfg, interaction("U2", actionPlacePick, itoa(asked)+":"+itoa(infra), rec.srv.URL+"/respond"))
+	handleBlockActions(api, db, cfg, interaction("U2", actionPlacePick+":0", itoa(asked)+":"+itoa(infra), rec.srv.URL+"/respond"))
 	if it, _ := sqlitedb.GetWorkItemByID(db, asked); it.SectionID != 0 {
 		t.Fatal("another member must not file someone else's item")
 	}
-	handleBlockActions(api, db, cfg, interaction("U1", actionPlacePick, itoa(asked)+":"+itoa(infra), rec.srv.URL+"/respond"))
+	handleBlockActions(api, db, cfg, interaction("U1", actionPlacePick+":0", itoa(asked)+":"+itoa(infra), rec.srv.URL+"/respond"))
 	if it, _ := sqlitedb.GetWorkItemByID(db, asked); it.SectionID != infra || it.PlacedBy != domain.PlacedByPerson {
 		t.Fatalf("expected a person Placement: %+v", it)
 	}
@@ -324,7 +339,7 @@ func TestItemsWithoutAuthorIDAreManagerOnly(t *testing.T) {
 	id, _ := sqlitedb.InsertWorkItem(db, domain.WorkItem{Description: "imported line", Author: "Dev A", Source: "import",
 		Status: domain.StatusInProgress, ReportedAt: time.Now(), SectionID: cm, FilingState: domain.FilingFiled, PlacedBy: domain.PlacedByPerson})
 
-	handleBlockActions(api, db, cfg, interaction("U1", actionPlacePick, itoa(id)+":"+itoa(infra), ""))
+	handleBlockActions(api, db, cfg, interaction("U1", actionPlacePick+":1", itoa(id)+":"+itoa(infra), ""))
 	if err := sqlitedb.SetPlacement(db, id, sqlitedb.Placement{SectionID: infra, PlacedBy: domain.PlacedByModel, HistoryNote: sqlitedb.ReasonReclassify}); err != nil {
 		t.Fatal(err)
 	}

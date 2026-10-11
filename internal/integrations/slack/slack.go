@@ -1032,10 +1032,11 @@ func handleBlockActions(api *slack.Client, db *sql.DB, cfg Config, cb slack.Inte
 	}
 	userID := cb.User.ID
 
-	switch act.ActionID {
-	case actionPlacePick:
+	if strings.HasPrefix(act.ActionID, actionPlacePick+":") {
 		handlePlacePick(api, db, cfg, cb, act.Value)
 		return
+	}
+	switch act.ActionID {
 	case actionPlaceOther:
 		itemID, err := strconv.ParseInt(strings.TrimSpace(act.Value), 10, 64)
 		if err != nil {

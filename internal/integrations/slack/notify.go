@@ -73,8 +73,9 @@ func FiledBlocks(cfg Config, r filing.Result) (string, []slack.Block) {
 		text = "*Where does this go?*\n" + line
 		blocks = append(blocks, mdSection(text))
 		var btns []slack.BlockElement
-		for _, s := range r.Choices {
-			btns = append(btns, button(actionPlacePick, fmt.Sprintf("%d:%d", r.Item.ID, s.ID), s.Label()))
+		// Slack rejects a block whose buttons share an action_id.
+		for i, s := range r.Choices {
+			btns = append(btns, button(fmt.Sprintf("%s:%d", actionPlacePick, i), fmt.Sprintf("%d:%d", r.Item.ID, s.ID), s.Label()))
 		}
 		btns = append(btns, button(actionPlaceOther, strconv.FormatInt(r.Item.ID, 10), "Other…"))
 		stays := "It stays in Undetermined until someone picks."
