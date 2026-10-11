@@ -231,7 +231,7 @@ Run once against the existing database, with the latest published team report:
 
 Imported lines get an owner only through `author_ids`. The run prints a binding report (author → Slack user ID, or "unmapped"); review it before `--drop-v1`. To draft `author_ids`, run `./reportbot migrate-v2 --report <latest.md> --suggest-author-ids`: it prints a YAML block, marked unverified, of exact name matches among `manager_slack_ids` and the Slack user IDs in `team_members`: report author names, plus `gitlab:<id>` / `github:<id>` lines for the last four weeks' MR/PR authors (annotated with username and display name). Unmatched entries are commented out. It writes nothing, and prints no suggestions if any roster lookup fails.
 
-Each step is idempotent. It seeds the Taxonomy from the report's headings, imports its open authored lines as Work Items with a person Placement, promotes existing rows that match a published line (Placement from the latest report showing them; V1 status mapped to the four Statuses, so rows still marked open stay open), queues rows reported after that report for filing, and records fetched MRs/PRs as Code Changes (merged when the row was done, otherwise open). `--dry-run` runs all of this on a temporary copy and prints the counts: Sections, open lines, rows promoted and unmatched, Statuses mapped, Code Changes, rows queued for filing, and the binding report. Until it has run, the web report shows only a "run the cut-over import" banner. `--drop-v1` refuses to run until those steps are done, and only after writing `<db>.<timestamp>.backup`.
+Each step is idempotent. It seeds the Taxonomy from the report's headings, imports its open authored lines as Work Items with a person Placement, promotes existing rows that match a published line (Placement from the latest report showing them; rows still open in V1 but missing from the latest report are closed as done before that report's week, keeping their V1 status text as the Status Note), queues rows reported after that report for filing, and records fetched MRs/PRs as Code Changes (merged when the row was done, otherwise open). `--dry-run` runs all of this on a temporary copy and prints the counts: Sections, open lines, rows promoted and unmatched, old open rows closed as done, Statuses mapped, Code Changes, rows queued for filing, and the binding report. Until it has run, the web report shows only a "run the cut-over import" banner. `--drop-v1` refuses to run until those steps are done, and only after writing `<db>.<timestamp>.backup`.
 
 ### 3. Build & Run
 
@@ -338,7 +338,7 @@ Delegated names support fuzzy matching against `team_members` (for example `{Mem
 
 Status is taken from the trailing parenthetical when it is one of `in progress`, `in testing`, `blocked`, `done` (or a close synonym). Other wording is kept as the Status Note and the decision model picks the Status; with no parenthetical, it decides from the description.
 
-The reply first says "Saved — filing it…", then shows where the item was filed (Section, the report line, Status, tickets) or asks "Where does this go?".
+Once the Work Item is saved, the reply says "Saved — filing it…" (or shows the error), then shows where it was filed (Section, the report line, Status, tickets) or asks "Where does this go?".
 
 ### Fetching MRs/PRs
 

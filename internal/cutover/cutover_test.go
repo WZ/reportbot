@@ -146,7 +146,7 @@ func TestRunImportsPromotesAndIsIdempotent(t *testing.T) {
 	if dry.String() != sum.String() {
 		t.Fatalf("--dry-run must report the same counts as the run:\n%s\nvs\n%s", dry, sum)
 	}
-	if sum.Statuses[domain.StatusInTesting] != 2 || sum.Statuses[domain.StatusDone] != 2 || sum.Statuses[domain.StatusBlocked] != 2 {
+	if sum.Statuses[domain.StatusInTesting] != 1 || sum.Statuses[domain.StatusDone] != 3 || sum.Statuses[domain.StatusBlocked] != 2 || sum.ClosedOld != 1 {
 		t.Fatalf("unexpected status counts: %v", sum.Statuses)
 	}
 	if sum.Sections != 4 || sum.Unmatched != 2 || sum.OpenLines != 5 || sum.ImportedExisting != 1 || sum.ImportedNew != 4 || sum.Live != 1 || sum.CodeChanges != 1 {
@@ -174,10 +174,18 @@ func TestRunImportsPromotesAndIsIdempotent(t *testing.T) {
 		shard.StatusNote != "root cause analysis in progress" || !shard.DoneAt.IsZero() || shard.AuthorID != "UDEVA" {
 		t.Fatalf("unexpected matched row: %+v", shard)
 	}
-	// An older row seen in an older report keeps its V1 Status (mapped) in its last Section.
+	// A row open in V1 but missing from the latest report is closed as done before that
+	// report's week, keeping its V1 wording, so no V2 Weekly Report shows it.
 	node, _ := sqlite.GetWorkItemByID(db, 2)
-	if node.SectionID != cm || node.Status != domain.StatusInTesting || !node.DoneAt.IsZero() || node.StatusNote != "mr review" {
+	latestMonday := time.Date(2026, 9, 14, 0, 0, 0, 0, loc)
+	if node.SectionID != cm || node.Status != domain.StatusDone || node.StatusNote != "mr review" || !node.DoneAt.Before(latestMonday) {
 		t.Fatalf("unexpected promoted row: %+v", node)
+	}
+	week, _ := sqlite.GetWeekItems(db, latestMonday.AddDate(0, 0, 14), latestMonday.AddDate(0, 0, 21))
+	for _, w := range week {
+		if w.ID == node.ID {
+			t.Fatal("a closed old row must not appear on a V2 Weekly Report")
+		}
 	}
 	// Unmatched rows stay history with no Placement.
 	if never, _ := sqlite.GetWorkItemByID(db, 3); never.SectionID != 0 || never.Status != domain.StatusDone {
@@ -193,7 +201,7 @@ func TestRunImportsPromotesAndIsIdempotent(t *testing.T) {
 	for _, o := range open {
 		openDesc = append(openDesc, o.Description)
 	}
-	if len(open) != 7 { // 4 imported open lines + matched row + live row + promoted in-testing row
+	if len(open) != 6 { // 4 imported open lines + matched row + live row
 		t.Fatalf("unexpected open items: %v", openDesc)
 	}
 	byAuthor := map[string]domain.WorkItem{}

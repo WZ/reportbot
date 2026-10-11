@@ -48,6 +48,7 @@ type Summary struct {
 	Promoted         int
 	Unmatched        int
 	Live             int
+	ClosedOld        int // open in V1 but missing from the latest report: closed as done
 	CodeChanges      int
 	Statuses         map[string]int // imported and promoted rows by mapped Status
 	DryRun           bool
@@ -72,6 +73,7 @@ func (s Summary) String() string {
 		s.Sections, s.OpenLines, s.ImportedNew, s.ImportedExisting)
 	fmt.Fprintf(b, "existing rows promoted with a person Placement: %d\nexisting rows kept as history (no Placement): %d\n", s.Promoted, s.Unmatched)
 	fmt.Fprintf(b, "rows reported after the latest report, queued for filing: %d\n", s.Live)
+	fmt.Fprintf(b, "old open rows closed as done: %d\n", s.ClosedOld)
 	fmt.Fprintf(b, "code changes recorded: %d\n", s.CodeChanges)
 	b.WriteString("statuses mapped:")
 	for _, st := range domain.Statuses {
@@ -196,7 +198,7 @@ func Run(db *sql.DB, dbPath string, o Options) (Summary, error) {
 	if err != nil {
 		return sum, err
 	}
-	_, latestWeekEnd := domain.CurrentWeekRangeAt(latestDate)
+	latestWeekStart, latestWeekEnd := domain.CurrentWeekRangeAt(latestDate)
 	if o.HistoryDir == "" {
 		o.HistoryDir = filepath.Dir(o.LatestReport)
 	}
@@ -352,8 +354,7 @@ func Run(db *sql.DB, dbPath string, o Options) (Summary, error) {
 				sum.Statuses[status]++
 				continue
 			}
-			// Off the latest report's open lines: its V1 Status is kept; a done row is
-			// done as of the last report showing it.
+			// Off the latest report's open lines: done as of the last report showing it.
 			seen, ok := lastSeen[r.norm]
 			doneAt := r.reportedAt
 			section := int64(0)
@@ -370,10 +371,16 @@ func Run(db *sql.DB, dbPath string, o Options) (Summary, error) {
 			} else {
 				sum.Unmatched++
 			}
-			var doneAtValue any
-			if status == domain.StatusDone {
-				doneAtValue = doneAt
+			if status != domain.StatusDone {
+				// Open in V1 but not an open line of the latest report: close it before that week,
+				// so it never shows on a V2 Weekly Report; the V1 wording stays as the note.
+				status, note = domain.StatusDone, strings.TrimSpace(r.status)
+				if !ok || !seen.date.Equal(latestDate) {
+					doneAt = latestWeekStart.Add(-time.Second)
+				}
+				sum.ClosedOld++
 			}
+			doneAtValue := doneAt
 			sum.Statuses[status]++
 			if _, err := tx.Exec(`UPDATE work_items SET status = ?, status_note = ?, done_at = ?, section_id = ?, placed_by = ?,
 					filing_state = 'filed', undetermined_reason = '', updated_at = ? WHERE id = ?`,

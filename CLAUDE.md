@@ -75,7 +75,7 @@ cmd/internal layout; the executable is `cmd/reportbot`, core logic is under `int
 
 ### Arrival (`/report`, edit with new text, fetched Code Change)
 
-1. `slack.go:handleReport()` parses lines; code maps obvious Status words and leading `[tickets]`, otherwise leaves Status to the model and keeps the wording as the Status Note. It replies "Saved — filing it…" and `sqlite.InsertWorkItemsForFiling()` saves the item(s) and a `file` job in one transaction.
+1. `slack.go:handleReport()` parses lines; code maps obvious Status words and leading `[tickets]`, otherwise leaves Status to the model and keeps the wording as the Status Note. `sqlite.InsertWorkItemsForFiling()` saves the item(s) and a `file` job in one transaction, *then* it replies "Saved — filing it…" (or replies with the error if the save failed).
 2. `filing.Queue` workers claim the job: `Filer.FileItem()` runs one LLM call (`llm.ClassifySections`), then one decision-model request (`filing.BuildRequest`: Section check + Status/ticket/Update questions as needed).
 3. Check probability ≥ `decision_model_confidence` → Placement `model`; else Undetermined and the reporter gets "Where does this go?" (LLM pick + top 2 by similar-item vote). The reply (via `response_url`, else ephemeral, else DM) shows the Section path, the line `**Author** - [tickets] description (status)`, Status/Note and tickets.
 4. Failures retry with backoff (5 attempts); then the item is Undetermined with `model_unreachable` (the author is told once per Work Item, `failure_notified_at`) and the 15-minute sweep re-queues it. Update/Link questions are asked on a Work Item's first successful filing only (arrival, fetch, or a retry of a never-filed item).
