@@ -46,7 +46,7 @@ func (l *Learner) ProposeStructure(ctx context.Context) ([]StoredProposal, error
 	if err != nil {
 		return nil, err
 	}
-	in, activity, err := l.proposalInput(tax)
+	in, activity, authors, err := l.proposalInput(tax)
 	if err != nil {
 		return nil, err
 	}
@@ -67,8 +67,17 @@ func (l *Learner) ProposeStructure(ctx context.Context) ([]StoredProposal, error
 	if err != nil {
 		return nil, err
 	}
+	parents := map[int64]bool{}
+	for _, p := range in.Parents {
+		parents[p.ID] = true
+	}
+	known := TaxonomyNames(tax.Sections())
 	var out []StoredProposal
 	for _, p := range FilterBlocked(parsed, blocked) {
+		if err := ValidateProposal(p, known, parents, authors); err != nil {
+			log.Printf("learning proposal %s dropped: invalid: %v", llm.ProposalKey(p), err)
+			continue
+		}
 		sp := StoredProposal{StructureProposal: p}
 		switch p.Kind {
 		case llm.ProposeNew:
@@ -100,12 +109,13 @@ func FilterBlocked(ps []llm.StructureProposal, blocked map[string]bool) []llm.St
 	return out
 }
 
-func (l *Learner) proposalInput(tax domain.Taxonomy) (llm.ProposalInput, map[int64]sqlite.SectionActivity, error) {
+// proposalInput gathers the evidence and the authors of the Work Items in it.
+func (l *Learner) proposalInput(tax domain.Taxonomy) (llm.ProposalInput, map[int64]sqlite.SectionActivity, []string, error) {
 	now := l.now()
 	recent := now.AddDate(0, 0, -7*proposalWindowWeeks)
 	activity, err := sqlite.GetSectionActivity(l.DB, recent, now.AddDate(0, 0, -7*retireWindowWeeks))
 	if err != nil {
-		return llm.ProposalInput{}, nil, err
+		return llm.ProposalInput{}, nil, nil, err
 	}
 	in := llm.ProposalInput{Window: fmt.Sprintf("%d weeks", proposalWindowWeeks)}
 	total := 0
@@ -126,37 +136,39 @@ func (l *Learner) proposalInput(tax domain.Taxonomy) (llm.ProposalInput, map[int
 
 	// Unplaced: Undetermined Open Work Items, Undetermined ones from the window, and "Other…" picks.
 	seen := map[int64]bool{}
-	addItem := func(id int64, desc string) {
+	var authors []string
+	addItem := func(id int64, desc, author string) {
 		if !seen[id] && len(in.Unplaced) < maxUnplaced {
 			seen[id] = true
 			in.Unplaced = append(in.Unplaced, llm.ProposalItem{ID: id, Description: desc})
+			authors = append(authors, author)
 		}
 	}
 	open, err := sqlite.GetOpenItems(l.DB)
 	if err != nil {
-		return in, nil, err
+		return in, nil, nil, err
 	}
 	for _, it := range open {
 		if it.SectionID == 0 && it.FilingState != domain.FilingPending {
-			addItem(it.ID, it.Description)
+			addItem(it.ID, it.Description, it.Author)
 		}
 	}
 	windowItems, err := sqlite.GetItemsByDateRange(l.DB, recent, now.Add(time.Second))
 	if err != nil {
-		return in, nil, err
+		return in, nil, nil, err
 	}
 	for _, it := range windowItems {
 		if it.SectionID == 0 && it.FilingState != domain.FilingPending {
-			addItem(it.ID, it.Description)
+			addItem(it.ID, it.Description, it.Author)
 		}
 	}
 	signals, err := sqlite.GetLearningSignals(l.DB, recent)
 	if err != nil {
-		return in, nil, err
+		return in, nil, nil, err
 	}
 	for _, s := range signals {
 		if s.OutsideTop3 {
-			addItem(s.WorkItemID, s.Description)
+			addItem(s.WorkItemID, s.Description, s.Author)
 		}
 	}
 
@@ -176,11 +188,12 @@ func (l *Learner) proposalInput(tax domain.Taxonomy) (llm.ProposalInput, map[int
 		for _, it := range windowItems {
 			if it.SectionID == s.ID && len(li.Items) < maxItemsPerLarge {
 				li.Items = append(li.Items, llm.ProposalItem{ID: it.ID, Description: it.Description})
+				authors = append(authors, it.Author)
 			}
 		}
 		in.Large = append(in.Large, li)
 	}
-	return in, activity, nil
+	return in, activity, authors, nil
 }
 
 // ApproveProposal applies a pending proposal once, through the same Taxonomy edits as the web

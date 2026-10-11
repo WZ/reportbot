@@ -275,22 +275,19 @@ func (l *Learner) newSignals(snap *filing.Snapshot, now time.Time) ([]sqlite.Lea
 		return active && s.CreatedAt.After(marks[sec])
 	}
 	counts := map[int64]int{}
-	people := map[int64]map[string]bool{}
+	bySection := map[int64][]sqlite.LearningSignal{}
 	for _, s := range all {
 		for _, sec := range []int64{s.ModelSection, s.ChosenSection} {
 			if isNew(s, sec) {
 				counts[sec]++
-				if people[sec] == nil {
-					people[sec] = map[string]bool{}
-				}
-				people[sec][s.Person] = true
+				bySection[sec] = append(bySection[sec], s)
 			}
 		}
 	}
 	// No single person steers a Section: its signals must come from MinSignalPeople people.
 	ids := make([]int64, 0, len(counts))
 	for id := range counts {
-		if len(people[id]) >= MinSignalPeople {
+		if DistinctPeople(bySection[id]) >= MinSignalPeople {
 			ids = append(ids, id)
 		}
 	}
@@ -317,6 +314,17 @@ func (l *Learner) newSignals(snap *filing.Snapshot, now time.Time) ([]sqlite.Lea
 		}
 	}
 	return used, sections, len(counts), nil
+}
+
+// DistinctPeople counts the Slack user IDs behind signals; a signal without one counts for nobody.
+func DistinctPeople(signals []sqlite.LearningSignal) int {
+	seen := map[string]bool{}
+	for _, s := range signals {
+		if s.Person != "" {
+			seen[s.Person] = true
+		}
+	}
+	return len(seen)
 }
 
 // replayItems are the recent person-decided Work Items filed in an active Section.

@@ -38,6 +38,11 @@ func liveReportLink(cfg Config) string {
 	return fmt.Sprintf("<%s/|Open the live report>", strings.TrimRight(cfg.WebBaseURL, "/"))
 }
 
+// esc makes untrusted text inert in mrkdwn, where Slack reads <...> as mentions and links.
+func esc(s string) string { return mrkdwnEscaper.Replace(s) }
+
+var mrkdwnEscaper = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;")
+
 func mdSection(text string) slack.Block {
 	return slack.NewSectionBlock(slack.NewTextBlockObject(slack.MarkdownType, text, false, false), nil, nil)
 }
@@ -61,8 +66,8 @@ func FiledBlocks(cfg Config, r filing.Result) (string, []slack.Block) {
 		text = "Saved, but filing failed (model unreachable). It is in Undetermined and will be retried automatically."
 		blocks = append(blocks, mdSection(text+"\n"+quote))
 	case r.Section != nil:
-		blocks = append(blocks, mdSection(fmt.Sprintf("Filed under *%s*\n%s", r.Section.Label(), quote)))
-		text = fmt.Sprintf("Filed under *%s*: %s", r.Section.Label(), report.ItemText(r.Item))
+		blocks = append(blocks, mdSection(fmt.Sprintf("Filed under *%s*\n%s", esc(r.Section.Label()), quote)))
+		text = fmt.Sprintf("Filed under *%s*: %s", esc(r.Section.Label()), esc(report.ItemText(r.Item)))
 		if parent := sectionParent(*r.Section); parent != "" {
 			blocks = append(blocks, contextLine(parent))
 		}
@@ -77,7 +82,7 @@ func FiledBlocks(cfg Config, r filing.Result) (string, []slack.Block) {
 		btns = append(btns, button(actionPlaceOther, strconv.FormatInt(r.Item.ID, 10), "Other…"))
 		stays := "It stays in Undetermined until someone picks."
 		if r.Kept != nil {
-			stays = fmt.Sprintf("It stays in %s until someone picks.", r.Kept.Path())
+			stays = fmt.Sprintf("It stays in %s until someone picks.", esc(r.Kept.Path()))
 		}
 		blocks = append(blocks, slack.NewActionBlock(fmt.Sprintf("place_%d", r.Item.ID), btns...), contextLine(stays))
 	}
@@ -104,15 +109,15 @@ func FiledBlocks(cfg Config, r filing.Result) (string, []slack.Block) {
 
 // itemQuote renders a Work Item as a quote: its report text, then its status and note in italics.
 func itemQuote(item WorkItem, withAuthor bool) string {
-	desc := report.ItemText(item)
+	desc := esc(report.ItemText(item))
 	if name := report.SynthesizeName(item.Author); withAuthor && name != "" {
-		desc = "*" + name + "* - " + desc
+		desc = "*" + esc(name) + "* - " + desc
 	}
 	var meta []string
 	if item.Status != "" {
 		status := item.Status
 		if item.StatusNote != "" {
-			status += fmt.Sprintf(" (%s)", item.StatusNote)
+			status += fmt.Sprintf(" (%s)", esc(item.StatusNote))
 		}
 		meta = append(meta, status)
 	}
@@ -122,9 +127,9 @@ func itemQuote(item WorkItem, withAuthor bool) string {
 	return "> " + desc + "\n> _" + strings.Join(meta, " · ") + "_"
 }
 
-// sectionParent is the Section's path without its own name, shown under the bold name.
+// sectionParent is the Section's path without its own name, shown under the bold name (escaped).
 func sectionParent(s domain.Section) string {
-	return strings.TrimSuffix(strings.TrimSuffix(s.Path(), s.Label()), domain.PathSeparator)
+	return esc(strings.TrimSuffix(strings.TrimSuffix(s.Path(), s.Label()), domain.PathSeparator))
 }
 
 func contextLine(md string) slack.Block {
@@ -158,7 +163,7 @@ func (n *Notifier) codeChangeFiled(r filing.Result) {
 		return
 	}
 	if r.Link != nil {
-		text := fmt.Sprintf("Your merge request %q looks like part of:\n%s\nIs this part of it?", cc.Title, slackLine(r.Link.Item))
+		text := fmt.Sprintf("Your merge request %q looks like part of:\n%s\nIs this part of it?", esc(cc.Title), slackLine(r.Link.Item))
 		// Separate carries the Section choices, so an unsure Placement still gets its buttons.
 		separate := strconv.FormatInt(cc.ID, 10)
 		if r.Section == nil {
@@ -175,7 +180,7 @@ func (n *Notifier) codeChangeFiled(r filing.Result) {
 	}
 	if r.Section == nil {
 		text, blocks := FiledBlocks(n.Cfg, r)
-		head := fmt.Sprintf("Your merge request <%s|%s>:", cc.SourceRef, cc.Title)
+		head := fmt.Sprintf("Your merge request <%s|%s>:", cc.SourceRef, esc(cc.Title))
 		dm(n.API, r.Item.AuthorID, head+"\n"+text, append([]slack.Block{mdSection(head)}, blocks...))
 	}
 }
@@ -196,7 +201,7 @@ func ownCodeChange(db *sql.DB, itemID int64) (domain.CodeChange, error) {
 // PlacementOverridden implements filing.Notifier: a re-classification moved a person's choice.
 func (n *Notifier) PlacementOverridden(item domain.WorkItem, eventID int64, from, to domain.Section) {
 	text := fmt.Sprintf("After a report structure change, your Work Item moved:\n%s\n%s → %s",
-		slackLine(item), from.Label(), to.Label())
+		slackLine(item), esc(from.Label()), esc(to.Label()))
 	dm(n.API, item.AuthorID, text, []slack.Block{mdSection(text),
 		slack.NewActionBlock(fmt.Sprintf("undo_%d", eventID), button(actionPlacementUndo, strconv.FormatInt(eventID, 10), "Undo"))})
 }
@@ -275,7 +280,7 @@ func canActOn(cfg Config, userID string, item WorkItem) bool {
 
 // slackLine is the report line in Slack's mrkdwn, where bold is a single asterisk.
 func slackLine(item WorkItem) string {
-	return strings.Replace(report.FormatTeamItem(item), "**", "*", 2)
+	return esc(strings.Replace(report.FormatTeamItem(item), "**", "*", 2))
 }
 
 // handlePlacePick files an item where the person chose ("Where does this go?").
@@ -307,7 +312,7 @@ func handlePlacePick(api *slack.Client, db *sql.DB, cfg Config, cb slack.Interac
 		log.Printf("place pick error item=%d: %v", itemID, err)
 		return
 	}
-	replyToAction(api, cb, fmt.Sprintf("Filed under *%s*\n%s", sec.Path(), slackLine(item)))
+	replyToAction(api, cb, fmt.Sprintf("Filed under *%s*\n%s", esc(sec.Path()), slackLine(item)))
 }
 
 // handleUpdateConfirm applies an Update: the existing item takes the new report's text and Status.
@@ -382,7 +387,7 @@ func handleLinkConfirm(api *slack.Client, db *sql.DB, cfg Config, cb slack.Inter
 			_ = SetWorkItemStatus(db, target, domain.StatusInTesting)
 		}
 	}
-	replyToAction(api, cb, fmt.Sprintf("Linked %q to the existing Work Item.", cc.Title))
+	replyToAction(api, cb, fmt.Sprintf("Linked %q to the existing Work Item.", esc(cc.Title)))
 }
 
 func handleLinkReject(api *slack.Client, db *sql.DB, cfg Config, cb slack.InteractionCallback, value string) {
@@ -410,13 +415,13 @@ func handleLinkReject(api *slack.Client, db *sql.DB, cfg Config, cb slack.Intera
 				}
 			}
 			text, blocks := FiledBlocks(cfg, r)
-			text = fmt.Sprintf("Kept %q as its own Work Item.\n", cc.Title) + text
-			blocks = append([]slack.Block{mdSection(fmt.Sprintf("Kept %q as its own Work Item.", cc.Title))}, blocks...)
+			text = fmt.Sprintf("Kept %q as its own Work Item.\n", esc(cc.Title)) + text
+			blocks = append([]slack.Block{mdSection(fmt.Sprintf("Kept %q as its own Work Item.", esc(cc.Title)))}, blocks...)
 			respond(api, cb.ResponseURL, actionChannel(cb), cb.User.ID, true, text, blocks)
 			return
 		}
 	}
-	replyToAction(api, cb, fmt.Sprintf("Kept %q as its own Work Item.", cc.Title))
+	replyToAction(api, cb, fmt.Sprintf("Kept %q as its own Work Item.", esc(cc.Title)))
 }
 
 // handlePlacementUndo restores the Placement a re-classification replaced.

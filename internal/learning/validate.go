@@ -7,6 +7,7 @@ import (
 	"unicode"
 
 	"reportbot/internal/domain"
+	"reportbot/internal/integrations/llm"
 )
 
 // Learned Notes reach the decision model's criteria, so a draft must be plain, inert text.
@@ -21,15 +22,17 @@ var (
 	sectionRefRe = regexp.MustCompile(`(?i:those are|that is|these are|goes? (?:to|in|under)|belongs? (?:to|in|under)|filed? (?:to|in|under)|see)\s+(?i:the\s+)?([A-Z0-9][\w./&+-]*(?:\s+[A-Z0-9][\w./&+-]*)*)`)
 )
 
-// ValidateNote rejects a drafted note unless it is plain text within the cap, does not address
-// the model, names only existing Sections (knownNames) and names none of authors.
-func ValidateNote(note string, knownNames, authors []string) error {
-	n := strings.TrimSpace(note)
+// Structure Proposal limits.
+const (
+	maxProposalName   = 60
+	maxProposalReason = 500
+)
+
+// plainText rejects text that is too long or could carry links, mentions, markup or control characters.
+func plainText(n string, max int) error {
 	switch {
-	case n == "":
-		return fmt.Errorf("empty")
-	case len([]rune(n)) > domain.MaxLearnedNotes:
-		return fmt.Errorf("longer than %d characters", domain.MaxLearnedNotes)
+	case len([]rune(n)) > max:
+		return fmt.Errorf("longer than %d characters", max)
 	case urlRe.MatchString(n):
 		return fmt.Errorf("contains a URL")
 	case slackMentionRe.MatchString(n):
@@ -46,6 +49,30 @@ func ValidateNote(note string, knownNames, authors []string) error {
 			return fmt.Errorf("contains a control character")
 		}
 	}
+	return nil
+}
+
+func namesAuthor(n string, authors []string) bool {
+	for _, a := range authors {
+		for _, tok := range strings.FieldsFunc(a, func(r rune) bool { return !unicode.IsLetter(r) && r != '-' && r != '\'' }) {
+			if len([]rune(tok)) >= 3 && regexp.MustCompile(`\b`+regexp.QuoteMeta(tok)+`\b`).MatchString(n) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// ValidateNote rejects a drafted note unless it is plain text within the cap, does not address
+// the model, names only existing Sections (knownNames) and names none of authors.
+func ValidateNote(note string, knownNames, authors []string) error {
+	n := strings.TrimSpace(note)
+	if n == "" {
+		return fmt.Errorf("empty")
+	}
+	if err := plainText(n, domain.MaxLearnedNotes); err != nil {
+		return err
+	}
 	lower := strings.ToLower(n)
 	for _, p := range addressesModel {
 		if strings.Contains(lower, p) {
@@ -57,11 +84,64 @@ func ValidateNote(note string, knownNames, authors []string) error {
 			return fmt.Errorf("names a Section that does not exist (%q)", m[1])
 		}
 	}
-	for _, a := range authors {
-		for _, tok := range strings.FieldsFunc(a, func(r rune) bool { return !unicode.IsLetter(r) && r != '-' && r != '\'' }) {
-			if len([]rune(tok)) >= 3 && regexp.MustCompile(`\b`+regexp.QuoteMeta(tok)+`\b`).MatchString(n) {
-				return fmt.Errorf("names a person")
+	if namesAuthor(n, authors) {
+		return fmt.Errorf("names a person")
+	}
+	return nil
+}
+
+// ValidateProposal checks a Structure Proposal before it is stored or shown: plain short names,
+// descriptions held to the Learned Notes rules, a plain reason, and an existing parent for a new Section.
+func ValidateProposal(p llm.StructureProposal, knownNames []string, parents map[int64]bool, authors []string) error {
+	name := func(n string) error {
+		if strings.TrimSpace(n) == "" {
+			return fmt.Errorf("empty name")
+		}
+		if err := plainText(n, maxProposalName); err != nil {
+			return fmt.Errorf("name %w", err)
+		}
+		if namesAuthor(n, authors) {
+			return fmt.Errorf("name names a person")
+		}
+		return nil
+	}
+	desc := func(d string, extra []string) error {
+		if strings.TrimSpace(d) == "" {
+			return nil
+		}
+		if err := ValidateNote(d, append(append([]string{}, knownNames...), extra...), authors); err != nil {
+			return fmt.Errorf("description %w", err)
+		}
+		return nil
+	}
+	switch p.Kind {
+	case llm.ProposeNew:
+		if !parents[p.ParentID] {
+			return fmt.Errorf("the parent does not exist")
+		}
+		if err := name(p.Name); err != nil {
+			return err
+		}
+		if err := desc(p.Description, []string{p.Name}); err != nil {
+			return err
+		}
+	case llm.ProposeSplit:
+		var names []string
+		for _, part := range p.NewSections {
+			names = append(names, part.Name)
+		}
+		for _, part := range p.NewSections {
+			if err := name(part.Name); err != nil {
+				return err
 			}
+			if err := desc(part.Description, names); err != nil {
+				return err
+			}
+		}
+	}
+	if r := strings.TrimSpace(p.Reason); r != "" {
+		if err := plainText(r, maxProposalReason); err != nil {
+			return fmt.Errorf("reason %w", err)
 		}
 	}
 	return nil

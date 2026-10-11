@@ -372,6 +372,24 @@ func TestProposeStructureStoresAndNotifies(t *testing.T) {
 	}
 }
 
+func TestProposeStructureDropsInvalidProposals(t *testing.T) {
+	e := newEnv(t)
+	ids := e.seedUnplaced(t, 5)
+	eng := e.category(t, "Engineering")
+	e.llmText = func(string) string {
+		return fmt.Sprintf(`[{"kind":"new","parent_id":%d,"name":"<!channel> Telemetry","description":"d","item_ids":%s}]`, eng, idsJSON(ids))
+	}
+	got, err := e.l.ProposeStructure(context.Background())
+	if err != nil || len(got) != 0 || len(e.rec.proposals) != 0 {
+		t.Fatalf("an invalid proposal is dropped, not stored or sent: %+v %v", got, err)
+	}
+	var n int
+	e.db.QueryRow(`SELECT COUNT(*) FROM structure_proposals`).Scan(&n)
+	if n != 0 {
+		t.Fatal("nothing stored")
+	}
+}
+
 func idsJSON(ids []int64) string {
 	b, _ := json.Marshal(ids)
 	return string(b)

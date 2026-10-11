@@ -84,10 +84,10 @@ func retrospectBlocks(rep learning.RunNowReport, tax domain.Taxonomy) (string, [
 	case n.Decision == sqlite.RunDiscarded:
 		notes = "*Learned notes discarded:* " + n.Reason
 		for _, c := range n.Candidates {
-			notes += fmt.Sprintf("\n• %s: _%s_", c.Section.Label(), c.New)
+			notes += fmt.Sprintf("\n• %s: _%s_", esc(c.Section.Label()), esc(c.New))
 		}
 		for _, c := range n.Invalid {
-			notes += fmt.Sprintf("\n• %s: _%s_ (invalid: %s)", c.Section.Label(), c.Notes, c.Reason)
+			notes += fmt.Sprintf("\n• %s: rejected: %s", esc(c.Section.Label()), esc(c.Reason))
 		}
 	default:
 		notes = fmt.Sprintf("*Learned notes:* nothing to learn (%s).", n.Reason)
@@ -119,7 +119,7 @@ func undoBlocks(r learning.NotesReport) []slack.Block {
 			continue
 		}
 		out = append(out, slack.NewSectionBlock(
-			slack.NewTextBlockObject(slack.MarkdownType, fmt.Sprintf("*%s*: _%s_", c.Section.Label(), c.New), false, false), nil,
+			slack.NewTextBlockObject(slack.MarkdownType, fmt.Sprintf("*%s*: _%s_", esc(c.Section.Label()), esc(c.New)), false, false), nil,
 			slack.NewAccessory(button(actionNotesUndo, strconv.FormatInt(c.HistoryID, 10), "Undo"))))
 	}
 	return out
@@ -129,7 +129,7 @@ func undoBlocks(r learning.NotesReport) []slack.Block {
 func NotesDigest(r learning.NotesReport) (string, []slack.Block) {
 	labels := make([]string, 0, len(r.Candidates))
 	for _, c := range r.Candidates {
-		labels = append(labels, c.Section.Label())
+		labels = append(labels, esc(c.Section.Label()))
 	}
 	text := fmt.Sprintf("Learned notes updated: %s (%s)", strings.Join(labels, ", "), gainText(r.Gate))
 	blocks := append([]slack.Block{mdSection(text)}, undoBlocks(r)...)
@@ -148,29 +148,29 @@ func proposalText(tax domain.Taxonomy, p learning.StoredProposal) string {
 				parent = a.Name + domain.PathSeparator + n.Name
 			}
 		}
-		s = fmt.Sprintf("*New Section* “%s” under %s", p.Name, parent)
+		s = fmt.Sprintf("*New Section* “%s” under %s", esc(p.Name), esc(parent))
 		if p.Description != "" {
-			s += " — " + p.Description
+			s += " — " + esc(p.Description)
 		}
 		s += fmt.Sprintf(". %d Work Items look like it.", p.Affected)
 	case "split":
 		names := make([]string, len(p.NewSections))
 		for i, ns := range p.NewSections {
-			names[i] = "“" + ns.Name + "”"
+			names[i] = "“" + esc(ns.Name) + "”"
 		}
 		s = fmt.Sprintf("*Split* %s into %s. %d Open Work Items would be re-filed.", sectionName(tax, p.SectionID), strings.Join(names, ", "), p.Affected)
 	case "retire":
 		s = fmt.Sprintf("*Retire* %s: no new Work Items for 8 weeks and none open.", sectionName(tax, p.SectionID))
 	}
 	if p.Reason != "" {
-		s += "\n_" + p.Reason + "_"
+		s += "\n_" + esc(p.Reason) + "_"
 	}
 	return s
 }
 
 func sectionName(tax domain.Taxonomy, id int64) string {
 	if s, ok := tax.SectionAny(id); ok {
-		return s.Path()
+		return esc(s.Path())
 	}
 	return fmt.Sprintf("Section %d", id)
 }
@@ -199,11 +199,13 @@ func handleNotesUndo(api *slack.Client, cfg Config, cb slack.InteractionCallback
 	sec, err := loops.UndoNotes(id, cb.User.ID)
 	switch {
 	case errors.Is(err, sqlite.ErrNothingToUndo):
-		replyToAction(api, cb, "Nothing to undo: these learned notes were already undone or have changed since.")
+		replyToAction(api, cb, "Nothing to undo: these learned notes were already undone.")
+	case errors.Is(err, sqlite.ErrNotesChanged):
+		replyToAction(api, cb, "The learned notes changed since; nothing to undo.")
 	case err != nil:
 		replyToAction(api, cb, fmt.Sprintf("Undo failed: %v", err))
 	default:
-		replyToAction(api, cb, fmt.Sprintf("Undone: the learned notes of *%s* are back to what they were.", sec.Label()))
+		replyToAction(api, cb, fmt.Sprintf("Undone: the learned notes of *%s* are back to what they were.", esc(sec.Label())))
 	}
 }
 
@@ -272,7 +274,7 @@ func (n *LearningNotifier) ProposalsReady(ps []learning.StoredProposal) {
 
 // AssistantFiled tells the reporter where the assistant filed their unsure Work Item.
 func (n *LearningNotifier) AssistantFiled(item domain.WorkItem, s domain.Section) {
-	head := fmt.Sprintf("Filed under *%s* by the assistant", s.Label())
+	head := fmt.Sprintf("Filed under *%s* by the assistant", esc(s.Label()))
 	blocks := []slack.Block{
 		slack.NewSectionBlock(slack.NewTextBlockObject(slack.MarkdownType, head+"\n"+itemQuote(item, false), false, false), nil,
 			slack.NewAccessory(button(actionPlaceOther, strconv.FormatInt(item.ID, 10), "Change"))),
@@ -335,7 +337,7 @@ func formatStats(st WeekStats, tax domain.Taxonomy, monday, nextMonday time.Time
 		for _, r := range rows {
 			name := fmt.Sprintf("Section %d", r.id)
 			if s, ok := tax.SectionAny(r.id); ok {
-				name = s.Path()
+				name = esc(s.Path())
 			}
 			fmt.Fprintf(&b, "- %s: %d\n", name, r.n)
 		}

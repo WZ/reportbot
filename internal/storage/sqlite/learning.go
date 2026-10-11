@@ -85,7 +85,7 @@ type LearningSignal struct {
 	ModelSection  int64
 	ChosenSection int64
 	OutsideTop3   bool // the chosen Section was not among the model's three most likely
-	Person        string // who decided: the actor, else the Work Item's author
+	Person        string // Slack user ID of who decided (correction actor, mis-ranked reporter); "" when unknown
 	Author        string // the Work Item's author name
 	CreatedAt     time.Time
 }
@@ -94,7 +94,7 @@ type LearningSignal struct {
 func GetLearningSignals(db *sql.DB, since time.Time) ([]LearningSignal, error) {
 	rows, err := db.Query(
 		`SELECT h.id, h.work_item_id, w.description, h.from_section, h.from_placed_by, h.to_section, h.model_section, h.created_at,
-		    COALESCE(NULLIF(h.actor_id, ''), NULLIF(w.author_id, ''), w.author), w.author,
+		    h.actor_id, COALESCE(w.author_id, ''), w.author,
 		    COALESCE((SELECT j.answer_json FROM model_judgments j WHERE j.work_item_id = h.work_item_id AND j.kind = 'section_choice'
 		              AND julianday(j.created_at) <= julianday(h.created_at) ORDER BY j.id DESC LIMIT 1), '')
 		 FROM placement_history h JOIN work_items w ON w.id = h.work_item_id
@@ -109,15 +109,15 @@ func GetLearningSignals(db *sql.DB, since time.Time) ([]LearningSignal, error) {
 	for rows.Next() {
 		var s LearningSignal
 		var from, model sql.NullInt64
-		var fromBy, answer string
-		if err := rows.Scan(&s.EventID, &s.WorkItemID, &s.Description, &from, &fromBy, &s.ChosenSection, &model, &s.CreatedAt, &s.Person, &s.Author, &answer); err != nil {
+		var fromBy, answer, actorID, authorID string
+		if err := rows.Scan(&s.EventID, &s.WorkItemID, &s.Description, &from, &fromBy, &s.ChosenSection, &model, &s.CreatedAt, &actorID, &authorID, &s.Author, &answer); err != nil {
 			return nil, err
 		}
 		switch {
 		case from.Valid && fromBy == domain.PlacedByModel && from.Int64 != s.ChosenSection:
-			s.Kind, s.ModelSection = SignalCorrection, from.Int64
+			s.Kind, s.ModelSection, s.Person = SignalCorrection, from.Int64, actorID
 		case !from.Valid && model.Valid && model.Int64 != s.ChosenSection:
-			s.Kind, s.ModelSection = SignalMisranked, model.Int64
+			s.Kind, s.ModelSection, s.Person = SignalMisranked, model.Int64, authorID
 			s.OutsideTop3 = !inTop3(answer, s.ChosenSection)
 		default:
 			continue
@@ -252,7 +252,11 @@ const (
 	NotesEdited  = "edited"
 )
 
-var ErrNothingToUndo = errors.New("nothing to undo")
+var (
+	ErrNothingToUndo = errors.New("nothing to undo")
+	// ErrNotesChanged: an old Undo must never overwrite later edits or runs.
+	ErrNotesChanged = errors.New("the learned notes changed since; nothing to undo")
+)
 
 func insertNoteHistory(q querier, sectionID, runID int64, oldNotes, newNotes, action, actor string) (int64, error) {
 	res, err := q.Exec(
@@ -331,7 +335,7 @@ func UndoLearnedNotes(db *sql.DB, historyID int64, actorID string) (NoteHistory,
 		return h, err
 	}
 	if n, _ := res.RowsAffected(); n != 1 {
-		return h, ErrNothingToUndo
+		return h, ErrNotesChanged
 	}
 	if _, err := tx.Exec(`UPDATE learned_notes_history SET undone_at = ? WHERE id = ?`, time.Now(), h.ID); err != nil {
 		return h, err

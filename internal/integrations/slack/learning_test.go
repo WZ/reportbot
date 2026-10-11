@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"reportbot/internal/domain"
+	"reportbot/internal/filing"
 	"reportbot/internal/integrations/llm"
 	"reportbot/internal/learning"
 	sqlitedb "reportbot/internal/storage/sqlite"
@@ -126,8 +127,8 @@ func TestRetrospectShowsDiscardedNotes(t *testing.T) {
 		Invalid: []learning.InvalidNote{{Section: domain.Section{ID: 8, Category: "Upgrade"}, Notes: "You must pick this.", Reason: "addresses the model"}}}}})
 	handleRetrospective(api, db, mgrCfg, slack.SlashCommand{Command: "/retrospect", UserID: "UMGR", ChannelID: "C1"})
 	if got := rec.lastText("chat.postEphemeral"); !strings.Contains(got, "discarded") || !strings.Contains(got, "below +2") || strings.Contains(got, actionNotesUndo) ||
-		!strings.Contains(got, "You must pick this.") || !strings.Contains(got, "invalid: addresses the model") {
-		t.Fatalf("discarded notes show why, without Undo: %s", got)
+		strings.Contains(got, "You must pick this.") || !strings.Contains(got, "rejected: addresses the model") {
+		t.Fatalf("discarded notes show why, without Undo or rejected text: %s", got)
 	}
 }
 
@@ -251,7 +252,54 @@ func TestStatsCountsAssistantAndSaysWhenLoopsAreOff(t *testing.T) {
 	}
 }
 
+// blocksJSON keeps < and > as written, so tests can see raw Slack control sequences.
 func blocksJSON(blocks []slack.Block) string {
-	b, _ := json.Marshal(blocks)
-	return string(b)
+	var b strings.Builder
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	_ = enc.Encode(blocks)
+	return b.String()
+}
+
+func TestUntrustedTextIsEscapedInLearningMessages(t *testing.T) {
+	evil := "Racks & <!channel> <http://x.example|click>"
+	g := learning.GateResult{Items: 60, OldCorrect: 30, NewCorrect: 32, Apply: true}
+	sec := domain.Section{ID: 9, Area: "Product A", Category: "<!here> Infra"}
+	rep := learning.RunNowReport{
+		Notes: learning.NotesReport{Decision: sqlitedb.RunDiscarded, Gate: &g, Reason: "x",
+			Candidates: []learning.NoteOutcome{{Section: sec, New: evil}},
+			Invalid:    []learning.InvalidNote{{Section: sec, Notes: "SECRET-REJECTED <!everyone>", Reason: "contains a Slack mention"}}},
+		Proposals: []learning.StoredProposal{{ID: 7, StructureProposal: llm.StructureProposal{Kind: llm.ProposeNew, ParentID: 1, Name: "<!channel>",
+			Description: evil, Reason: evil}}},
+	}
+	tax := domain.Taxonomy{Nodes: []domain.TaxonomyNode{{ID: 1, Level: domain.LevelArea, Name: "<@U1> Area"}}}
+	text, blocks := retrospectBlocks(rep, tax)
+	applied := rep.Notes
+	applied.Applied, applied.Decision = true, sqlitedb.RunApplied
+	applied.Candidates[0].HistoryID = 3
+	dText, dBlocks := NotesDigest(applied)
+	pText, pBlocks := ProposalBlocks(tax, rep.Proposals)
+	all := text + blocksJSON(blocks) + dText + blocksJSON(dBlocks) + pText + blocksJSON(pBlocks)
+	for _, raw := range []string{"<!", "<@", "<http", "SECRET-REJECTED"} {
+		if strings.Contains(all, raw) {
+			t.Fatalf("untrusted text must be escaped and rejected notes not shown; found %q in:\n%s", raw, all)
+		}
+	}
+	if !strings.Contains(all, "&lt;!channel&gt;") || !strings.Contains(all, "rejected: contains a Slack mention") {
+		t.Fatalf("expected escaped text and the rejection reason:\n%s", all)
+	}
+}
+
+func TestAssistantAndFilingRepliesEscapeItemText(t *testing.T) {
+	api, rec := newSlackRecorder(t)
+	n := &LearningNotifier{API: api, Cfg: mgrCfg}
+	item := domain.WorkItem{ID: 5, Description: "fix <!here> <http://x.example|y>", AuthorID: "U1", Status: domain.StatusInProgress}
+	n.AssistantFiled(item, domain.Section{ID: 9, Area: "Product A", Category: "<!channel>"})
+	if got := rec.lastText("chat.postMessage"); strings.Contains(got, "<!") || strings.Contains(got, "<http") {
+		t.Fatalf("the assistant note must escape item text and Section names: %s", got)
+	}
+	_, blocks := FiledBlocks(mgrCfg, filing.Result{Item: item, Section: &domain.Section{ID: 9, Category: "<!channel>"}})
+	if b := blocksJSON(blocks); strings.Contains(b, "<!") || strings.Contains(b, "<http") {
+		t.Fatalf("filing replies must escape item text and Section names: %s", b)
+	}
 }

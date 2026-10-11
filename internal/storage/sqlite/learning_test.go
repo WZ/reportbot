@@ -89,6 +89,39 @@ func TestLearningSignalsCorrectionsAndMisrankedPicks(t *testing.T) {
 	}
 }
 
+// People are counted only by Slack user ID: a free-text author name never identifies a person.
+func TestLearningSignalPeopleAreSlackIDsOnly(t *testing.T) {
+	db := newTestDB(t)
+	ids := seedSmallTaxonomy(t, db)
+	a, b := ids[SeedKey("Product A", "Release", "7.6.3")], ids[SeedKey("Product A", "Release", "7.4.7")]
+	now := time.Now()
+	misrank := func(author, authorID string) {
+		id, err := InsertWorkItem(db, WorkItem{Description: "x", Author: author, AuthorID: authorID, Source: "slack",
+			Status: domain.StatusInProgress, ReportedAt: now, FilingState: domain.FilingPending})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := ApplyFiling(db, id, FilingOutcome{Placement: Placement{PlacedBy: domain.PlacedByModel, ModelSectionID: a,
+			FilingState: domain.FilingAsking, HistoryNote: ReasonArrival}}); err != nil {
+			t.Fatal(err)
+		}
+		if err := SetPlacement(db, id, Placement{SectionID: b, PlacedBy: domain.PlacedByPerson, HistoryNote: ReasonButton, ActorID: "UMGR"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	misrank("Name One", "")
+	misrank("Name Two", "")
+	sigs, _ := GetLearningSignals(db, now.Add(-time.Hour))
+	if len(sigs) != 2 || sigs[0].Person != "" || sigs[1].Person != "" {
+		t.Fatalf("signals without a Slack ID still count, with no person: %+v", sigs)
+	}
+	misrank("Name Three", "U5")
+	sigs, _ = GetLearningSignals(db, now.Add(-time.Hour))
+	if sigs[2].Person != "U5" {
+		t.Fatalf("a mis-ranked pick belongs to the Work Item's author ID, got %q", sigs[2].Person)
+	}
+}
+
 func TestPersonDecidedItemsForReplay(t *testing.T) {
 	db := newTestDB(t)
 	ids := seedSmallTaxonomy(t, db)
@@ -155,7 +188,23 @@ func TestLearnedNotesApplyAndUndo(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := UndoLearnedNotes(db, hist[0], "U9"); err != ErrNothingToUndo {
-		t.Fatalf("undo after a manager edit must be refused, got %v", err)
+		t.Fatalf("an undone change cannot be undone again after a manager edit, got %v", err)
+	}
+
+	// An old Undo never overwrites a later run's notes.
+	run2, _ := InsertLearningRun(db, LearningRun{Trigger: "nightly", StartedAt: time.Now(), Decision: RunApplied})
+	first, err := ApplyLearnedNotes(db, run2, []NoteChange{{SectionID: a, Old: "Edited by a manager.", New: "First."}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ApplyLearnedNotes(db, run2, []NoteChange{{SectionID: a, Old: "First.", New: "Second."}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := UndoLearnedNotes(db, first[0], "U9"); err != ErrNotesChanged || err.Error() != "the learned notes changed since; nothing to undo" {
+		t.Fatalf("an Undo of superseded notes must be refused, got %v", err)
+	}
+	if tax, _ := LoadTaxonomy(db); func() string { s, _ := tax.Section(a); return s.LearnedNotes }() != "Second." {
+		t.Fatal("the later notes must stay")
 	}
 	if err := SetLearnedNotes(db, a, string(make([]rune, domain.MaxLearnedNotes+1)), "U2"); err == nil {
 		t.Fatal("notes over the cap must be rejected")

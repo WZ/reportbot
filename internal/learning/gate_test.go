@@ -3,6 +3,8 @@ package learning
 import (
 	"strings"
 	"testing"
+
+	"reportbot/internal/storage/sqlite"
 )
 
 // results makes n replay results for truth Section sec, the first correct ones right.
@@ -67,5 +69,20 @@ func TestGatePairsByWorkItem(t *testing.T) {
 	cand = append(cand, ReplayResult{ItemID: 5000, Truth: 1, Pick: 1}) // no old answer: not compared
 	if g := Gate(old, cand); g.Items != 70 {
 		t.Fatalf("only Work Items replayed both ways count: %+v", g)
+	}
+}
+
+func TestDistinctPeopleCountsSlackIDsOnly(t *testing.T) {
+	sig := func(person, author string) sqlite.LearningSignal {
+		return sqlite.LearningSignal{Person: person, Author: author}
+	}
+	if n := DistinctPeople([]sqlite.LearningSignal{sig("", "Name One"), sig("", "Name Two")}); n != 0 {
+		t.Fatalf("names without IDs are no people, got %d", n)
+	}
+	if n := DistinctPeople([]sqlite.LearningSignal{sig("U1", "A"), sig("U1", "B"), sig("U1", "C")}); n != 1 {
+		t.Fatalf("one ID is one person, got %d", n)
+	}
+	if n := DistinctPeople([]sqlite.LearningSignal{sig("U1", "A"), sig("U2", "A"), sig("", "Z")}); n != 2 {
+		t.Fatalf("two IDs are two people, got %d", n)
 	}
 }

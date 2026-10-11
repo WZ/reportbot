@@ -3,6 +3,8 @@ package learning
 import (
 	"strings"
 	"testing"
+
+	"reportbot/internal/integrations/llm"
 )
 
 var knownNames = []string{"Product A", "Engineering", "Cluster Manager", "Upgrade", "Infrastructure"}
@@ -46,6 +48,30 @@ func TestValidateNoteRejects(t *testing.T) {
 	for name, n := range cases {
 		if err := ValidateNote(n, knownNames, []string{"Dev Alpha"}); err == nil {
 			t.Errorf("%s: %q must be rejected", name, n)
+		}
+	}
+}
+
+func TestValidateProposal(t *testing.T) {
+	parents := map[int64]bool{3: true}
+	ok := llm.StructureProposal{Kind: llm.ProposeNew, ParentID: 3, Name: "Telemetry", Description: "Metrics export and dashboards.", Reason: "Recurring theme."}
+	if err := ValidateProposal(ok, knownNames, parents, nil); err != nil {
+		t.Fatalf("a plain proposal is valid: %v", err)
+	}
+	bad := map[string]llm.StructureProposal{
+		"long name":       {Kind: llm.ProposeNew, ParentID: 3, Name: strings.Repeat("x", 61)},
+		"mention in name": {Kind: llm.ProposeNew, ParentID: 3, Name: "<!channel> Telemetry"},
+		"url in desc":     {Kind: llm.ProposeNew, ParentID: 3, Name: "Telemetry", Description: "See <http://x.example|here>."},
+		"addressing desc": {Kind: llm.ProposeNew, ParentID: 3, Name: "Telemetry", Description: "You must file metrics here."},
+		"unknown parent":  {Kind: llm.ProposeNew, ParentID: 99, Name: "Telemetry"},
+		"split part name": {Kind: llm.ProposeSplit, SectionID: 14, NewSections: []llm.SplitPart{{Name: "Join"}, {Name: "<@U1> Evict"}}},
+		"mention reason":  {Kind: llm.ProposeRetire, SectionID: 30, Reason: "Ask <!here>."},
+		"control in name": {Kind: llm.ProposeNew, ParentID: 3, Name: "Tele\x07metry"},
+		"author in desc":  {Kind: llm.ProposeNew, ParentID: 3, Name: "Telemetry", Description: "Work Alpha does."},
+	}
+	for name, p := range bad {
+		if err := ValidateProposal(p, knownNames, parents, []string{"Dev Alpha"}); err == nil {
+			t.Errorf("%s: must be rejected", name)
 		}
 	}
 }
