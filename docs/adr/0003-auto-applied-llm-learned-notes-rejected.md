@@ -18,10 +18,10 @@ The cost was real: LLM-written text in the decision model's criteria, a prompt f
 
 - An unsure Work Item that nobody placed within 24 hours, or that is still Undetermined at publish, is filed under the decision model's most likely Section from its stored answer (**Fallback Placement**). No model is called, and the reporter can change it.
 - The LLM is used only for **Structure Proposals** (new, split or retired Sections), which a manager approves.
-- Every Work Item edit, delete and Update is recorded, and a Friday **Draft Snapshot** is kept beside the Published Report. Together they show what people change by hand: the signal a future LLM editor would be trained and evaluated on.
+- Every Work Item edit, delete and Update is recorded, and a Friday **Draft Snapshot** is kept beside the Published Report. Together they show what people change by hand.
 
 ## Consequences
 
 - Publishing calls no model.
 - The confidence threshold stays a fixed configuration value.
-- Migration 7 created a learned-notes column and tables (`learned_notes`, `learned_notes_history`, `learning_runs`, `replay_answers`). Migrations are additive, so they stay, unused.
+- No schema remains for learned notes: migration 7 had never run outside the development branch, so it was changed to create only the Structure Proposals table.

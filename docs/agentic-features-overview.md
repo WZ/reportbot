@@ -92,7 +92,7 @@ The first version classified everything in one batch at report time. Confidence 
 
 ### Feature 6: Fallback When Nobody Answers
 
-**What it does:** An unsure Work Item that nobody placed within 24 hours, or that is still Undetermined when the report is published, is filed under the decision model's most likely Section, read from its stored answer. The reporter gets "Filed under *X* automatically (no answer within a day)" with a Change button.
+**What it does:** An unsure Work Item that nobody placed within 24 hours, or that is still Undetermined when a manager confirms publishing, is filed under the decision model's most likely Section, read from its stored answer. The reporter gets "Filed under *X* automatically (no answer within a day)" with a Change button.
 
 **Why it matters:** Reports don't fill up with Undetermined items when people are busy, and no extra model call is made. An LLM second opinion was measured and chose no better than the decision model's own first choice (52% vs 53% on unsure items), so it was dropped (ADR 0003).
 
@@ -100,7 +100,7 @@ The first version classified everything in one batch at report time. Confidence 
 
 ### Feature 7: Structure Proposals (optional LLM)
 
-**What it does:** After each publish, and on `/retrospect`, the LLM proposes 0–3 Taxonomy changes: a new Section for a recurring theme among Undetermined and "Other…" Work Items, a split of a large Section with separate themes, or retiring a Section unused for 8 weeks. Managers get [Approve] [Reject] by DM. Approve applies the change once through the Taxonomy edit paths, which re-file Open Work Items. A rejected change is not proposed again for 8 weeks.
+**What it does:** After each publish, and on `/retrospect`, the LLM proposes 0–3 Taxonomy changes: a new Section for a recurring theme among Undetermined and "Other…" Work Items, a split of a large Section with separate themes, or retiring a Section unused for 8 weeks. Managers get [Approve] [Reject] by DM. Approve applies the change once through the Taxonomy edit paths, which re-file Open Work Items. A rejected change is not proposed again for 8 weeks, even reworded; an undecided one expires after 2 weeks, and a retirement is checked again when approved.
 
 **Why it matters:** The report's structure drifts as work changes. The LLM spots the drift, and a manager decides. LLM-written notes fed to the decision model were tried, measured at +0.9 points over 7 weeks (noise), and rejected (ADR 0003).
 
@@ -129,7 +129,7 @@ The first version classified everything in one batch at report time. Confidence 
 
 - The Slack reply never waits for a model
 - If the decision model is unreachable, the Work Item is Undetermined with a reason and retried; it is never lost
-- Publishing calls no model; it files unanswered unsure items by fallback, renders what is filed and warns about the rest
+- Publishing calls no model; it warns about Undetermined items, and only after the manager confirms files unanswered unsure ones by fallback
 
 ### Trust and Identity
 
@@ -229,6 +229,7 @@ Week 4:  /stats shows real auto-filed accuracy → threshold re-tuned from produ
 |------|-------|--------|
 | **Re-tune the threshold** from 2–3 weeks of `/stats` corrections | More items filed without a question | Low |
 | **Manager-written descriptions** for the most confused Sections | Fewer neighbouring-Section mistakes | Low |
-| **LLM editor trained on recorded edits** (edit history + Friday drafts vs Published Reports) | Fewer hand edits before publishing | High |
+| **Merge suggestions:** nightly, the LLM suggests merging related Work Item lines; the manager accepts or rejects them in the web editor. A pilot caught all of the manager's real merges. | Fewer duplicate lines on the report | Medium |
+| **Open-for-N-weeks badge:** computed, no LLM. | Long-running work stands out | Low |
 | **Faster decision-model serving** (batching on the gateway) | Faster bulk re-filing | Medium |
 | **Semantic embeddings** instead of TF-IDF for similar items | Better context for the decision model | Medium |

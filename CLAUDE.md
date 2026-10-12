@@ -58,13 +58,13 @@ cmd/internal layout; the executable is `cmd/reportbot`, core logic is under `int
 - **internal/config/config.go** — Config struct, YAML + env loading with validation, `IsManagerID()`
 - **internal/domain/models.go** — `WorkItem` (Status, Status Note, `DoneAt`, Placement fields), `CodeChange`, `PlacedItem`, Status order, filing states, `ReportWeekRange()`
 - **internal/domain/taxonomy.go** — `Taxonomy` tree (Area → Category → Section), fileable `Sections()`, `Section.Path()`
-- **internal/storage/sqlite/** — `db.go` versioned additive migrations (`schema_migrations`); `work_items.go` (week membership, status/done_at, Updates), `placements.go` (Placement + `placement_history`, `model_judgments`, corrections, fallback, `/stats`), `edits.go` (edit history, report drafts), `proposals.go` (Structure Proposals), `taxonomy.go`, `jobs.go` (durable filing queue), `code_changes.go`, `published.go`
+- **internal/storage/sqlite/** — `db.go` versioned additive migrations (`schema_migrations`); `work_items.go` (week membership, status/done_at, Updates), `placements.go` (Placement + `placement_history`, `model_judgments`, corrections, fallback, `/stats`), `edits.go` (edit history, Draft Snapshots), `proposals.go` (Structure Proposals), `taxonomy.go`, `jobs.go` (durable filing queue), `code_changes.go`, `published.go`
 - **internal/integrations/llm/** — optional LLM for Structure Proposals only: `proposals.go` prompt and parsing; `providers.go` `Complete()` over Anthropic SDK / OpenAI Responses API
-- **internal/learning/** — Structure Proposals: evidence (Undetermined and "Other…" Work Items, large and unused Sections), `validate.go` plain-text rules, 8-week rejection cooldown, Approve/Reject once through the Taxonomy edit paths
+- **internal/proposals/** — Structure Proposals: evidence (Undetermined Work Items, picks outside the model's top 3 including moved Fallback Placements, large and unused Sections), `validate.go` plain-text and no-names rules, 8-week cooldown (same key, or a new Section with mostly the same evidence), 2-week expiry, retire rechecked at approval, Approve/Reject once through the Taxonomy edit paths
 - **internal/similar/similar.go** — TF-IDF `Index` of placed Work Items, for the similar items the decision model sees and for Update candidates
 - **internal/integrations/decision/decision.go** — decision-model client: one request per Work Item, text-only instructions, retries on 429/5xx/529 with `Retry-After`, 8 in flight
 - **internal/filing/** — `filing.go` one filing pass (one decision-model request: Section Choice + Status/ticket/Update questions → Placement/Status/tickets/judgments → notify); `questions.go` exact request state and questions; `text.go` ticket rules; `worker.go` job workers, retries, sweep, re-filing after Taxonomy edits; `fallback.go` Fallback Placement
-- **internal/integrations/slack/** — `slack.go` Socket Mode bot and slash commands; `notify.go` filing replies, "Where does this go?", Update/Link/Undo/Done buttons, edit modal; `retro.go` `/retrospect` (Structure Proposals now), proposal DMs with Approve/Reject, and `/stats`; `slack_users.go` user resolution
+- **internal/integrations/slack/** — `slack.go` Socket Mode bot and slash commands; `notify.go` filing replies, "Where does this go?", Update/Link/Undo/Done buttons, edit modal; `retro.go` `/retrospect` (generates Structure Proposals on demand), proposal DMs with Approve/Reject, and `/stats`; `slack_users.go` user resolution
 - **internal/integrations/gitlab/**, **internal/integrations/github/** — MR/PR clients
 - **internal/fetch/auto_fetch.go** — records MRs/PRs as Code Changes (exact-ticket link, merge → in testing, own Work Item otherwise), cron scheduler
 - **internal/publish/publish.go** — live Weekly Report for a week; Published Report snapshot + `.md`/`.eml` files; Friday Draft Snapshot
@@ -89,13 +89,13 @@ Every edit in the web Taxonomy editor (and an approved Structure Proposal) queue
 
 ### Weekly Report and publishing
 
-`sqlite.GetWeekItems()` = open items reported before the week ends + items done during the week. `/generate-report` and web Generate first file unanswered unsure Work Items by fallback, then render the live view (no model calls), warn about Undetermined items, store the Published Report and write `.md`/`.eml`; with the LLM configured they then generate Structure Proposals in the background.
+`sqlite.GetWeekItems()` = open items reported before the week ends + items done during the week. `/generate-report` and web Generate warn about Undetermined items first; once the manager confirms, they file unanswered unsure Work Items by fallback, render the live view (no model calls), store the Published Report and write `.md`/`.eml`; with the LLM configured, `proposals.Service.AfterPublish()` then generates Structure Proposals in the background.
 
-### Fallback, edit history and drafts
+### Fallback, edit history and Draft Snapshots
 
-- **Fallback Placement** — `filing.FileByFallback()`: an item Undetermined with `low_confidence` whose reporter has not picked within 24 h (checked by the 15-minute sweep), or any such item at publish, is filed under the most likely active Section of its stored `section_choice` answer, `placed_by = 'fallback'`, without a model call; the reporter gets "Filed under X automatically" with Change.
-- **Edit history** — `UpdateWorkItemFields`, `SetWorkItemStatus`, `DeleteWorkItemByID`, `ApplyUpdate` and `ConfirmCodeChangeLink` take a `sqlite.Actor` (Slack user ID + path) and append to `work_item_edits` in the same transaction (before/after snapshots; no-ops skipped).
-- **Draft Snapshot** — `publish.StartDraftScheduler()` stores the rendered Weekly Report in `report_drafts` every Friday 09:00 (`timezone`).
+- **Fallback Placement** — `filing.FileByFallback()`: an item Undetermined with `low_confidence` whose reporter has not picked within 24 h (checked by the 15-minute sweep), or any such item at publish, is filed under the most likely active Section of its stored `section_choice` answer, `placed_by = 'fallback'`, without a model call; the reporter gets "Filed under X automatically" with Change. An answer older than the last Taxonomy change is skipped; the `reclassify` job re-asks such items (subject `reask`, which does not restart the 24 h).
+- **Edit history** — `UpdateWorkItemFields`, `SetWorkItemStatus`, `DeleteWorkItemByID`, `ApplyUpdate` and `ConfirmCodeChangeLink` take a `sqlite.Actor` (Slack user ID + a `sqlite.Via*` path; cut-over uses `SnapshotItemTx`/`RecordEditTx`) and append to `work_item_edits` in the same transaction (before/after snapshots; no-ops skipped).
+- **Draft Snapshot** — `publish.StartDraftSnapshotScheduler()` stores the rendered Weekly Report in `draft_snapshots` every Friday 09:00 (`timezone`).
 
 ### Calendar Week Calculation
 
@@ -141,7 +141,7 @@ Test files (unit tests never make live model calls; the gateway and the LLM are 
 - **internal/filing/text_test.go** — status/ticket rules, request building only asks what code cannot decide
 - **internal/integrations/decision/decision_test.go** — text-only instructions, answer parsing, 429/5xx/529 retries with `Retry-After`, no retry on 422
 - **internal/integrations/llm/*_test.go** — proposal prompt and parsing, reasoning effort, context cancel; **internal/similar/similar_test.go** — TF-IDF index
-- **internal/learning/*_test.go** — Structure Proposals (store and notify, invalid dropped, approve once, rejection cooldown), text validation rules
+- **internal/proposals/*_test.go** — Structure Proposals (store and notify, invalid dropped, approve once, cooldown incl. reworded proposals, expiry, stale retire, moved fallbacks as evidence), text validation rules
 - **internal/filing/fallback_test.go** — 24 h fallback to the model's #1, retired #1 skipped, publish-time fallback without model calls
 - **internal/storage/sqlite/edits_test.go** — edit history (edit, status, delete, Update merge), draft snapshots; **internal/publish/draft_test.go** — Friday 09:00 schedule and draft rendering
 - **internal/storage/sqlite/db_test.go** — V1 → V2 migration, week membership and `done_at`, Placement history and corrections, jobs, Taxonomy edits, Code Changes and Updates, Published Report replace

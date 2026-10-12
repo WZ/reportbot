@@ -31,11 +31,11 @@ The Section a Work Item is filed under, together with who decided it (the decisi
 _Avoid_: classification, category (for the item's filing)
 
 **Structure Proposal**:
-A change to the Taxonomy (a new Section, a split, or a retirement) that the LLM suggests from the week's Work Items and that a manager approves or rejects. A rejected change is not proposed again for 8 weeks.
+A change to the Taxonomy (a new Section, a split, or a retirement) that the LLM suggests from the week's Work Items and that a manager approves or rejects. A rejected change is not proposed again for 8 weeks; an undecided one expires after 2 weeks.
 _Avoid_: suggestion, auto-taxonomy
 
 **Fallback Placement**:
-Filing an unsure Work Item under the decision model's most likely Section when nobody answered "Where does this go?" within 24 hours, or before the report was published. No model is asked again; the reporter is told and can change it.
+Filing an unsure Work Item under the decision model's most likely Section when nobody answered "Where does this go?" within 24 hours, or before a manager confirmed publishing. No model is asked again; the reporter is told and can change it.
 _Avoid_: second opinion, auto-pick
 
 ### Work

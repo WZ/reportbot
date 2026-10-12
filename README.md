@@ -32,15 +32,15 @@ The team sees the live Weekly Report in the web UI; managers publish it to Slack
 - **Code Changes** link to an Open Work Item on an exact ticket match; a merge moves an `in progress` Work Item to `in testing`. Unlinked ones become their own Work Items (`in testing` once merged — `done` is always a person's decision).
 - **Taxonomy edits** (web UI) re-file Open Work Items; confident moves happen automatically and a person whose choice was overridden gets an Undo button.
 - **Never lost**: if the decision model is unreachable, the item is filed as Undetermined and a sweep retries it.
-- **Fallback**: an unsure Work Item nobody placed within 24 hours, or still Undetermined at publish, is filed under the decision model's most likely Section from its stored answer (no new model call). The reporter is told "Filed under X automatically" with a Change button.
+- **Fallback**: an unsure Work Item nobody placed within 24 hours, or still Undetermined when a manager confirms publishing, is filed under the decision model's most likely Section from its stored answer (no new model call). After a Taxonomy change the re-filing job re-asks unsure Work Items first, so the answer always matches the current Sections. The reporter is told "Filed under X automatically" with a Change button.
 
 ### Structure Proposals (optional LLM)
 
-After each publish (and on `/retrospect`), the LLM proposes 0–3 changes: a new Section for a recurring theme among Undetermined and "Other…" Work Items, a split of a large Section, or retiring one unused for 8 weeks. Managers get Approve/Reject by DM; Approve applies it like a Taxonomy edit, and a rejected change is not proposed again for 8 weeks. LLM-written notes for the decision model were tried and rejected (ADR 0003).
+After each publish (and on `/retrospect`), the LLM proposes 0–3 changes: a new Section for a recurring theme among Undetermined and "Other…" Work Items, a split of a large Section, or retiring one unused for 8 weeks. Managers get Approve/Reject by DM; Approve applies it like a Taxonomy edit, a rejected change is not proposed again for 8 weeks, and an undecided one expires after 2 weeks. A retirement is checked again at approval. LLM-written notes for the decision model were tried and rejected (ADR 0003).
 
 ### Edit history
 
-Every Work Item edit (text, Status, Status Note, tickets), delete and confirmed Update is recorded in `work_item_edits` with before/after, who and where (Slack, web, fetch). Every Friday at 09:00 (`timezone`) a draft of the Weekly Report is stored in `report_drafts`, next to the Published Report. Together they show what people change by hand.
+Every Work Item edit (text, Status, Status Note, tickets), delete and confirmed Update is recorded in `work_item_edits` with before/after, who and where (Slack, the nudge DM, web, fetch, cut-over). Every Friday at 09:00 (`timezone`) a Draft Snapshot of the Weekly Report is stored in `draft_snapshots`, next to the Published Report. Together they show what people change by hand.
 
 See [docs/agentic-features-overview.md](docs/agentic-features-overview.md) for a detailed overview.
 
@@ -362,7 +362,7 @@ auto_fetch_schedule: "0 9 * * 5"     # Fridays at 9am
 
 ### Generating Reports
 
-Manager only. Publishing first files unanswered unsure Work Items under the decision model's first choice, then renders the live report — no model calls — stores it as the week's Published Report (re-publishing replaces it), writes both the team `.md` and boss `.eml`, and uploads the requested one. If items are still Undetermined, you are warned first and can publish anyway. With the LLM configured, the week's Structure Proposals are then sent to managers.
+Manager only. If items are still Undetermined, you are warned first (including how many will be filed under the decision model's first choice) and can publish anyway. Once confirmed, unanswered unsure Work Items are filed under the model's first choice and their reporters are told; then the live report is rendered — no model calls — stored as the week's Published Report (re-publishing replaces it), both the team `.md` and boss `.eml` are written, and the requested one is uploaded. With the LLM configured, the week's Structure Proposals are then sent to managers.
 
 ```
 /generate-report team            # Publish and upload the team markdown (.md) to the channel (default)
@@ -461,7 +461,7 @@ reportbot/
   internal/integrations/llm/     LLM prompts and parsing for Structure Proposals
   internal/integrations/decision/ Decision-model client (System One protocol) with retries
   internal/filing/          Filing on arrival: decision-model request, job queue, sweep, 24 h fallback, re-classification
-  internal/learning/        Structure Proposals: evidence, validation, Approve/Reject
+  internal/proposals/       Structure Proposals: evidence, validation, Approve/Reject
   internal/cutover/         One-off migrate-v2 import from published reports
   internal/publish/         Live Weekly Report and Published Report snapshots
   internal/report/          Report view, markdown/EML rendering
