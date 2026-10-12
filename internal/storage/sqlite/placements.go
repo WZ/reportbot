@@ -254,7 +254,7 @@ type WeekStats struct {
 	ItemsThisWeek     int
 	FiledByModel      int // check passed, filed without asking
 	Asked             int // check failed: the reporter was asked
-	FiledByAssistant  int // asked, then filed by the assistant's Second Opinion
+	FiledByFallback   int // asked, then filed under the model's #1 Section because the reporter did not answer
 	FailedFiling      int
 	Undetermined      int
 	PersonCorrections map[int64]int // model-picked Section -> corrections away from it
@@ -269,11 +269,11 @@ func GetWeekStats(db *sql.DB, monday, nextMonday time.Time) (WeekStats, error) {
 		    COALESCE(SUM(EXISTS (SELECT 1 FROM model_judgments j WHERE j.work_item_id = w.id AND j.kind = 'section_choice')
 		         AND NOT EXISTS (SELECT 1 FROM placement_history h WHERE h.work_item_id = w.id AND h.placed_by = 'model' AND h.to_section IS NOT NULL)), 0),
 		    COALESCE(SUM(w.filing_state = 'failed'), 0),
-		    COALESCE(SUM(EXISTS (SELECT 1 FROM placement_history h WHERE h.work_item_id = w.id AND h.placed_by = 'assistant' AND h.to_section IS NOT NULL)), 0)
+		    COALESCE(SUM(EXISTS (SELECT 1 FROM placement_history h WHERE h.work_item_id = w.id AND h.placed_by = 'fallback' AND h.to_section IS NOT NULL)), 0)
 		 FROM work_items w
 		 WHERE julianday(w.reported_at) >= julianday(?) AND julianday(w.reported_at) < julianday(?) AND w.source <> 'import'`,
 		monday, nextMonday,
-	).Scan(&s.ItemsThisWeek, &s.FiledByModel, &s.Asked, &s.FailedFiling, &s.FiledByAssistant)
+	).Scan(&s.ItemsThisWeek, &s.FiledByModel, &s.Asked, &s.FailedFiling, &s.FiledByFallback)
 	if err != nil {
 		return s, err
 	}
@@ -315,4 +315,46 @@ func HasBeenFiled(db *sql.DB, itemID int64) (bool, error) {
 	var n int
 	err := db.QueryRow(`SELECT COUNT(*) FROM model_judgments WHERE work_item_id = ? AND kind = 'section_choice'`, itemID).Scan(&n)
 	return n > 0, err
+}
+
+// ReasonFallback is the placement_history reason for a fallback Placement.
+const ReasonFallback = "fallback"
+
+// GetFallbackCandidates returns Undetermined Work Items the decision model was unsure about,
+// whose reporter was asked before askedBefore and has not picked a Section.
+func GetFallbackCandidates(db *sql.DB, askedBefore time.Time) ([]WorkItem, error) {
+	return queryWorkItems(db,
+		`SELECT `+workItemColumns+` FROM work_items w
+		 WHERE w.section_id IS NULL AND w.filing_state = 'asking' AND w.undetermined_reason = 'low_confidence'
+		   AND (SELECT MAX(julianday(j.created_at)) FROM model_judgments j WHERE j.work_item_id = w.id AND j.kind = 'section_choice') <= julianday(?)
+		 ORDER BY w.id`, askedBefore)
+}
+
+// LatestSectionChoice returns the raw answer of the item's most recent Section Choice.
+func LatestSectionChoice(db *sql.DB, itemID int64) (string, error) {
+	var answer string
+	err := db.QueryRow(`SELECT answer_json FROM model_judgments WHERE work_item_id = ? AND kind = 'section_choice' ORDER BY id DESC LIMIT 1`, itemID).Scan(&answer)
+	return answer, err
+}
+
+// PlaceByFallback files a still-unanswered Work Item under sectionID; it reports false when a
+// person or the model placed it first.
+func PlaceByFallback(db *sql.DB, itemID, sectionID int64) (bool, error) {
+	tx, err := db.Begin()
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	var waiting bool
+	if err := tx.QueryRow(`SELECT section_id IS NULL AND filing_state = 'asking' FROM work_items WHERE id = ?`, itemID).Scan(&waiting); err != nil {
+		return false, err
+	}
+	if !waiting {
+		return false, nil
+	}
+	if err := applyPlacement(tx, itemID, Placement{SectionID: sectionID, PlacedBy: domain.PlacedByFallback,
+		FilingState: domain.FilingFiled, HistoryNote: ReasonFallback}); err != nil {
+		return false, err
+	}
+	return true, tx.Commit()
 }

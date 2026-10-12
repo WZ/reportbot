@@ -97,7 +97,7 @@ func newEnv(t *testing.T) *testEnv {
 		}
 		e.items[key] = id
 	}
-	e.handler = NewServer(e.cfg, db, func() { e.woke.Add(1) }, nil).Handler
+	e.handler = NewServer(e.cfg, db, func() { e.woke.Add(1) }, web.PublishHooks{}).Handler
 	return e
 }
 

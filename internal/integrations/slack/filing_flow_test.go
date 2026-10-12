@@ -322,9 +322,9 @@ func TestPublishWarnsAboutUndetermined(t *testing.T) {
 	db := newTestDB(t)
 	api, rec := newSlackRecorder(t)
 	seedSections(t, db)
-	sqlitedb.InsertWorkItem(db, domain.WorkItem{Description: "unsure", Author: "Dev A", Source: "slack",
-		Status: domain.StatusInProgress, ReportedAt: time.Now(), FilingState: domain.FilingAsking})
 	cfg := Config{Location: time.UTC, ManagerSlackIDs: []string{"UMGR"}, MondayCutoffTime: "12:00", ReportOutputDir: t.TempDir(), TeamName: "T"}
+	sqlitedb.InsertWorkItem(db, domain.WorkItem{Description: "unsure", Author: "Dev A", Source: "slack",
+		Status: domain.StatusInProgress, ReportedAt: inReportWeek(cfg), FilingState: domain.FilingAsking})
 
 	handleGenerateReport(api, db, cfg, slack.SlashCommand{Command: "/generate-report", UserID: "UMGR", ChannelID: "C1"})
 	if got := rec.lastText("chat.postEphemeral"); !strings.Contains(got, "still in Undetermined") || !strings.Contains(got, actionPublishAnyway) {
@@ -402,4 +402,10 @@ func TestLinkSeparateShowsSectionButtonsWhenUnsure(t *testing.T) {
 			t.Fatalf("missing %q in %s", want, b)
 		}
 	}
+}
+
+// inReportWeek is a time inside the week /generate-report publishes now, whatever the clock says.
+func inReportWeek(cfg Config) time.Time {
+	monday, _ := ReportWeekRange(cfg, time.Now().In(cfg.Location))
+	return monday.Add(time.Hour)
 }

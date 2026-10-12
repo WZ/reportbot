@@ -14,6 +14,7 @@ import (
 
 	"reportbot/internal/config"
 	"reportbot/internal/cutover"
+	"reportbot/internal/domain"
 	"reportbot/internal/fetch"
 	"reportbot/internal/filing"
 	"reportbot/internal/httpx"
@@ -63,25 +64,30 @@ func Main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	filer := &filing.Filer{
+	notifier := slackbot.NewNotifier(api, db, cfg)
+	queue := filing.NewQueue(&filing.Filer{
 		DB:       db,
 		Cfg:      cfg,
 		Decision: decision.NewClient(cfg.DecisionModelURL, cfg.DecisionModelAPIKey, cfg.DecisionModelName),
-		Notify:   slackbot.NewNotifier(api, db, cfg),
-	}
-	queue := filing.NewQueue(filer)
+		Notify:   notifier,
+	})
 	queue.Start(ctx)
 
-	// The learning loops need the LLM; without it they stay nil and filing works as before.
-	var slackLoops slackbot.Loops
-	var webLoops web.Loops
+	hooks := web.PublishHooks{Fallback: func(items []domain.WorkItem) int { return filing.FileByFallback(db, notifier, items, true) }}
+	// Structure Proposals need the LLM; without it they stay off and filing works as before.
+	var proposals slackbot.Proposals
 	if cfg.LLMConfigured() {
-		learner := &learning.Learner{DB: db, Cfg: cfg, Filer: filer, Wake: queue.Wake,
-			Notify: &slackbot.LearningNotifier{API: api, DB: db, Cfg: cfg}}
-		learner.Start(ctx)
-		slackLoops, webLoops = learner, learner
+		learner := &learning.Learner{DB: db, Cfg: cfg, Wake: queue.Wake, Notify: &slackbot.LearningNotifier{API: api, DB: db, Cfg: cfg}}
+		proposals = learner
+		hooks.AfterPublish = func() {
+			ctx, cancel := context.WithTimeout(ctx, 30*time.Minute)
+			defer cancel()
+			if _, err := learner.ProposeStructure(ctx); err != nil {
+				log.Printf("structure proposals after publish: %v", err)
+			}
+		}
 	} else {
-		log.Printf("Learning loops disabled: no LLM configured")
+		log.Printf("Structure Proposals disabled: no LLM configured")
 	}
 
 	nudge.StartNudgeScheduler(cfg, db, api)
@@ -90,7 +96,7 @@ func Main() {
 	// Start web UI if enabled — verify bind before proceeding
 	var webSrv *http.Server
 	if cfg.WebEnabled {
-		webSrv = handlers.NewServer(cfg, db, queue.Wake, webLoops)
+		webSrv = handlers.NewServer(cfg, db, queue.Wake, hooks)
 		ln, err := net.Listen("tcp", fmt.Sprintf(":%d", cfg.WebPort))
 		if err != nil {
 			log.Fatalf("Web server bind failed on port %d: %v", cfg.WebPort, err)
@@ -122,7 +128,7 @@ func Main() {
 	}()
 
 	log.Println("Starting Engineering Report Bot...")
-	if err := slackbot.StartSlackBot(cfg, db, api, queue.Wake, slackLoops); err != nil {
+	if err := slackbot.StartSlackBot(cfg, db, api, queue.Wake, proposals); err != nil {
 		log.Fatalf("Slack bot error: %v", err)
 	}
 }

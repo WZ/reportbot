@@ -1,12 +1,8 @@
 package web
 
 import (
-	"context"
-	"time"
-
 	"reportbot/internal/config"
 	"reportbot/internal/domain"
-	"reportbot/internal/learning"
 	"reportbot/internal/publish"
 	"reportbot/internal/storage/sqlite"
 )
@@ -30,7 +26,6 @@ var (
 	RetireTaxonomyNode = sqlite.RetireTaxonomyNode
 	MergeSections      = sqlite.MergeSections
 	SplitSection       = sqlite.SplitSection
-	SetLearnedNotes    = sqlite.SetLearnedNotes
 	EnqueueReclassify  = sqlite.EnqueueReclassify
 	PendingReclassify  = sqlite.PendingReclassify
 	GetPublishedReport = sqlite.GetPublishedReport
@@ -46,8 +41,9 @@ var IsManagerID = func(cfg Config, userID string) bool {
 	return cfg.IsManagerID(userID)
 }
 
-// Loops is what the web UI uses of the learning loops (*learning.Learner); nil without an LLM.
-type Loops interface {
-	SweepUndetermined(ctx context.Context, items []domain.WorkItem, timeout time.Duration) int
-	ProposeStructure(ctx context.Context) ([]learning.StoredProposal, error)
+// PublishHooks run around web Generate. Fallback files unanswered unsure Work Items before
+// publishing (no model call); AfterPublish starts Structure Proposals and is nil without an LLM.
+type PublishHooks struct {
+	Fallback     func(items []domain.WorkItem) int
+	AfterPublish func()
 }

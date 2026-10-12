@@ -10,7 +10,7 @@ import (
 	"reportbot/internal/integrations/llm"
 )
 
-// Learned Notes reach the decision model's criteria, so a draft must be plain, inert text.
+// A proposed Section's text becomes decision-model criteria and Slack text, so it must be plain and inert.
 var (
 	urlRe          = regexp.MustCompile(`(?i)\b(?:https?|ftp)://|\bwww\.`)
 	slackMentionRe = regexp.MustCompile(`<[@#!]`)
@@ -24,8 +24,9 @@ var (
 
 // Structure Proposal limits.
 const (
-	maxProposalName   = 60
-	maxProposalReason = 500
+	maxProposalName        = 60
+	maxProposalDescription = 300
+	maxProposalReason      = 500
 )
 
 // plainText rejects text that is too long or could carry links, mentions, markup or control characters.
@@ -63,14 +64,14 @@ func namesAuthor(n string, authors []string) bool {
 	return false
 }
 
-// ValidateNote rejects a drafted note unless it is plain text within the cap, does not address
-// the model, names only existing Sections (knownNames) and names none of authors.
-func ValidateNote(note string, knownNames, authors []string) error {
-	n := strings.TrimSpace(note)
+// validDescription rejects a proposed description unless it is plain text within the cap, does
+// not address the model, names only existing Sections (knownNames) and names none of authors.
+func validDescription(text string, knownNames, authors []string) error {
+	n := strings.TrimSpace(text)
 	if n == "" {
 		return fmt.Errorf("empty")
 	}
-	if err := plainText(n, domain.MaxLearnedNotes); err != nil {
+	if err := plainText(n, maxProposalDescription); err != nil {
 		return err
 	}
 	lower := strings.ToLower(n)
@@ -91,7 +92,7 @@ func ValidateNote(note string, knownNames, authors []string) error {
 }
 
 // ValidateProposal checks a Structure Proposal before it is stored or shown: plain short names,
-// descriptions held to the Learned Notes rules, a plain reason, and an existing parent for a new Section.
+// descriptions held to validDescription, a plain reason, and an existing parent for a new Section.
 func ValidateProposal(p llm.StructureProposal, knownNames []string, parents map[int64]bool, authors []string) error {
 	name := func(n string) error {
 		if strings.TrimSpace(n) == "" {
@@ -109,7 +110,7 @@ func ValidateProposal(p llm.StructureProposal, knownNames []string, parents map[
 		if strings.TrimSpace(d) == "" {
 			return nil
 		}
-		if err := ValidateNote(d, append(append([]string{}, knownNames...), extra...), authors); err != nil {
+		if err := validDescription(d, append(append([]string{}, knownNames...), extra...), authors); err != nil {
 			return fmt.Errorf("description %w", err)
 		}
 		return nil

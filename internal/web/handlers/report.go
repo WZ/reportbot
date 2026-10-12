@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"context"
 	"database/sql"
 	"fmt"
 	"html"
@@ -15,7 +14,6 @@ import (
 
 	"reportbot/internal/domain"
 	"reportbot/internal/filing"
-	"reportbot/internal/learning"
 	"reportbot/internal/report"
 	"reportbot/internal/storage/sqlite"
 	"reportbot/internal/web"
@@ -30,9 +28,8 @@ var generateJobs sync.Map // key: jobID string, value: *generateJob
 
 type generateJob struct {
 	mu      sync.Mutex
-	status  string // "running", "done", "error", "warning" (message is the Undetermined count)
+	status  string // "running", "done", "error"
 	message string
-	week    string
 }
 
 func (j *generateJob) update(status, message string) {
@@ -356,16 +353,9 @@ func placeByPerson(db *sql.DB, itemID, sectionID int64, actorID string) error {
 	})
 }
 
-// undeterminedWarning asks the manager to confirm publishing with Undetermined Work Items.
-func undeterminedWarning(n int, week string) string {
-	return fmt.Sprintf(`<div class="flash flash-warning">%d Work Item(s) are still in Undetermined. `+
-		`<button class="btn btn-secondary" hx-post="/generate?week=%s&amp;confirm=1" hx-target="#generate-status" hx-swap="innerHTML">Publish anyway</button></div>`,
-		n, html.EscapeString(week))
-}
-
-// GenerateReport publishes the week. With Undetermined Work Items it first runs the assistant's
-// sweep (when the loops are on), then asks for confirmation if any remain.
-func GenerateReport(cfg web.Config, db *sql.DB, loops web.Loops) http.HandlerFunc {
+// GenerateReport publishes the week. Unanswered unsure Work Items are first filed by fallback;
+// with Undetermined Work Items left it asks for confirmation.
+func GenerateReport(cfg web.Config, db *sql.DB, hooks web.PublishHooks) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		monday, _, _, _ := resolveWeek(cfg, r.URL.Query().Get("week"))
 		week := monday.Format("2006-01-02")
@@ -382,23 +372,25 @@ func GenerateReport(cfg web.Config, db *sql.DB, loops web.Loops) http.HandlerFun
 			fmt.Fprint(w, `<div class="flash flash-info">No Work Items this week.</div>`)
 			return
 		}
-		needsConfirm := len(live.View.Undetermined) > 0 && r.FormValue("confirm") != "1"
-		if needsConfirm && loops == nil {
-			fmt.Fprint(w, undeterminedWarning(len(live.View.Undetermined), week))
+		if hooks.Fallback != nil && hooks.Fallback(live.View.Undetermined) > 0 {
+			if live, err = web.LoadRange(db, monday, monday.AddDate(0, 0, 7)); err != nil {
+				log.Printf("Generate: failed to load report: %v", err)
+				fmt.Fprint(w, `<div class="flash flash-error">Failed to load the report. Check server logs.</div>`)
+				return
+			}
+		}
+		if n := len(live.View.Undetermined); n > 0 && r.FormValue("confirm") != "1" {
+			fmt.Fprintf(w, `<div class="flash flash-warning">%d Work Item(s) are still in Undetermined. `+
+				`<button class="btn btn-secondary" hx-post="/generate?week=%s&amp;confirm=1" hx-target="#generate-status" hx-swap="innerHTML">Publish anyway</button></div>`,
+				n, html.EscapeString(week))
 			return
 		}
 
 		jobID := fmt.Sprintf("gen-%d", rand.Int63())
-		job := &generateJob{status: "running", message: "Publishing...", week: week}
-		if needsConfirm {
-			job.message = fmt.Sprintf("Asking the assistant about %d Undetermined Work Item(s)...", len(live.View.Undetermined))
-		}
+		job := &generateJob{status: "running", message: "Publishing..."}
 		generateJobs.Store(jobID, job)
 
 		go func() {
-			if needsConfirm {
-				loops.SweepUndetermined(context.Background(), live.View.Undetermined, learning.PublishSweepTimeout)
-			}
 			report.GenerationMu.Lock()
 			defer report.GenerationMu.Unlock()
 
@@ -408,10 +400,6 @@ func GenerateReport(cfg web.Config, db *sql.DB, loops web.Loops) http.HandlerFun
 				log.Printf("Generate: failed to load report: %v", err)
 				return
 			}
-			if n := len(live.View.Undetermined); needsConfirm && n > 0 {
-				job.update("warning", strconv.Itoa(n))
-				return
-			}
 			res, err := web.Publish(db, cfg, live, userID)
 			if err != nil {
 				job.update("error", "Failed to publish. Check server logs.")
@@ -419,22 +407,13 @@ func GenerateReport(cfg web.Config, db *sql.DB, loops web.Loops) http.HandlerFun
 				return
 			}
 			job.update("done", fmt.Sprintf("Published %d Work Items. Saved to %s", live.View.ItemCount(), res.TeamPath))
-			if loops != nil {
-				go proposeAfterPublish(loops)
+			if hooks.AfterPublish != nil {
+				go hooks.AfterPublish()
 			}
 		}()
 
-		fmt.Fprintf(w, `<div class="generate-status" hx-get="/generate/%s/status" hx-trigger="every 2s" hx-swap="outerHTML"><div class="spinner"></div><span>%s</span></div>`,
-			html.EscapeString(jobID), html.EscapeString(job.message))
-	}
-}
-
-// proposeAfterPublish generates the week's Structure Proposals; they reach managers by DM.
-func proposeAfterPublish(loops web.Loops) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
-	defer cancel()
-	if _, err := loops.ProposeStructure(ctx); err != nil {
-		log.Printf("structure proposals after publish: %v", err)
+		fmt.Fprintf(w, `<div class="generate-status" hx-get="/generate/%s/status" hx-trigger="every 2s" hx-swap="outerHTML"><div class="spinner"></div><span>Publishing...</span></div>`,
+			html.EscapeString(jobID))
 	}
 }
 
@@ -454,10 +433,6 @@ func GenerateStatus() http.HandlerFunc {
 		case "running":
 			fmt.Fprintf(w, `<div class="generate-status" hx-get="/generate/%s/status" hx-trigger="every 2s" hx-swap="outerHTML"><div class="spinner"></div><span>%s</span></div>`,
 				html.EscapeString(jobID), safeMsg)
-		case "warning":
-			generateJobs.Delete(jobID)
-			n, _ := strconv.Atoi(message)
-			fmt.Fprint(w, undeterminedWarning(n, val.(*generateJob).week))
 		case "done":
 			generateJobs.Delete(jobID)
 			fmt.Fprintf(w, `<div class="flash flash-success">%s</div>`, safeMsg)

@@ -18,25 +18,19 @@ type TaxonomyNode struct {
 	Level       string
 	Name        string
 	Description string
-	// LearnedNotes are drafted by the learning loop; Description is the manager's and the loop never changes it.
-	LearnedNotes string
-	SortOrder    int
-	Retired      bool
+	SortOrder   int
+	Retired     bool
 }
-
-// MaxLearnedNotes caps a Section's Learned Notes at about two sentences.
-const MaxLearnedNotes = 300
 
 // Section is a fileable node: a section node, or a category node without active sections.
 type Section struct {
-	ID           int64
-	Area         string
-	Category     string
-	Name         string // empty when the Category is itself the Section
-	Description  string
-	LearnedNotes string
-	CategoryID   int64
-	AreaID       int64
+	ID          int64
+	Area        string
+	Category    string
+	Name        string // empty when the Category is itself the Section
+	Description string
+	CategoryID  int64
+	AreaID      int64
 }
 
 const PathSeparator = " › "
@@ -108,13 +102,11 @@ func (t Taxonomy) Sections() []Section {
 			}
 			secs := t.Children(cat.ID)
 			if len(secs) == 0 {
-				out = append(out, Section{ID: cat.ID, Area: area.Name, Category: cat.Name, Description: cat.Description,
-					LearnedNotes: cat.LearnedNotes, CategoryID: cat.ID, AreaID: area.ID})
+				out = append(out, Section{ID: cat.ID, Area: area.Name, Category: cat.Name, Description: cat.Description, CategoryID: cat.ID, AreaID: area.ID})
 				continue
 			}
 			for _, sec := range secs {
-				out = append(out, Section{ID: sec.ID, Area: area.Name, Category: cat.Name, Name: sec.Name, Description: sec.Description,
-					LearnedNotes: sec.LearnedNotes, CategoryID: cat.ID, AreaID: area.ID})
+				out = append(out, Section{ID: sec.ID, Area: area.Name, Category: cat.Name, Name: sec.Name, Description: sec.Description, CategoryID: cat.ID, AreaID: area.ID})
 			}
 		}
 	}
@@ -137,7 +129,7 @@ func (t Taxonomy) SectionAny(id int64) (Section, bool) {
 	if !ok || n.Level == LevelArea {
 		return Section{}, false
 	}
-	s := Section{ID: n.ID, Description: n.Description, LearnedNotes: n.LearnedNotes}
+	s := Section{ID: n.ID, Description: n.Description}
 	cat := n
 	if n.Level == LevelSection {
 		s.Name = n.Name

@@ -283,22 +283,3 @@ func (l *Learner) applyProposal(p llm.StructureProposal) error {
 	}
 	return fmt.Errorf("unknown proposal kind %q", p.Kind)
 }
-
-// RunNowReport is what /retrospect shows: the notes run and the proposals sent.
-type RunNowReport struct {
-	Notes     NotesReport
-	NotesErr  error
-	Proposals []StoredProposal
-	PropErr   error
-}
-
-// RunNow runs Loop 1 and generates Structure Proposals immediately.
-func (l *Learner) RunNow(ctx context.Context) (RunNowReport, error) {
-	if !l.Cfg.LLMConfigured() {
-		return RunNowReport{}, ErrNoLLM
-	}
-	var r RunNowReport
-	r.Notes, r.NotesErr = l.RunNotes(ctx, TriggerRetrospect)
-	r.Proposals, r.PropErr = l.ProposeStructure(ctx)
-	return r, nil
-}

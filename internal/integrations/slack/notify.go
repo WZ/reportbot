@@ -206,6 +206,23 @@ func (n *Notifier) PlacementOverridden(item domain.WorkItem, eventID int64, from
 		slack.NewActionBlock(fmt.Sprintf("undo_%d", eventID), button(actionPlacementUndo, strconv.FormatInt(eventID, 10), "Undo"))})
 }
 
+// FiledByFallback implements filing.Notifier: nobody picked a Section, so the model's #1 was used.
+func (n *Notifier) FiledByFallback(item domain.WorkItem, s domain.Section, atPublish bool) {
+	why := "no answer within a day"
+	if atPublish {
+		why = "no answer before the report was published"
+	}
+	head := fmt.Sprintf("Filed under *%s* automatically (%s)", esc(s.Label()), why)
+	blocks := []slack.Block{
+		slack.NewSectionBlock(slack.NewTextBlockObject(slack.MarkdownType, head+"\n"+itemQuote(item, false), false, false), nil,
+			slack.NewAccessory(button(actionPlaceOther, strconv.FormatInt(item.ID, 10), "Change"))),
+	}
+	if parent := sectionParent(s); parent != "" {
+		blocks = append(blocks, contextLine(parent))
+	}
+	dm(n.API, item.AuthorID, head+": "+slackLine(item), blocks)
+}
+
 // respond replies through a response URL, falling back to an ephemeral message.
 func respond(api *slack.Client, responseURL, channelID, userID string, replace bool, text string, blocks []slack.Block) {
 	if responseURL != "" {

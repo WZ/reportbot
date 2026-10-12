@@ -13,127 +13,59 @@ import (
 
 	"reportbot/internal/domain"
 	"reportbot/internal/learning"
-	"reportbot/internal/storage/sqlite"
 
 	"github.com/slack-go/slack"
 )
 
-// Loops is the learning loops as Slack drives them (*learning.Learner in production).
-type Loops interface {
-	RunNow(ctx context.Context) (learning.RunNowReport, error)
-	UndoNotes(historyID int64, actorID string) (domain.Section, error)
+// Proposals is Structure Proposals as Slack drives them (*learning.Learner in production).
+type Proposals interface {
+	ProposeStructure(ctx context.Context) ([]learning.StoredProposal, error)
 	ApproveProposal(id int64, actorID string) (learning.StoredProposal, error)
 	RejectProposal(id int64, actorID string) error
-	SweepUndetermined(ctx context.Context, items []domain.WorkItem, timeout time.Duration) int
-	ProposeStructure(ctx context.Context) ([]learning.StoredProposal, error)
 }
 
-// loops is nil when no LLM is configured; set by StartSlackBot.
-var loops Loops
+// proposals is nil when no LLM is configured; set by StartSlackBot.
+var proposals Proposals
 
 const (
-	actionNotesUndo       = "notes_undo"
 	actionProposalApprove = "proposal_approve"
 	actionProposalReject  = "proposal_reject"
 	retrospectTimeout     = 30 * time.Minute
-	noLLMText             = "The LLM isn't configured (llm_provider and its API key), so the learning loops and /retrospect are off. Filing works as usual."
+	noLLMText             = "The LLM isn't configured (llm_provider and its API key), so Structure Proposals and /retrospect are off. Filing works as usual."
 )
 
-// handleRetrospective runs the learning loops now: Learned Notes behind the replay gate, then
-// Structure Proposals, and shows what was applied, discarded or proposed.
+// handleRetrospective generates Structure Proposals now; they reach managers by DM and are listed here.
 func handleRetrospective(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashCommand) {
 	if !cfg.IsManagerID(cmd.UserID) {
 		postEphemeral(api, cmd, "Sorry, only managers can use this command.")
 		log.Printf("retrospective denied user=%s", cmd.UserID)
 		return
 	}
-	if loops == nil || !cfg.LLMConfigured() {
+	if proposals == nil || !cfg.LLMConfigured() {
 		postEphemeral(api, cmd, noLLMText)
 		return
 	}
-	postEphemeral(api, cmd, "Running the learning loops (this can take a few minutes)…")
+	postEphemeral(api, cmd, "Looking for structure changes (this can take a minute)…")
 	ctx, cancel := context.WithTimeout(context.Background(), retrospectTimeout)
 	defer cancel()
-	rep, err := loops.RunNow(ctx)
+	ps, err := proposals.ProposeStructure(ctx)
 	if err != nil {
-		postEphemeral(api, cmd, fmt.Sprintf("The learning loops failed: %v", err))
+		postEphemeral(api, cmd, fmt.Sprintf("Structure Proposals failed: %v", err))
 		return
 	}
 	tax, _ := LoadTaxonomy(db)
-	text, blocks := retrospectBlocks(rep, tax)
-	if _, err := api.PostEphemeral(cmd.ChannelID, cmd.UserID, slack.MsgOptionText(text, false), slack.MsgOptionBlocks(blocks...)); err != nil {
-		log.Printf("retrospective reply error: %v", err)
-	}
+	postEphemeral(api, cmd, retrospectText(tax, ps))
 }
 
-func gainText(g *learning.GateResult) string {
-	if g == nil {
-		return ""
+func retrospectText(tax domain.Taxonomy, ps []learning.StoredProposal) string {
+	if len(ps) == 0 {
+		return "*Structure Proposals:* none this time."
 	}
-	return fmt.Sprintf("%+.1f pts on %d recent Work Items", g.GainPoints(), g.Items)
-}
-
-func retrospectBlocks(rep learning.RunNowReport, tax domain.Taxonomy) (string, []slack.Block) {
-	n := rep.Notes
-	var notes string
-	switch {
-	case rep.NotesErr != nil && n.Decision == "":
-		notes = fmt.Sprintf("*Learned notes:* failed: %v", rep.NotesErr)
-	case n.Applied:
-		notes = "*Learned notes applied* (" + gainText(n.Gate) + ")"
-	case n.Decision == sqlite.RunDiscarded:
-		notes = "*Learned notes discarded:* " + n.Reason
-		for _, c := range n.Candidates {
-			notes += fmt.Sprintf("\n• %s: _%s_", esc(c.Section.Label()), esc(c.New))
-		}
-		for _, c := range n.Invalid {
-			notes += fmt.Sprintf("\n• %s: rejected: %s", esc(c.Section.Label()), esc(c.Reason))
-		}
-	default:
-		notes = fmt.Sprintf("*Learned notes:* nothing to learn (%s).", n.Reason)
+	text := fmt.Sprintf("*Structure Proposals sent to managers (%d):*", len(ps))
+	for _, p := range ps {
+		text += "\n• " + proposalText(tax, p)
 	}
-	blocks := []slack.Block{mdSection(notes)}
-	if n.Applied {
-		blocks = append(blocks, undoBlocks(n)...)
-	}
-	var props string
-	switch {
-	case rep.PropErr != nil:
-		props = fmt.Sprintf("*Structure Proposals:* failed: %v", rep.PropErr)
-	case len(rep.Proposals) == 0:
-		props = "*Structure Proposals:* none this time."
-	default:
-		props = fmt.Sprintf("*Structure Proposals sent to managers (%d):*", len(rep.Proposals))
-		for _, p := range rep.Proposals {
-			props += "\n• " + proposalText(tax, p)
-		}
-	}
-	return notes + "\n" + props, append(blocks, mdSection(props))
-}
-
-// undoBlocks lists each applied Section with its notes and an Undo button.
-func undoBlocks(r learning.NotesReport) []slack.Block {
-	var out []slack.Block
-	for _, c := range r.Candidates {
-		if c.HistoryID == 0 {
-			continue
-		}
-		out = append(out, slack.NewSectionBlock(
-			slack.NewTextBlockObject(slack.MarkdownType, fmt.Sprintf("*%s*: _%s_", esc(c.Section.Label()), esc(c.New)), false, false), nil,
-			slack.NewAccessory(button(actionNotesUndo, strconv.FormatInt(c.HistoryID, 10), "Undo"))))
-	}
-	return out
-}
-
-// NotesDigest is the nightly DM to managers after Learned Notes were applied.
-func NotesDigest(r learning.NotesReport) (string, []slack.Block) {
-	labels := make([]string, 0, len(r.Candidates))
-	for _, c := range r.Candidates {
-		labels = append(labels, esc(c.Section.Label()))
-	}
-	text := fmt.Sprintf("Learned notes updated: %s (%s)", strings.Join(labels, ", "), gainText(r.Gate))
-	blocks := append([]slack.Block{mdSection(text)}, undoBlocks(r)...)
-	return text, append(blocks, contextLine("The decision model reads these notes from now on. Any manager can Undo."))
+	return text
 }
 
 // proposalText describes one Structure Proposal and how many Work Items it affects.
@@ -188,29 +120,8 @@ func ProposalBlocks(tax domain.Taxonomy, ps []learning.StoredProposal) (string, 
 	return text, append(blocks, contextLine("Approving applies it like a Taxonomy edit and re-files Open Work Items. A rejected change is not proposed again for 8 weeks."))
 }
 
-func handleNotesUndo(api *slack.Client, cfg Config, cb slack.InteractionCallback, value string) {
-	if !cfg.IsManagerID(cb.User.ID) || loops == nil {
-		return
-	}
-	id, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
-	if err != nil {
-		return
-	}
-	sec, err := loops.UndoNotes(id, cb.User.ID)
-	switch {
-	case errors.Is(err, sqlite.ErrNothingToUndo):
-		replyToAction(api, cb, "Nothing to undo: these learned notes were already undone.")
-	case errors.Is(err, sqlite.ErrNotesChanged):
-		replyToAction(api, cb, "The learned notes changed since; nothing to undo.")
-	case err != nil:
-		replyToAction(api, cb, fmt.Sprintf("Undo failed: %v", err))
-	default:
-		replyToAction(api, cb, fmt.Sprintf("Undone: the learned notes of *%s* are back to what they were.", esc(sec.Label())))
-	}
-}
-
 func handleProposalDecision(api *slack.Client, db *sql.DB, cfg Config, cb slack.InteractionCallback, value string, approve bool) {
-	if !cfg.IsManagerID(cb.User.ID) || loops == nil {
+	if !cfg.IsManagerID(cb.User.ID) || proposals == nil {
 		return
 	}
 	id, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
@@ -218,7 +129,7 @@ func handleProposalDecision(api *slack.Client, db *sql.DB, cfg Config, cb slack.
 		return
 	}
 	if !approve {
-		switch err := loops.RejectProposal(id, cb.User.ID); {
+		switch err := proposals.RejectProposal(id, cb.User.ID); {
 		case errors.Is(err, learning.ErrAlreadyDecided):
 			replyToAction(api, cb, "This proposal was already decided by another manager.")
 		case err != nil:
@@ -228,7 +139,7 @@ func handleProposalDecision(api *slack.Client, db *sql.DB, cfg Config, cb slack.
 		}
 		return
 	}
-	p, err := loops.ApproveProposal(id, cb.User.ID)
+	p, err := proposals.ApproveProposal(id, cb.User.ID)
 	switch {
 	case errors.Is(err, learning.ErrAlreadyDecided):
 		replyToAction(api, cb, "This proposal was already decided by another manager.")
@@ -257,32 +168,12 @@ func (n *LearningNotifier) managers() []string {
 	return out
 }
 
-func (n *LearningNotifier) NotesApplied(r learning.NotesReport) {
-	text, blocks := NotesDigest(r)
-	for _, id := range n.managers() {
-		dm(n.API, id, text, blocks)
-	}
-}
-
 func (n *LearningNotifier) ProposalsReady(ps []learning.StoredProposal) {
 	tax, _ := LoadTaxonomy(n.DB)
 	text, blocks := ProposalBlocks(tax, ps)
 	for _, id := range n.managers() {
 		dm(n.API, id, text, blocks)
 	}
-}
-
-// AssistantFiled tells the reporter where the assistant filed their unsure Work Item.
-func (n *LearningNotifier) AssistantFiled(item domain.WorkItem, s domain.Section) {
-	head := fmt.Sprintf("Filed under *%s* by the assistant", esc(s.Label()))
-	blocks := []slack.Block{
-		slack.NewSectionBlock(slack.NewTextBlockObject(slack.MarkdownType, head+"\n"+itemQuote(item, false), false, false), nil,
-			slack.NewAccessory(button(actionPlaceOther, strconv.FormatInt(item.ID, 10), "Change"))),
-	}
-	if parent := sectionParent(s); parent != "" {
-		blocks = append(blocks, contextLine(parent))
-	}
-	dm(n.API, item.AuthorID, head+": "+slackLine(item), blocks)
 }
 
 // handleReportStats shows this week's filing: arrivals, auto-filed vs asked, corrections, Undetermined.
@@ -313,13 +204,13 @@ func formatStats(st WeekStats, tax domain.Taxonomy, monday, nextMonday time.Time
 	fmt.Fprintf(&b, "- Work Items reported or fetched: %d\n", st.ItemsThisWeek)
 	fmt.Fprintf(&b, "- Filed automatically: %d (%s)\n", st.FiledByModel, pct(st.FiledByModel))
 	fmt.Fprintf(&b, "- Asked \"Where does this go?\": %d (%s)\n", st.Asked, pct(st.Asked))
-	fmt.Fprintf(&b, "- Filed by the assistant: %d\n", st.FiledByAssistant)
+	fmt.Fprintf(&b, "- Filed automatically: reporter didn't answer: %d\n", st.FiledByFallback)
 	if st.FailedFiling > 0 {
 		fmt.Fprintf(&b, "- Filing failed (model unreachable): %d\n", st.FailedFiling)
 	}
 	fmt.Fprintf(&b, "- Undetermined on the report now: %d\n", st.Undetermined)
 	if !llmOn {
-		b.WriteString("_Learning loops are off: no LLM configured._\n")
+		b.WriteString("_Structure Proposals are off: no LLM configured._\n")
 	}
 	if len(st.PersonCorrections) > 0 {
 		type kv struct {

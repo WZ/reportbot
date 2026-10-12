@@ -78,6 +78,8 @@ type Result struct {
 type Notifier interface {
 	Filed(r Result)
 	PlacementOverridden(item domain.WorkItem, eventID int64, from, to domain.Section)
+	// FiledByFallback: nobody answered "Where does this go?" in time (or before publishing).
+	FiledByFallback(item domain.WorkItem, s domain.Section, atPublish bool)
 }
 
 type Filer struct {
@@ -479,39 +481,4 @@ func (f *Filer) notify(r Result) {
 		}
 	}
 	f.Notify.Filed(r)
-}
-
-// Snapshot is what a filing pass sees: the active Sections and the similar placed Work Items.
-type Snapshot struct {
-	c *filingContext
-	k int
-}
-
-// Snapshot loads the current Taxonomy and similar-item index.
-func (f *Filer) Snapshot() (*Snapshot, error) {
-	c, err := f.loadContext()
-	if err != nil {
-		return nil, err
-	}
-	return &Snapshot{c: c, k: f.similarCount()}, nil
-}
-
-func (s *Snapshot) Sections() []domain.Section { return s.c.sections }
-
-func (s *Snapshot) Section(id int64) (domain.Section, bool) {
-	sec, ok := s.c.active[id]
-	return sec, ok
-}
-
-// Similar is the similar past Work Items live filing shows the decision model for item.
-func (s *Snapshot) Similar(item domain.WorkItem) []FiledLine { return s.c.similarLines(item, s.k) }
-
-// SectionRequest is the Section Choice alone over sections, built as live filing builds it.
-func (s *Snapshot) SectionRequest(item domain.WorkItem, sections []domain.Section) (map[string]any, map[string]decision.Question) {
-	return BuildRequest(RequestInput{Item: item, Sections: sections, Similar: s.Similar(item)})
-}
-
-// Pick reads a Section Choice answer: the active pick (0 for none), its confidence and the top Sections.
-func (s *Snapshot) Pick(a decision.Answer) (int64, float64, []domain.Section) {
-	return s.c.sectionAnswer(a)
 }

@@ -77,6 +77,13 @@ type recorder struct {
 	mu        sync.Mutex
 	filed     []Result
 	overrides []string
+	fallbacks []string
+}
+
+func (r *recorder) FiledByFallback(item domain.WorkItem, s domain.Section, atPublish bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.fallbacks = append(r.fallbacks, fmt.Sprintf("%d:%s:%t", item.ID, s.Label(), atPublish))
 }
 
 func (r *recorder) Filed(res Result) {

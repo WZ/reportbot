@@ -139,9 +139,11 @@ func (q *Queue) sweep(ctx context.Context) {
 	}
 }
 
-// Sweep re-queues items whose filing failed or stalled; it returns how many.
+// Sweep files unanswered unsure items by fallback and re-queues items whose filing failed
+// or stalled; it returns how many were re-queued.
 func (q *Queue) Sweep() int {
 	f := q.Filer
+	f.runDueFallbacks()
 	items, err := sqlite.GetItemsNeedingRetry(f.DB, f.now().Add(-staleAfter))
 	if err != nil {
 		log.Printf("filing sweep: %v", err)

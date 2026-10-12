@@ -15,7 +15,6 @@ import (
 
 	"reportbot/internal/domain"
 	"reportbot/internal/filing"
-	"reportbot/internal/learning"
 	"reportbot/internal/publish"
 	"reportbot/internal/report"
 
@@ -68,12 +67,12 @@ const (
 var wakeFiling = func() {}
 
 // StartSlackBot runs the Socket Mode loop; wake tells the filing workers new jobs exist.
-// l is nil when no LLM is configured.
-func StartSlackBot(cfg Config, db *sql.DB, api *slack.Client, wake func(), l Loops) error {
+// p is nil when no LLM is configured.
+func StartSlackBot(cfg Config, db *sql.DB, api *slack.Client, wake func(), p Proposals) error {
 	if wake != nil {
 		wakeFiling = wake
 	}
-	loops = l
+	proposals = p
 	client := socketmode.New(api)
 
 	go func() {
@@ -485,13 +484,11 @@ func publishReport(api *slack.Client, db *sql.DB, cfg Config, channelID, userID,
 		postEphemeralTo(api, channelID, userID, "No Work Items found for this week.")
 		return
 	}
-	if n := len(live.View.Undetermined); n > 0 && !confirmed && loops != nil {
-		postEphemeralTo(api, channelID, userID, fmt.Sprintf("Asking the assistant about %d Undetermined Work Item(s) first (up to a minute)…", n))
-		if loops.SweepUndetermined(context.Background(), live.View.Undetermined, learning.PublishSweepTimeout) > 0 {
-			if live, err = publish.LoadWeek(db, cfg, time.Now()); err != nil {
-				postEphemeralTo(api, channelID, userID, fmt.Sprintf("Error loading the report: %v", err))
-				return
-			}
+	// Unsure Work Items nobody answered go to the model's #1 Section; no model is called.
+	if filing.FileByFallback(db, NewNotifier(api, db, cfg), live.View.Undetermined, true) > 0 {
+		if live, err = publish.LoadWeek(db, cfg, time.Now()); err != nil {
+			postEphemeralTo(api, channelID, userID, fmt.Sprintf("Error loading the report: %v", err))
+			return
 		}
 	}
 	if n := len(live.View.Undetermined); n > 0 && !confirmed {
@@ -517,8 +514,8 @@ func publishReport(api *slack.Client, db *sql.DB, cfg Config, channelID, userID,
 		log.Printf("generate-report publish error: %v", err)
 		return
 	}
-	if loops != nil {
-		go proposeAfterPublish(loops)
+	if proposals != nil {
+		go proposeAfterPublish(proposals)
 	}
 	filePath, title := res.TeamPath, fmt.Sprintf("%s team report", cfg.TeamName)
 	if mode == "boss" {
@@ -534,7 +531,7 @@ func publishReport(api *slack.Client, db *sql.DB, cfg Config, channelID, userID,
 }
 
 // proposeAfterPublish generates the week's Structure Proposals; they reach managers by DM.
-func proposeAfterPublish(l Loops) {
+func proposeAfterPublish(l Proposals) {
 	ctx, cancel := context.WithTimeout(context.Background(), retrospectTimeout)
 	defer cancel()
 	if _, err := l.ProposeStructure(ctx); err != nil {
@@ -1123,9 +1120,6 @@ func handleBlockActions(api *slack.Client, db *sql.DB, cfg Config, cb slack.Inte
 		return
 	case actionNudgePagePrev, actionNudgePageNext:
 		handleNudgePageAction(api, db, cfg, cb, act)
-		return
-	case actionNotesUndo:
-		handleNotesUndo(api, cfg, cb, act.Value)
 		return
 	case actionProposalApprove, actionProposalReject:
 		handleProposalDecision(api, db, cfg, cb, act.Value, act.ActionID == actionProposalApprove)
@@ -1807,7 +1801,7 @@ func handleHelp(api *slack.Client, cfg Config, cmd slack.SlashCommand) {
 			"`/gen` — Alias of `/generate-report`.",
 			"`/check` — List missing members with nudge buttons, and merged code changes waiting in testing.",
 			"`/nudge <member>` — Send a test nudge DM to one member.",
-			"`/retrospect` — Run the learning loops now: learned notes (replay-gated) and structure proposals.",
+			"`/retrospect` — Generate structure proposals now (new, split or retired Sections) for managers to approve.",
 			"`/stats` — Show this week's filing stats.",
 		)
 	}

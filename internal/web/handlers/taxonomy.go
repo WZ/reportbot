@@ -41,8 +41,7 @@ func TaxonomyPage(db *sql.DB) http.HandlerFunc {
 		}
 		var build func(n domain.TaxonomyNode) templates.TaxNodeData
 		build = func(n domain.TaxonomyNode) templates.TaxNodeData {
-			d := templates.TaxNodeData{ID: n.ID, Level: n.Level, Name: n.Name, Description: n.Description,
-				LearnedNotes: n.LearnedNotes, IsSection: sections[n.ID]}
+			d := templates.TaxNodeData{ID: n.ID, Level: n.Level, Name: n.Name, Description: n.Description, IsSection: sections[n.ID]}
 			for _, c := range tax.Children(n.ID) {
 				d.Children = append(d.Children, build(c))
 			}
@@ -138,20 +137,6 @@ func RetireTaxonomyNode(db *sql.DB, wake func()) http.HandlerFunc {
 			return err
 		}
 		return web.RetireTaxonomyNode(db, n.ID)
-	})
-}
-
-// SetTaxonomyNotes edits or clears a Section's Learned Notes; the manager's description is untouched.
-func SetTaxonomyNotes(db *sql.DB, wake func()) http.HandlerFunc {
-	return taxonomyEdit(db, wake, func(r *http.Request, tax domain.Taxonomy) error {
-		n, err := pathNode(r, tax)
-		if err != nil {
-			return err
-		}
-		if _, ok := tax.Section(n.ID); !ok {
-			return fmt.Errorf("only a Section has learned notes")
-		}
-		return web.SetLearnedNotes(db, n.ID, r.FormValue("learned_notes"), middleware.UserID(r))
 	})
 }
 

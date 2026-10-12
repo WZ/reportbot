@@ -10,7 +10,7 @@ import (
 )
 
 func LoadTaxonomy(db *sql.DB) (domain.Taxonomy, error) {
-	rows, err := db.Query(`SELECT id, parent_id, level, name, description, learned_notes, sort_order, retired_at IS NOT NULL FROM taxonomy_nodes ORDER BY sort_order, id`)
+	rows, err := db.Query(`SELECT id, parent_id, level, name, description, sort_order, retired_at IS NOT NULL FROM taxonomy_nodes ORDER BY sort_order, id`)
 	if err != nil {
 		return domain.Taxonomy{}, err
 	}
@@ -19,7 +19,7 @@ func LoadTaxonomy(db *sql.DB) (domain.Taxonomy, error) {
 	for rows.Next() {
 		var n domain.TaxonomyNode
 		var parent sql.NullInt64
-		if err := rows.Scan(&n.ID, &parent, &n.Level, &n.Name, &n.Description, &n.LearnedNotes, &n.SortOrder, &n.Retired); err != nil {
+		if err := rows.Scan(&n.ID, &parent, &n.Level, &n.Name, &n.Description, &n.SortOrder, &n.Retired); err != nil {
 			return t, err
 		}
 		n.ParentID = parent.Int64
