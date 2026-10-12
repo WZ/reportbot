@@ -16,7 +16,8 @@ import (
 )
 
 // NewServer creates and configures the HTTP server with chi router.
-func NewServer(cfg web.Config, db *sql.DB) *http.Server {
+// wake nudges the filing worker after a Work Item or the Taxonomy changes.
+func NewServer(cfg web.Config, db *sql.DB, wake func(), hooks web.PublishHooks) *http.Server {
 	r := chi.NewRouter()
 
 	// Built-in chi middleware
@@ -61,26 +62,31 @@ func NewServer(cfg web.Config, db *sql.DB) *http.Server {
 
 		r.Post("/logout", Logout())
 
-		// Report editor (read-only for non-managers, preview filters by author)
-		r.Get("/", ReportEditorPage(cfg, db))
+		r.Get("/", ReportPage(cfg, db))
+		r.Get("/report/body", ReportBody(cfg, db))
 		r.Get("/preview", PreviewMarkdown(cfg, db))
+		r.Get("/published", PublishedList(db))
+		r.Get("/published/{week}", PublishedReport(db))
 
-		// Manager-only mutation routes
+		// Owner or manager; checked per Work Item
+		r.Get("/items/{id}/edit", EditItemForm(cfg, db))
+		r.Get("/items/{id}/view", ViewItemRow(cfg, db))
+		r.Post("/items/{id}", UpdateItem(cfg, db, wake))
+		r.Post("/items/{id}/move", MoveItem(cfg, db))
+		r.Post("/items/{id}/delete", DeleteItem(db))
+
 		r.Group(func(r chi.Router) {
 			r.Use(mw.RequireManager)
 
-			r.Post("/items/{id}/reclassify", ReclassifyItemHandler(cfg, db))
-			r.Post("/items/{id}", UpdateItemHandler(db))
-			r.Post("/items/{id}/delete", DeleteItemHandler(db))
-			r.Get("/items/{id}/edit", EditItemForm(db))
-			r.Get("/items/{id}/view", ViewItemRow(db))
-			r.Get("/categories/new", NewCategoryForm())
-			r.Post("/categories", CreateCategory(db))
-			r.Get("/categories/{id}/rename", RenameCategoryForm(db))
-			r.Get("/categories/{id}/cancel", CancelRename(db))
-			r.Post("/categories/{id}/rename", RenameCategory(db))
-			r.Post("/generate", GenerateReport(cfg, db))
+			r.Post("/generate", GenerateReport(cfg, db, hooks))
 			r.Get("/generate/{jobID}/status", GenerateStatus())
+			r.Get("/taxonomy", TaxonomyPage(db))
+			r.Post("/taxonomy/nodes", AddTaxonomyNode(db, wake))
+			r.Post("/taxonomy/nodes/{id}", UpdateTaxonomyNode(db, wake))
+			r.Post("/taxonomy/nodes/{id}/move", MoveTaxonomyNode(db, wake))
+			r.Post("/taxonomy/nodes/{id}/retire", RetireTaxonomyNode(db, wake))
+			r.Post("/taxonomy/nodes/{id}/merge", MergeTaxonomySection(db, wake))
+			r.Post("/taxonomy/nodes/{id}/split", SplitTaxonomySection(db, wake))
 		})
 	})
 

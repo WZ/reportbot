@@ -21,6 +21,7 @@ type gitlabMRResponse struct {
 	CreatedAt   string `json:"created_at"`
 	State       string `json:"state"`
 	Author      struct {
+		ID       int64  `json:"id"`
 		Username string `json:"username"`
 		Name     string `json:"name"`
 	} `json:"author"`
@@ -108,6 +109,7 @@ func FetchMRs(cfg Config, from, to time.Time) ([]GitLabMR, error) {
 			allMRs = append(allMRs, GitLabMR{
 				Title:       mr.Title,
 				Author:      mr.Author.Username,
+				AuthorID:    mr.Author.ID,
 				AuthorName:  mr.Author.Name,
 				WebURL:      mr.WebURL,
 				TicketIDs:   parseTicketIDsFromDescription(mr.Description, ticketFieldLabel),
@@ -128,6 +130,12 @@ func FetchMRs(cfg Config, from, to time.Time) ([]GitLabMR, error) {
 
 	log.Printf("gitlab fetch done total=%d", len(allMRs))
 	return allMRs, nil
+}
+
+// ParseTicketIDs reads the ticket field (gitlab_ref_ticket_label) of a merge or pull
+// request description.
+func ParseTicketIDs(description, fieldLabel string) string {
+	return parseTicketIDsFromDescription(description, fieldLabel)
 }
 
 func parseTicketIDsFromDescription(description, fieldLabel string) string {

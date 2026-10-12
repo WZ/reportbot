@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"regexp"
+	"reportbot/internal/fetch"
 	"strings"
 	"testing"
 	"time"
@@ -359,7 +360,9 @@ func TestFunctional_HandleReport_RejectsAmbiguousDelegatedAuthor(t *testing.T) {
 	}
 }
 
-func TestFunctional_HandleReport_DelegatedWithSlackIDResolution(t *testing.T) {
+// A workspace-wide name lookup would find U_BOB, but team_members holds a name, not an ID,
+// so the roster is empty and the delegated item stays unbound (manager-editable).
+func TestFunctional_HandleReport_DelegatedNameOutsideRosterStaysUnbound(t *testing.T) {
 	db := newTestDB(t)
 	api := newMockSlackAPIWithUsers(t)
 
@@ -390,8 +393,8 @@ func TestFunctional_HandleReport_DelegatedWithSlackIDResolution(t *testing.T) {
 	if items[0].Author != "Bob Real" {
 		t.Errorf("expected author 'Bob Real', got %q", items[0].Author)
 	}
-	if items[0].AuthorID != "U_BOB" {
-		t.Errorf("expected AuthorID 'U_BOB' (delegated member's resolved Slack ID), got %q", items[0].AuthorID)
+	if items[0].AuthorID != "" {
+		t.Errorf("expected no AuthorID outside the roster, got %q", items[0].AuthorID)
 	}
 }
 
@@ -495,7 +498,7 @@ func TestFunctional_FetchAndImportGitHub_EndToEnd(t *testing.T) {
 		Location:    time.UTC,
 	}
 
-	first, err := FetchAndImportMRs(cfg, db)
+	first, err := FetchAndImportMRs(cfg, db, fetch.Hooks{})
 	if err != nil {
 		t.Fatalf("FetchAndImportMRs first run failed: %v", err)
 	}
@@ -503,7 +506,7 @@ func TestFunctional_FetchAndImportGitHub_EndToEnd(t *testing.T) {
 		t.Fatalf("unexpected first fetch result: %+v", first)
 	}
 
-	second, err := FetchAndImportMRs(cfg, db)
+	second, err := FetchAndImportMRs(cfg, db, fetch.Hooks{})
 	if err != nil {
 		t.Fatalf("FetchAndImportMRs second run failed: %v", err)
 	}

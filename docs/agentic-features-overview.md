@@ -2,23 +2,21 @@
 
 ## What Is ReportBot?
 
-ReportBot is a Slack bot that collects work items from developers (via `/report` commands and GitLab MR imports) and generates structured weekly markdown reports. An LLM classifies each item into the correct report section automatically.
+ReportBot is a Slack bot that collects Work Items from developers (`/report`) and from code hosting (GitLab MRs, GitHub PRs) and files each one into the team's Weekly Report **the moment it arrives**. The team watches a live report in the web UI; a manager publishes it at the end of the week. Terms used here (Work Item, Section, Placement, Taxonomy, Undetermined) are defined in [`CONTEXT.md`](../CONTEXT.md).
 
 ## The Problem We Solved
 
-The LLM classifier was **open-loop** — it made decisions, but never learned from mistakes. Every week, managers manually corrected the same misclassifications. Those corrections were lost the moment the report was finalized.
+The first version classified everything in one batch at report time. Confidence was invented by code, corrections arrived too late to matter that week, and the Section list was re-parsed from last week's markdown, so renaming a heading broke history.
 
-| Before | After |
-|--------|-------|
-| LLM repeats same mistakes weekly | LLM learns from every correction |
-| Manager fixes are lost | Corrections stored permanently |
-| Single-threaded, slow for large teams | Parallel classification (~3x faster) |
-| Random few-shot examples | TF-IDF relevance-based example selection |
-| Single-pass classification | Optional generator-critic loop catches errors |
-| Full-price repeated system prompts | Prompt caching (~40% cost reduction) |
-| Low-confidence items hidden in report | Uncertain items surfaced for review |
-| Glossary maintained manually | Glossary grows automatically |
-| No visibility into LLM accuracy | Full decision audit trail + `/stats` dashboard |
+| Before | Now |
+|--------|-----|
+| Items classified in a batch when the report is generated | Each Work Item is filed when it arrives |
+| Confidence assigned by code (0.90 by default) | Confidence is a calibrated probability from a decision model |
+| Low-confidence items reviewed by the manager at report time | The reporter is asked "Where does this go?" right away; unanswered after 24 h, the model's first choice is used |
+| Sections re-parsed from the last report, positional IDs | Taxonomy in the database with stable IDs, edited in the web UI |
+| Open items carried over as copied text | Open Work Items stay on every report until they are done |
+| Glossary and guide files maintained beside the code | Manager-written Section descriptions; structure changes proposed by the LLM, approved by a manager |
+| Report visible only after generation | Live report in the web UI for the whole team |
 
 ---
 
@@ -26,144 +24,93 @@ The LLM classifier was **open-loop** — it made decisions, but never learned fr
 
 ### What Makes It "Agentic"?
 
-Traditional AI integration is **call-and-forget**: send data to an LLM, get a response, done. Agentic AI adds **memory, self-evaluation, and autonomous improvement**. ReportBot's classifier now exhibits three agentic properties:
-
-1. **Memory** — It remembers past decisions and corrections across weeks
-2. **Self-evaluation** — It flags its own low-confidence decisions for human review
-3. **Self-improvement** — It uses corrections to avoid repeating mistakes and autonomously updates its own rules
-4. **Planning** — A generator-critic loop lets the system review and revise its own classifications before presenting them
+1. **Memory** — every Placement, by the models or by a person, is kept and reused as context
+2. **Self-evaluation** — every Section pick comes with a calibrated confidence that decides whether it is filed
+3. **Knowing what it doesn't know** — below a confidence level it asks a person instead of guessing
+4. **Self-improvement** — person decisions and corrections feed the next filing, the LLM proposes structure changes, and every hand edit is recorded for future learning
 
 ---
 
-### Feature 1: Self-Improving Classification
+### Feature 1: Filing on Arrival
 
-**What it does:** Every time a manager corrects a classification, that correction is stored and injected into future LLM prompts as a "don't repeat this mistake" example.
+**What it does:** `/report` saves the Work Item, replies "Saved — filing it…" within Slack's 3-second limit, and queues a filing job. A background worker files it and updates the reply with the Section, the formatted report line, Status and tickets.
 
-**Why it matters:** Classification accuracy improves week over week without any model retraining. The system learns from its operational environment, not from a static training set.
+**Why it matters:** The reporter sees where the item landed while the context is fresh, and the team sees the report grow during the week.
 
 **How it works:**
-- Manager changes an item's category via the edit modal or uncertainty buttons
-- The original LLM decision and the correction are recorded
-- On the next report generation, the last 4 weeks of corrections are included in the prompt
-- The LLM sees: *"Fix TimescaleDB lag" was classified as Support, corrected to Query Service* — and avoids that mistake
+- The job is stored in the database together with the Work Item, so a crash or restart loses nothing
+- Workers retry failures with backoff (5 attempts); after that the item is Undetermined and a 15-minute sweep re-queues it
+- Fetched MRs/PRs go through the same queue; their questions go to the author by DM
 
 ---
 
-### Feature 2: Uncertainty Sampling
+### Feature 2: One Calibrated Decision per Work Item
 
-**What it does:** After generating a report, the bot identifies items where the LLM's confidence was below the threshold and sends interactive Slack messages asking the manager to confirm or correct the classification.
+**What it does:** A decision model (System One protocol) picks the Section as a Choice over the active Sections, and in the same request answers the narrow questions code cannot decide. The Choice's confidence is the Placement's confidence.
 
-**Why it matters:** Instead of silently dumping uncertain items into "Undetermined", the system actively seeks human input where it knows it's unsure. This is a core agentic behavior — **knowing what you don't know**.
+**Why it matters:** The decision model returns calibrated probabilities, so its confidence can gate what is filed without a person. On 592 past Work Items this filed about three times as many items at ≥ 90% accuracy as an LLM pick checked by the same model, with the same overall accuracy and half the calls.
 
 **How it works:**
-- Items with confidence between 0% and the configured threshold (default 70%) are flagged
-- Each gets an ephemeral Slack message with the LLM's best guess and section buttons
-- One tap records the correction and updates the item
-- Capped at 10 items per report to avoid notification fatigue
+- One request per Work Item: the `section` Choice (criteria = each Section's path plus any manager-written description), with the 30 most similar past Work Items and where they were filed in `state`
+- In the same request, only when code cannot decide: the Status, the ticket ID among several candidate numbers, and whether the report updates an Open Work Item
+- Raw answers and probabilities are stored (`model_judgments`), so the threshold can be re-tuned without calling the model again
 
 ---
 
-### Feature 3: Auto-Growing Glossary
+### Feature 3: Ask Instead of Guess
 
-**What it does:** When the same type of item is corrected to the same section 2 or more times, the system automatically adds that phrase to the glossary — a deterministic override that bypasses the LLM entirely.
+**What it does:** When the Section confidence is below `decision_model_confidence` (default 0.85), the Work Item waits in Undetermined and the reporter gets "Where does this go?" buttons for the decision model's three most likely Sections, plus Other….
 
-**Why it matters:** The system **autonomously builds its own rules** from observed patterns. High-frequency corrections graduate from "LLM hint" to "hard rule" without human intervention. This is the most agentic feature — the bot is writing its own configuration.
+**Why it matters:** The system acts alone only where it is reliable and hands the rest to the person who knows the answer. One click from the reporter is a person-decided Placement.
 
 **How it works:**
-- After each correction, the system counts how many times that description has been corrected to the same section
-- At 2+ occurrences, the phrase is extracted, normalized, and appended to the glossary YAML
-- On future runs, glossary matches override LLM decisions with 99% confidence — instant, zero-latency
+- At 0.85, about 43% of items filed themselves at about 84% accuracy in the evaluation (0.91 reached 90% with 27% filed); for 88% of items the right Section is among the three buttons
+- Likely Updates are always confirmed: "Looks like an update to …" [Update it] [It's new]
+- A likely link between an MR and an Open Work Item is confirmed by the MR author by DM; only an exact ticket match links automatically
 
 ---
 
-### Feature 4: Retrospective Analysis
+### Feature 4: Memory That Comes From People
 
-**What it does:** The `/retrospect` command triggers an LLM analysis of all recent corrections to find patterns and suggest systemic improvements.
+**What it does:** Every Placement change is recorded in `placement_history` with who decided it — a model, the reporter, or a manager. Person decisions become the similar-item examples for future filing. Every hand edit of a Work Item's text, Status or tickets, every delete and every Update is also recorded with before, after and who, and a Friday Draft Snapshot of the report is kept beside the Published Report: together they show what people fix by hand.
 
-**Why it matters:** Individual corrections fix individual items. Retrospective analysis finds the **root cause** — a missing glossary rule, an ambiguous category description — and suggests a fix. The manager reviews and applies with one click.
+**Why it matters:** The system learns the team's filing conventions from ordinary use — no retraining, no separate labelling step.
+
+---
+
+### Feature 5: Taxonomy as Living Data
+
+**What it does:** Areas, Categories and Sections live in the database with stable IDs. Managers add, rename, reorder, split, merge and retire them in the web UI.
+
+**Why it matters:** Renaming "7.4.5 release" to "7.4.6 release" no longer breaks history, and new Sections take effect immediately.
 
 **How it works:**
-- Loads all corrections from the last 4 weeks
-- Sends them to the LLM with the instruction: "find patterns, suggest rules"
-- Returns up to 5 suggestions, each with an Apply or Dismiss button
-- "Apply" writes the rule directly to the glossary or classification guide
+- Every Taxonomy edit queues one re-filing of Open Work Items: the decision model picks again for each, and confident changes move
+- If a person's choice is overridden, that person gets a DM with an Undo button
 
 ---
 
-### Feature 5: Classification Audit Trail
+### Feature 6: Fallback When Nobody Answers
 
-**What it does:** Every LLM classification decision is persisted with full context — section chosen, confidence score, provider, model, timestamp.
+**What it does:** An unsure Work Item that nobody placed within 24 hours, or that is still Undetermined when a manager confirms publishing, is filed under the decision model's most likely Section, read from its stored answer. The reporter gets "Filed under *X* automatically (no answer within a day)" with a Change button.
 
-**Why it matters:** Complete observability into LLM behavior. Enables accuracy measurement, regression detection, and debugging of misclassifications. Also provides the foundation for the correction system (you need to know the original decision to record a correction).
-
----
-
-### Feature 6: Parallel Batch Processing
-
-**What it does:** Large item sets are split into batches and classified concurrently instead of sequentially.
-
-**Why it matters:** For teams with 50+ items, report generation time drops from minutes to under a minute. This is a quality-of-life improvement that makes the tool practical for larger teams.
+**Why it matters:** Reports don't fill up with Undetermined items when people are busy, and no extra model call is made. An LLM second opinion was measured and chose no better than the decision model's own first choice (52% vs 53% on unsure items), so it was dropped (ADR 0003).
 
 ---
 
-### Feature 7: Prompt Caching
+### Feature 7: Structure Proposals (optional LLM)
 
-**What it does:** The Anthropic system prompt is marked with `CacheControl` so it's cached across parallel batches within a report generation run.
+**What it does:** After each publish, and on `/retrospect`, the LLM proposes 0–3 Taxonomy changes: a new Section for a recurring theme among Undetermined and "Other…" Work Items, a split of a large Section with separate themes, or retiring a Section unused for 8 weeks. Managers get [Approve] [Reject] by DM. Approve applies the change once through the Taxonomy edit paths, which re-file Open Work Items. A rejected change is not proposed again for 8 weeks, even reworded; an undecided one expires after 2 weeks, and a retirement is checked again when approved.
 
-**Why it matters:** The system prompt (section list, rules, glossary, corrections) is identical across all parallel batches. Caching avoids re-processing it for each batch, reducing input token costs by ~40%.
-
-**How it works:**
-- The system prompt `TextBlockParam` includes `CacheControl: ephemeral`
-- On the first batch call, Anthropic caches the system prompt (reported as `cache_creation_input_tokens`)
-- Subsequent parallel batch calls hit the cache (reported as `cache_read_input_tokens`)
-- Cache tokens are tracked in `LLMUsage` and logged per call
+**Why it matters:** The report's structure drifts as work changes. The LLM spots the drift, and a manager decides. LLM-written notes fed to the decision model were tried, measured at +0.9 points over 7 weeks (noise), and rejected (ADR 0003).
 
 ---
 
-### Feature 8: TF-IDF Example Selection
+### Feature 8: Accuracy Dashboard (`/stats`)
 
-**What it does:** Instead of blindly using the first N items from the previous report as few-shot examples, the system selects the most relevant historical items for each classification batch using TF-IDF cosine similarity.
+**What it does:** Shows, for the week: items reported or fetched, how many were filed automatically, how many were asked, how many were filed automatically because the reporter didn't answer, filing failures, items still Undetermined, and corrections by Section.
 
-**Why it matters:** Better examples lead to better classifications, especially for new or unusual item types. A work item about "TimescaleDB replication lag" gets examples about database and query items, not random infrastructure tasks.
-
-**How it works:**
-- On report generation, the system loads up to 500 classified items from the last 12 weeks (confidence >= 0.70)
-- A TF-IDF index is built in memory (`internal/integrations/llm/llm_examples.go`) with tokenization, IDF weighting, and sparse vectors
-- For each classification batch, `topKForBatch` finds the most similar historical items across all batch queries
-- Selected examples are included in the prompt with their correct section IDs
-- Falls back to the previous behavior (existing items from current report) when no historical data exists
-
----
-
-### Feature 9: Generator-Critic Loop
-
-**What it does:** An optional second LLM pass reviews all classification assignments and flags potential misclassifications before the manager sees the report.
-
-**Why it matters:** A single-pass classifier can make confident mistakes. The critic pass catches these by reviewing assignments in context — seeing all items and their sections together, which the initial per-batch classifier cannot.
-
-**How it works:**
-- Enabled via `llm_critic_enabled: true` in config
-- After all batches are merged and glossary overrides applied, the full assignment list is sent to a second LLM call
-- The critic prompt asks: "Review these classifications. Return only items you believe are misclassified, with a suggested section."
-- Valid suggestions (where the suggested section exists) are applied automatically
-- The critic's token usage is tracked and logged alongside the main classification usage
-- If the critic call fails, it's logged as non-fatal and the original assignments are preserved
-
----
-
-### Feature 10: Accuracy Dashboard (`/stats`)
-
-**What it does:** The `/stats` command shows classification accuracy metrics, confidence distributions, most-corrected sections, and weekly trends.
-
-**Why it matters:** Without metrics, you can't tell if the system is improving. The dashboard gives managers visibility into classification quality over time, helping them decide whether to adjust the glossary, enable the critic, or tune the confidence threshold.
-
-**How it works:**
-- Manager-only command
-- Queries `classification_history` and `classification_corrections` tables for aggregate stats
-- Shows: total classifications, total corrections, average confidence, confidence bucket distribution
-- Shows: most-corrected sections (where the LLM makes the most mistakes)
-- Shows: 8-week trend of classifications, corrections, and average confidence
-- Rendered as an ephemeral Slack message
+**Why it matters:** The confidence threshold was set from historical data; `/stats` is how the team checks it against real corrections and tunes it.
 
 ---
 
@@ -171,105 +118,118 @@ Traditional AI integration is **call-and-forget**: send data to an LLM, get a re
 
 ### Human-in-the-Loop by Default
 
-Every autonomous action has a human checkpoint:
-- Auto-glossary only fires after 2+ identical corrections (not on first occurrence)
-- Retrospective suggestions require explicit "Apply" — nothing is auto-applied
-- Uncertainty sampling is ephemeral and optional — managers can ignore it
-- Corrections are always attributable (who corrected, when)
+- Nothing is filed silently unless the decision model is confident
+- Updates and MR links are confirmed by a person; only exact ticket matches link automatically
+- `done` is always a person's decision — a merged MR moves a Work Item to `in testing`, not `done`
+- Structure Proposals change the Taxonomy only when a manager approves them
+- A fallback Placement uses only the decision model's own first choice, and the reporter can change it
+- A person whose choice is overridden after a Taxonomy edit can undo it
 
 ### Graceful Degradation
 
-All agentic features are **additive and non-fatal**:
-- If classification history fails to persist, the report still generates
-- If no corrections exist, prompts are unchanged
-- If the glossary file is missing, auto-grow creates it
-- If the retrospective LLM call fails, it surfaces the error and stops
+- The Slack reply never waits for a model
+- If the decision model is unreachable, the Work Item is Undetermined with a reason and retried; it is never lost
+- Publishing calls no model; it warns about Undetermined items, and only after the manager confirms files unanswered unsure ones by fallback
 
-### Privacy and Control
+### Trust and Identity
 
-- Corrections are stored locally in SQLite, not sent to external services
-- The glossary and guide files are human-readable YAML/markdown under version control
-- Managers can review and revert any auto-generated glossary term
-- The LLM provider and model are configurable (Anthropic or OpenAI)
+- Only a Work Item's author (by Slack user ID) or a manager can change it; display names are never trusted
+- Fetched and imported Work Items get an owner only through the explicit `author_ids` map; code-hosting accounts are matched by numeric account ID
+- Unmapped Work Items are manager-only
 
-### Cost Awareness
+### Privacy and Cost
 
-- Corrections are injected as text (20 lines max) — negligible token overhead
-- Parallel batches don't increase total tokens, only wall-clock time
-- Prompt caching reduces input token costs by ~40% across parallel batches
-- The critic loop is opt-in (`llm_critic_enabled`) — disabled by default to avoid extra cost
-- Retrospective is on-demand (`/retrospect`), not scheduled — cost is opt-in
-- Glossary overrides bypass the LLM entirely — each auto-glossary term saves future tokens
-- TF-IDF example selection is pure in-memory computation — no additional LLM calls
+- The models are reached through configurable endpoints, so they can stay behind an internal gateway
+- Similar-item retrieval is in-memory TF-IDF — no extra model calls
+- Each Work Item costs one decision-model request; publishing costs none
 
 ---
 
 ## High-Level Architecture
 
 ```mermaid
-flowchart LR
+flowchart TB
     subgraph Input["Input"]
-        direction TB
+        direction LR
         DEV["/report<br>(Slack)"]
-        GL["GitLab<br>MRs"]
+        CC["GitLab MRs /<br>GitHub PRs"]
     end
 
-    subgraph Classify["Classify"]
-        direction TB
-        MEM["Memory<br>───<br>Glossary<br>Guide<br>Corrections"]
-        TFIDF["TF-IDF<br>Example<br>Selection"]
-        LLM["LLM Classifier<br>(parallel, cached)"]
-        CRITIC["Critic<br>(optional 2nd pass)"]
-        MEM -.->|enrich| LLM
-        TFIDF -.->|"few-shot<br>examples"| LLM
-        LLM --> CRITIC
+    Q[("Filing queue<br>(saved first)")]
+
+    subgraph File["File on arrival"]
+        direction LR
+        MEM["Memory<br>───<br>Taxonomy + descriptions<br>Similar past items"]
+        DM["Decision model picks the Section<br>(+ Status, ticket, Update)"]
+        MEM -.->|context| DM
+    end
+
+    subgraph Place["Placement"]
+        direction LR
+        AUTO["Filed<br>(confidence ≥ 0.85)"]
+        ASK["Where does this go?<br>(reporter decides)"]
     end
 
     subgraph Deliver["Deliver"]
-        direction TB
-        RPT["Weekly<br>Report"]
-        UNC["Uncertainty<br>Prompts"]
-        STATS["/stats<br>Dashboard"]
+        direction LR
+        LIVE["Live Weekly Report<br>(web UI)"]
+        PUB["Published Report<br>(.md / .eml)"]
+        STATS["/stats"]
     end
 
     MGR["Manager"]
+    FB["Fallback after 24 h<br>(model's #1 Section)"]
+    LLM["LLM (optional):<br>structure proposals"]
 
-    Input --> LLM
-    CRITIC --> Deliver
+    DEV --> Q
+    CC --> Q
+    Q --> DM
+    DM -->|"confident"| AUTO
+    DM -->|"unsure"| ASK
+    AUTO --> LIVE
+    ASK -->|"person Placement"| LIVE
+    ASK -->|"no answer in 24 h"| FB
+    FB --> LIVE
+    LIVE --> PUB
+    LIVE --> STATS
     Deliver --> MGR
-
-    MGR -->|"corrections"| MEM
+    ASK -.->|"person decisions"| MEM
+    MGR -.->|"moves, Taxonomy edits"| MEM
+    PUB -.->|"after publishing"| LLM
+    LLM -->|"Approve / Reject"| MGR
+    MGR -.->|"approved changes"| MEM
 
     style Input fill:#1a5276,stroke:#333,color:#fff
-    style Classify fill:#1a1a2e,stroke:#69f,color:#fff
+    style File fill:#1a1a2e,stroke:#69f,color:#fff
+    style Place fill:#14532d,stroke:#4ade80,color:#fff
     style Deliver fill:#0f3460,stroke:#69f,color:#fff
     style MGR fill:#f96,stroke:#333,color:#000
+    style FB fill:#14532d,stroke:#4ade80,color:#fff
+    style LLM fill:#3b2f5c,stroke:#a78bfa,color:#fff,stroke-dasharray: 4 3
 ```
 
-The key is the arrow from **Manager** back into **Memory**. Every correction enriches the next classification run — forming the closed loop. The TF-IDF index selects the most relevant historical examples for each batch, while the optional critic catches mistakes before the manager sees them. The system gets smarter each week without any model retraining.
+Two loops close the system. The **reporter loop**: whenever the decision model is unsure, the reporter decides, and that decision becomes memory for the next item. If nobody answers within 24 hours, the decision model's first choice is used and the reporter can still change it. The **manager loop**: moves, Taxonomy edits and approved Structure Proposals sharpen the context the decision model sees. Only confident answers, or unanswered ones, are filed without a person.
 
 ---
 
-## The Weekly Improvement Cycle
+## How It Improves Over Time
 
 ```
-Week 1:  LLM classifies 80 items → Manager corrects 12 → Corrections stored
-Week 2:  LLM sees Week 1 corrections in prompt → Only 7 need correcting
-         Auto-glossary triggers for 2 repeated patterns
-Week 3:  Glossary handles those 2 patterns automatically → 4 corrections
-         Manager runs /retrospect → Applies 2 more rules
-Week 4:  2 corrections. System is converging.
+Week 1:  Many items are asked ("Where does this go?") — reporters click once each
+Week 2:  Those clicks are now similar-item examples → more confident picks → fewer questions
+Week 3:  after publishing, Structure Proposals (e.g. a new Section for a recurring theme) → manager approves
+Week 4:  /stats shows real auto-filed accuracy → threshold re-tuned from production data
 ```
-
-Each week, the system handles more cases deterministically (glossary) and makes fewer LLM errors (corrections in prompt). The manager's effort decreases over time.
 
 ---
 
 ## What's Next
 
-| Feature | Value | Effort |
-|---------|-------|--------|
-| **Structured Output** | Use `anthropic.Tool` for critic response schema to eliminate JSON parse failures | Low |
-| **Structured Logging** | Replace `log.Printf` with `slog` + duration tracking for LLM call observability | Medium |
-| **Semantic Embeddings (RAG)** | Replace TF-IDF with vector embeddings for higher-quality example selection | High |
-| **ReAct Agent** | Turn classifier into an agent that can query GitLab, past reports, and team context before classifying | High |
+| Item | Value | Effort |
+|------|-------|--------|
+| **Re-tune the threshold** from 2–3 weeks of `/stats` corrections | More items filed without a question | Low |
+| **Manager-written descriptions** for the most confused Sections | Fewer neighbouring-Section mistakes | Low |
+| **Merge suggestions:** nightly, the LLM suggests merging related Work Item lines; the manager accepts or rejects them in the web editor. A pilot caught all of the manager's real merges. | Fewer duplicate lines on the report | Medium |
+| **Open-for-N-weeks badge:** computed, no LLM. | Long-running work stands out | Low |
+| **Faster decision-model serving** (batching on the gateway) | Faster bulk re-filing | Medium |
+| **Semantic embeddings** instead of TF-IDF for similar items | Better context for the decision model | Medium |

@@ -139,24 +139,10 @@ func RenderNudgeForUser(api *slack.Client, db *sql.DB, cfg Config, userID, repor
 	monday, nextMonday := ReportWeekRange(cfg, now)
 	reminder := buildGenericNudgeText(reportChannelID, monday, nextMonday)
 
-	items, err := GetItemsByDateRange(db, monday, nextMonday)
+	// Every Open Work Item, including merged Code Changes waiting in testing, so people can close them here.
+	items, err := GetOpenItems(db)
 	if err != nil {
 		return RenderedNudge{}, err
-	}
-
-	// Also include in-progress items from previous weeks so carry-over
-	// work appears in the interactive nudge.
-	ipItems, ipErr := GetInProgressItems(db)
-	if ipErr == nil {
-		seen := make(map[int64]bool, len(items))
-		for _, it := range items {
-			seen[it.ID] = true
-		}
-		for _, it := range ipItems {
-			if !seen[it.ID] {
-				items = append(items, it)
-			}
-		}
 	}
 
 	user, err := api.GetUserInfo(userID)
@@ -190,14 +176,14 @@ func renderGenericNudge(cfg Config, reportChannelID string, now time.Time) Rende
 }
 
 func renderUpdatedNoItems(reminder string) RenderedNudge {
-	msg := "Updated. No items are currently marked `in progress`."
+	msg := "Updated. You have no open Work Items."
 	blocks := []slack.Block{
 		slack.NewSectionBlock(slack.NewTextBlockObject(slack.MarkdownType, reminder, false, false), nil, nil),
 		slack.NewDividerBlock(),
 		slack.NewSectionBlock(slack.NewTextBlockObject(slack.MarkdownType, msg, false, false), nil, nil),
 	}
 	return RenderedNudge{
-		Text:   reminder + "\n\nUpdated. No items are currently marked in progress.",
+		Text:   reminder + "\n\nUpdated. You have no open Work Items.",
 		Blocks: blocks,
 	}
 }
@@ -226,7 +212,7 @@ func renderInteractiveNudge(reminder, userID string, active []WorkItem, state re
 		textLines = append(textLines, stripMarkdownFormatting(itemText))
 	}
 
-	summary := fmt.Sprintf("Showing %d-%d of %d active items", state.pageStart+1, state.pageEnd, len(active))
+	summary := fmt.Sprintf("Showing %d-%d of %d open Work Items", state.pageStart+1, state.pageEnd, len(active))
 	blocks = append(blocks, slack.NewSectionBlock(slack.NewTextBlockObject(slack.MarkdownType, summary, false, false), nil, nil))
 	textLines = append(textLines, summary)
 
@@ -278,6 +264,11 @@ func buildMoreMenu(userID string, itemID int64, page int) *slack.OverflowBlockEl
 			slack.NewTextBlockObject(slack.PlainTextType, "Mark as In progress", false, false),
 			nil,
 		),
+		slack.NewOptionBlockObject(
+			fmt.Sprintf("status|%s|%d|blocked|%d", userID, itemID, page),
+			slack.NewTextBlockObject(slack.PlainTextType, "Mark as Blocked", false, false),
+			nil,
+		),
 	)
 }
 
@@ -307,19 +298,10 @@ func matchUserItems(items []WorkItem, userID string, user *slack.User) []WorkIte
 	return matched
 }
 
-func itemBelongsToUser(item WorkItem, userID string, user *slack.User) bool {
-	if strings.TrimSpace(item.AuthorID) != "" {
-		return strings.TrimSpace(item.AuthorID) == strings.TrimSpace(userID)
-	}
-	if user == nil {
-		return false
-	}
-	for _, candidate := range userNameCandidates(user) {
-		if strings.EqualFold(strings.TrimSpace(item.Author), candidate) || nameMatches(item.Author, candidate) || nameMatches(candidate, item.Author) {
-			return true
-		}
-	}
-	return false
+// itemBelongsToUser matches by Slack user ID only: the DM's buttons change the item.
+func itemBelongsToUser(item WorkItem, userID string, _ *slack.User) bool {
+	id := strings.TrimSpace(item.AuthorID)
+	return id != "" && id == strings.TrimSpace(userID)
 }
 
 func userNameCandidates(user *slack.User) []string {
@@ -360,7 +342,7 @@ func dedupeAndFilterActiveItems(items []WorkItem) []WorkItem {
 
 	active := make([]WorkItem, 0, len(latest))
 	for _, item := range latest {
-		if statusContainsInProgress(item.Status) {
+		if item.IsOpen() {
 			active = append(active, item)
 		}
 	}
@@ -382,10 +364,6 @@ func nudgeDedupeKey(item WorkItem) string {
 func normalizeDescriptionForDedupe(description, tickets string) string {
 	description = strings.TrimSpace(stripLeadingTicketPrefixIfSame(description, tickets))
 	return strings.ToLower(description)
-}
-
-func statusContainsInProgress(status string) bool {
-	return strings.Contains(strings.ToLower(strings.TrimSpace(status)), "in progress")
 }
 
 func pageBounds(total, page int) (int, int) {
@@ -419,14 +397,14 @@ func clampPage(page, totalPages int) int {
 func renderIntroText(count int, updated bool) string {
 	if updated {
 		if count == 1 {
-			return "Updated. This item is still marked `in progress`:"
+			return "Updated. This Work Item is still open:"
 		}
-		return "Updated. These items are still marked `in progress`:"
+		return "Updated. These Work Items are still open:"
 	}
 	if count == 1 {
-		return "This item is still marked `in progress`. Please update the status if it has changed."
+		return "This Work Item is still open. Please update the status if it has changed."
 	}
-	return "These items are still marked `in progress`. Please update the status if any have changed."
+	return "These Work Items are still open. Please update the status if any have changed."
 }
 
 func buildGenericNudgeText(reportChannelID string, monday, nextMonday time.Time) string {
@@ -435,7 +413,7 @@ func buildGenericNudgeText(reportChannelID string, monday, nextMonday time.Time)
 		channelRef = fmt.Sprintf(" Please report in <#%s>.", reportChannelID)
 	}
 	return fmt.Sprintf(
-		"Hey! Friendly reminder to report your work items for this week (%s - %s) using `/report`.%s\n"+
+		"Hey! Friendly reminder to report your Work Items for this week (%s - %s) using `/report`.%s\n"+
 			"Example: `/report [ticket_id] Add pagination to user list API (done)`",
 		monday.Format("Jan 2"), nextMonday.AddDate(0, 0, -1).Format("Jan 2"),
 		channelRef,
@@ -450,6 +428,9 @@ func formatNudgeItem(lineNumber int, item WorkItem) string {
 		description = fmt.Sprintf("[%s] %s", tickets, description)
 	}
 	statusText := strings.TrimSpace(item.Status)
+	if note := strings.TrimSpace(item.StatusNote); note != "" {
+		statusText += ": " + note
+	}
 	suffix := fmt.Sprintf(" _(current: %s)_", statusText)
 	prefix := fmt.Sprintf("%d. ", lineNumber)
 	description = truncateRunes(description, nudgeItemMaxRunes-runeLen(prefix)-runeLen(suffix))

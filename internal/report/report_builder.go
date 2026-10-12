@@ -2,742 +2,226 @@ package report
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
 	"sync"
-	"time"
 	"unicode"
-)
 
-type ReportTemplate struct {
-	PrefixLines []string
-	Categories  []TemplateCategory
-}
-
-type TemplateCategory struct {
-	Name        string
-	Subsections []TemplateSubsection
-	MarkerLine  string
-}
-
-type TemplateSubsection struct {
-	Name       string
-	HeaderLine string
-	Items      []TemplateItem
-}
-
-type TemplateItem struct {
-	Author      string
-	Description string
-	TicketIDs   string
-	Status      string
-	IsNew       bool
-	ReportedAt  time.Time
-}
-
-type loadStatus int
-
-const (
-	templateFromFile loadStatus = iota
-	templateFirstEver
+	"reportbot/internal/domain"
 )
 
 var (
-	categoryHeadingRe = regexp.MustCompile(`^\s*####\s+(.+?)\s*$`)
-	topHeadingRe      = regexp.MustCompile(`^\s*###\s+(.+?)\s*$`)
-	subcategoryRe     = regexp.MustCompile(`^\s*-\s+\*\*(.+?)\*\*(.*)$`)
-	bulletLineRe      = regexp.MustCompile(`^\s*-\s+(.+?)\s*$`)
-	statusSuffixRe    = regexp.MustCompile(`\(([^)]+)\)\s*$`)
-	ticketPrefixRe    = regexp.MustCompile(`^\[([^\]]+)\]\s+`)
-	bareTicketLeadRe  = regexp.MustCompile(`^\s*(?:#\s*)?(?:[A-Za-z][A-Za-z0-9_]*-)?([0-9A-Za-z]+)(?:\s*[:,-]\s*|\s+)`)
-	authorPrefixRe    = regexp.MustCompile(`^\*\*(.+?)\*\*\s*-\s*`)
-	nameAliasParenRe  = regexp.MustCompile(`\([^)]*\)|（[^）]*）`)
+	ticketPrefixRe   = regexp.MustCompile(`^\[([^\]]+)\]\s+`)
+	bareTicketLeadRe = regexp.MustCompile(`^\s*(?:#\s*)?(?:[A-Za-z][A-Za-z0-9_]*-)?([0-9A-Za-z]+)(?:\s*[:,-]\s*|\s+)`)
+	nameAliasParenRe = regexp.MustCompile(`\([^)]*\)|（[^）]*）`)
 )
 
-var classifySectionsFn = func(cfg Config, items []WorkItem, options []sectionOption, existing []existingItemContext, corrections []ClassificationCorrection, historicalItems []historicalItem) (map[int64]LLMSectionDecision, LLMUsage, error) {
-	return CategorizeItemsToSections(cfg, items, options, existing, corrections, historicalItems)
-}
-
-// GenerationMu prevents concurrent report generation from Slack and web UI.
+// GenerationMu prevents concurrent publishing from Slack and the web UI.
 var GenerationMu sync.Mutex
 
-type BuildResult struct {
-	Template  *ReportTemplate
-	Usage     LLMUsage
-	Decisions map[int64]LLMSectionDecision
-	Options   []sectionOption
+// UndeterminedHeading is the heading for Work Items without a Section.
+const UndeterminedHeading = "Undetermined"
+
+// View is a Weekly Report organised by the Taxonomy; empty parts are omitted.
+type View struct {
+	Areas        []AreaView
+	Undetermined []WorkItem
 }
 
-func BuildReportsFromLast(cfg Config, items []WorkItem, reportDate time.Time, corrections []ClassificationCorrection, historicalItems []historicalItem) (BuildResult, error) {
-	template, status, err := loadTemplateForGeneration(cfg.ReportOutputDir, cfg.TeamName, reportDate)
-	if err != nil {
-		return BuildResult{}, err
-	}
-	stripCurrentTeamTitleFromPrefix(template, cfg.TeamName)
-
-	merged := cloneTemplate(template)
-	trimDoneItems(merged)
-
-	options := templateOptions(template)
-	var decisions map[int64]LLMSectionDecision
-	llmUsage := LLMUsage{}
-	if len(options) > 0 && status != templateFirstEver {
-		existing := buildExistingItemContext(merged, options)
-		decisions, llmUsage, err = classifySectionsFn(cfg, items, options, existing, corrections, historicalItems)
-		if err != nil {
-			return BuildResult{Usage: llmUsage}, err
-		}
-	}
-
-	// Apply authoritative corrections: override LLM decisions with manual corrections.
-	// Corrections are hard overrides, not suggestions — if a manager moved an item
-	// to a section, that decision sticks even if the LLM disagrees.
-	applyAuthoritativeCorrections(decisions, corrections, items)
-
-	confidenceThreshold := cfg.LLMConfidence
-	if confidenceThreshold <= 0 || confidenceThreshold > 1 {
-		confidenceThreshold = 0.70
-	}
-
-	mergeIncomingItems(merged, items, options, decisions, confidenceThreshold)
-	reorderTemplateItems(merged)
-
-	return BuildResult{
-		Template:  merged,
-		Usage:     llmUsage,
-		Decisions: decisions,
-		Options:   options,
-	}, nil
+type AreaView struct {
+	Name       string
+	Categories []CategoryView
 }
 
-func loadTemplateForGeneration(outputDir, teamName string, reportDate time.Time) (*ReportTemplate, loadStatus, error) {
-	lastPath, err := findLatestReportBefore(outputDir, teamName, reportDate)
-	if err != nil {
-		if strings.Contains(err.Error(), "no prior report found") {
-			return &ReportTemplate{
-				Categories: []TemplateCategory{
-					{
-						Name: "Undetermined",
-						Subsections: []TemplateSubsection{
-							{},
-						},
-					},
-				},
-			}, templateFirstEver, nil
-		}
-		return nil, templateFromFile, err
-	}
-	content, err := os.ReadFile(lastPath)
-	if err != nil {
-		return nil, templateFromFile, fmt.Errorf("reading last report: %w", err)
-	}
-	template := parseTemplate(string(content))
-	if len(template.Categories) == 0 {
-		return nil, templateFromFile, fmt.Errorf("last report has no categories: %s", lastPath)
-	}
-	return template, templateFromFile, nil
+type CategoryView struct {
+	Name  string
+	ID    int64
+	Items []WorkItem // the Category is itself the Section
+	// Sections under the Category, in Taxonomy order.
+	Sections []SectionView
 }
 
-func findLatestReportBefore(outputDir, teamName string, reportDate time.Time) (string, error) {
-	entries, err := os.ReadDir(outputDir)
-	if err != nil {
-		return "", fmt.Errorf("reading report output dir: %w", err)
-	}
-
-	sanitized := sanitizeFilename(teamName)
-	prefix := sanitized + "_"
-	friday := FridayOfWeek(reportDate)
-	currentFile := fmt.Sprintf("%s_%s.md", sanitized, friday.Format("20060102"))
-	type candidate struct {
-		path string
-		date time.Time
-	}
-	var candidates []candidate
-
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		name := entry.Name()
-		if name == currentFile || !strings.HasPrefix(name, prefix) || !strings.HasSuffix(name, ".md") {
-			continue
-		}
-		raw := strings.TrimSuffix(strings.TrimPrefix(name, prefix), ".md")
-		d, err := time.Parse("20060102", raw)
-		if err != nil {
-			continue
-		}
-		if !d.Before(reportDate) {
-			continue
-		}
-		candidates = append(candidates, candidate{
-			path: filepath.Join(outputDir, name),
-			date: d,
-		})
-	}
-
-	if len(candidates) == 0 {
-		return "", fmt.Errorf("no prior report found in %s for team %s before %s", outputDir, teamName, reportDate.Format("20060102"))
-	}
-
-	sort.Slice(candidates, func(i, j int) bool {
-		return candidates[i].date.After(candidates[j].date)
-	})
-	return candidates[0].path, nil
+type SectionView struct {
+	Section domain.Section
+	Items   []WorkItem
 }
 
-func parseTemplate(content string) *ReportTemplate {
-	template := &ReportTemplate{}
-	lines := strings.Split(content, "\n")
-
-	currentCat := -1
-	currentSub := -1
-	seenFirstCategory := false
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if !seenFirstCategory {
-			template.PrefixLines = append(template.PrefixLines, line)
-		}
-		if trimmed == "" {
-			continue
-		}
-
-		// Preserve mid-report top headings (### ...), e.g. "### Product Beta",
-		// by storing them as marker categories in-place.
-		if m := topHeadingRe.FindStringSubmatch(line); len(m) == 2 && currentCat >= 0 {
-			template.Categories = append(template.Categories, TemplateCategory{
-				MarkerLine: "### " + strings.TrimSpace(m[1]),
-			})
-			currentCat = -1
-			currentSub = -1
-			continue
-		}
-
-		if m := categoryHeadingRe.FindStringSubmatch(line); len(m) == 2 {
-			if !seenFirstCategory && len(template.PrefixLines) > 0 {
-				template.PrefixLines = template.PrefixLines[:len(template.PrefixLines)-1]
+// ItemCount counts every Work Item in the view.
+func (v View) ItemCount() int {
+	n := len(v.Undetermined)
+	for _, a := range v.Areas {
+		for _, c := range a.Categories {
+			n += len(c.Items)
+			for _, s := range c.Sections {
+				n += len(s.Items)
 			}
-			seenFirstCategory = true
-			template.Categories = append(template.Categories, TemplateCategory{Name: strings.TrimSpace(m[1])})
-			currentCat = len(template.Categories) - 1
-			currentSub = -1
-			continue
-		}
-		if currentCat < 0 {
-			continue
-		}
-
-		if m := subcategoryRe.FindStringSubmatch(line); len(m) == 3 {
-			rest := strings.TrimSpace(m[2])
-			// Team-mode item lines look like: - **Author** - Description (status).
-			// Do not treat those as subsection headers.
-			if strings.HasPrefix(rest, "-") {
-				goto itemLine
-			}
-			sub := TemplateSubsection{
-				Name:       strings.TrimSpace(m[1]),
-				HeaderLine: strings.TrimSpace(line),
-			}
-			template.Categories[currentCat].Subsections = append(template.Categories[currentCat].Subsections, sub)
-			currentSub = len(template.Categories[currentCat].Subsections) - 1
-			continue
-		}
-
-	itemLine:
-		if m := bulletLineRe.FindStringSubmatch(line); len(m) == 2 {
-			if currentSub < 0 {
-				template.Categories[currentCat].Subsections = append(template.Categories[currentCat].Subsections, TemplateSubsection{})
-				currentSub = len(template.Categories[currentCat].Subsections) - 1
-			}
-			item := parseTemplateItem(m[1])
-			template.Categories[currentCat].Subsections[currentSub].Items = append(template.Categories[currentCat].Subsections[currentSub].Items, item)
 		}
 	}
-
-	return template
+	return n
 }
 
-func parseTemplateItem(s string) TemplateItem {
-	text := strings.TrimSpace(s)
-	author := ""
-	if m := authorPrefixRe.FindStringSubmatch(text); len(m) == 2 {
-		author = strings.TrimSpace(m[1])
-		text = strings.TrimSpace(text[len(m[0]):])
+// BuildView places Work Items into the active Taxonomy; those without an active Section
+// are Undetermined.
+func BuildView(tax domain.Taxonomy, items []WorkItem) View {
+	bySection := map[int64][]WorkItem{}
+	var v View
+	active := map[int64]bool{}
+	for _, s := range tax.Sections() {
+		active[s.ID] = true
 	}
-
-	status := ""
-	if m := statusSuffixRe.FindStringSubmatch(text); len(m) == 2 {
-		status = normalizeStatus(m[1])
-		text = strings.TrimSpace(text[:len(text)-len(m[0])])
-	}
-
-	ticketIDs := ""
-	if m := ticketPrefixRe.FindStringSubmatch(text); len(m) == 2 {
-		ticketIDs = strings.TrimSpace(m[1])
-		text = strings.TrimSpace(text[len(m[0]):])
-	}
-
-	return TemplateItem{
-		Author:      author,
-		Description: text,
-		TicketIDs:   ticketIDs,
-		Status:      status,
-	}
-}
-
-func templateOptions(t *ReportTemplate) []sectionOption {
-	var options []sectionOption
-	for ci, cat := range t.Categories {
-		for si, sub := range cat.Subsections {
-			label := cat.Name
-			if strings.TrimSpace(sub.Name) != "" {
-				label = cat.Name + " > " + sub.Name
-			}
-			options = append(options, sectionOption{
-				ID:         fmt.Sprintf("S%d_%d", ci, si),
-				Category:   ci,
-				Subsection: si,
-				Label:      label,
-			})
+	for _, it := range items {
+		if it.SectionID != 0 && active[it.SectionID] {
+			bySection[it.SectionID] = append(bySection[it.SectionID], it)
+		} else {
+			v.Undetermined = append(v.Undetermined, it)
 		}
 	}
-	return options
-}
-
-func cloneTemplate(src *ReportTemplate) *ReportTemplate {
-	out := &ReportTemplate{
-		PrefixLines: append([]string(nil), src.PrefixLines...),
-		Categories:  make([]TemplateCategory, len(src.Categories)),
-	}
-	for i, cat := range src.Categories {
-		out.Categories[i].Name = cat.Name
-		out.Categories[i].MarkerLine = cat.MarkerLine
-		out.Categories[i].Subsections = make([]TemplateSubsection, len(cat.Subsections))
-		for j, sub := range cat.Subsections {
-			out.Categories[i].Subsections[j].Name = sub.Name
-			out.Categories[i].Subsections[j].HeaderLine = sub.HeaderLine
-			out.Categories[i].Subsections[j].Items = append([]TemplateItem(nil), sub.Items...)
-		}
-	}
-	return out
-}
-
-func trimDoneItems(t *ReportTemplate) {
-	for ci := range t.Categories {
-		for si := range t.Categories[ci].Subsections {
-			var filtered []TemplateItem
-			for _, item := range t.Categories[ci].Subsections[si].Items {
-				if statusBucket(item.Status) == 0 {
-					continue
+	for _, area := range tax.Areas() {
+		av := AreaView{Name: area.Name}
+		for _, cat := range tax.Children(area.ID) {
+			cv := CategoryView{Name: cat.Name, ID: cat.ID, Items: sortItems(bySection[cat.ID])}
+			for _, sec := range tax.Children(cat.ID) {
+				s, _ := tax.Section(sec.ID)
+				if its := bySection[sec.ID]; len(its) > 0 {
+					cv.Sections = append(cv.Sections, SectionView{Section: s, Items: sortItems(its)})
 				}
-				filtered = append(filtered, item)
 			}
-			t.Categories[ci].Subsections[si].Items = filtered
+			if len(cv.Items) > 0 || len(cv.Sections) > 0 {
+				av.Categories = append(av.Categories, cv)
+			}
+		}
+		if len(av.Categories) > 0 {
+			v.Areas = append(v.Areas, av)
 		}
 	}
+	v.Undetermined = sortItems(v.Undetermined)
+	return v
 }
 
-// applyAuthoritativeCorrections overrides LLM decisions with manual corrections.
-// For each item that has a correction, the LLM's section assignment is replaced
-// with the corrected section, and confidence is set to 1.0 to ensure it passes
-// the confidence threshold.
-func applyAuthoritativeCorrections(decisions map[int64]LLMSectionDecision, corrections []ClassificationCorrection, items []WorkItem) {
-	if len(corrections) == 0 || len(decisions) == 0 {
-		return
-	}
-	// Build a map from work_item_id to the most recent correction
-	correctionByItem := make(map[int64]ClassificationCorrection)
-	for _, c := range corrections {
-		if existing, ok := correctionByItem[c.WorkItemID]; !ok || c.CorrectedAt.After(existing.CorrectedAt) {
-			correctionByItem[c.WorkItemID] = c
+// sortItems orders by Status (in progress, in testing, blocked, done), then report time.
+func sortItems(items []WorkItem) []WorkItem {
+	out := append([]WorkItem(nil), items...)
+	sort.SliceStable(out, func(i, j int) bool {
+		ri, rj := domain.StatusRank(out[i].Status), domain.StatusRank(out[j].Status)
+		if ri != rj {
+			return ri < rj
 		}
-	}
-	// Override LLM decisions for items that have corrections
-	for _, item := range items {
-		correction, ok := correctionByItem[item.ID]
-		if !ok {
-			continue
+		if !out[i].ReportedAt.Equal(out[j].ReportedAt) {
+			return out[i].ReportedAt.Before(out[j].ReportedAt)
 		}
-		if d, exists := decisions[item.ID]; exists {
-			d.SectionID = correction.CorrectedSectionID
-			d.Confidence = 1.0 // Ensure it passes any confidence threshold
-			decisions[item.ID] = d
-		}
-	}
-}
-
-func mergeIncomingItems(
-	t *ReportTemplate,
-	items []WorkItem,
-	options []sectionOption,
-	decisions map[int64]LLMSectionDecision,
-	confidenceThreshold float64,
-) {
-	optionByID := make(map[string]sectionOption, len(options))
-	for _, option := range options {
-		optionByID[option.ID] = option
-	}
-
-	undetermined, undeterminedMap := ensureUndeterminedSection(t)
-	itemByDupKey := buildDuplicateKeyIndex(t, options)
-
-	for _, item := range items {
-		decision := decisions[item.ID]
-		useLLM := decision.Confidence >= confidenceThreshold
-		status := chooseNormalizedStatus(item.Status, decision.NormalizedStatus, useLLM)
-		tickets := strings.TrimSpace(item.TicketIDs)
-		if useLLM && strings.TrimSpace(decision.TicketIDs) != "" {
-			tickets = strings.TrimSpace(decision.TicketIDs)
-		}
-		newItem := TemplateItem{
-			Author:      strings.TrimSpace(item.Author),
-			Description: strings.TrimSpace(item.Description),
-			TicketIDs:   tickets,
-			Status:      status,
-			IsNew:       true,
-			ReportedAt:  item.ReportedAt,
-		}
-
-		if useLLM {
-			if target, ok := itemByDupKey[decision.DuplicateOf]; ok {
-				(*target.items)[target.index] = mergeExistingItem((*target.items)[target.index], newItem)
-				continue
-			}
-		}
-
-		sectionID := "UND"
-		if useLLM && strings.TrimSpace(decision.SectionID) != "" {
-			sectionID = strings.TrimSpace(decision.SectionID)
-		}
-		option, ok := optionByID[sectionID]
-		if !ok {
-			key := itemIdentityKey(newItem)
-			if idx, exists := undeterminedMap[key]; exists {
-				undetermined.Items[idx] = mergeExistingItem(undetermined.Items[idx], newItem)
-				continue
-			}
-			undeterminedMap[key] = len(undetermined.Items)
-			undetermined.Items = append(undetermined.Items, newItem)
-			continue
-		}
-
-		itemsPtr := &t.Categories[option.Category].Subsections[option.Subsection].Items
-		found := -1
-		for idx := range *itemsPtr {
-			if itemIdentityKey((*itemsPtr)[idx]) == itemIdentityKey(newItem) {
-				found = idx
-				break
-			}
-		}
-		if found >= 0 {
-			(*itemsPtr)[found] = mergeExistingItem((*itemsPtr)[found], newItem)
-			continue
-		}
-		*itemsPtr = append(*itemsPtr, newItem)
-	}
-}
-
-func chooseNormalizedStatus(incomingStatus, llmStatus string, useLLM bool) string {
-	if isFreeTextStatus(incomingStatus) {
-		return strings.TrimSpace(incomingStatus)
-	}
-	if useLLM {
-		switch normalizeStatus(llmStatus) {
-		case "done", "in testing", "in progress":
-			return normalizeStatus(llmStatus)
-		}
-	}
-	return normalizeStatus(incomingStatus)
-}
-
-type dupTarget struct {
-	items *[]TemplateItem
-	index int
-}
-
-func buildDuplicateKeyIndex(t *ReportTemplate, options []sectionOption) map[string]dupTarget {
-	optionByPos := make(map[[2]int]string, len(options))
-	for _, option := range options {
-		optionByPos[[2]int{option.Category, option.Subsection}] = option.ID
-	}
-
-	out := make(map[string]dupTarget)
-	serial := 1
-	for ci := range t.Categories {
-		for si := range t.Categories[ci].Subsections {
-			if _, ok := optionByPos[[2]int{ci, si}]; !ok {
-				continue
-			}
-			items := &t.Categories[ci].Subsections[si].Items
-			for ii := range *items {
-				key := fmt.Sprintf("K%d", serial)
-				out[key] = dupTarget{
-					items: items,
-					index: ii,
-				}
-				serial++
-			}
-		}
-	}
+		return out[i].ID < out[j].ID
+	})
 	return out
 }
 
-func buildExistingItemContext(t *ReportTemplate, options []sectionOption) []existingItemContext {
-	optionByPos := make(map[[2]int]string, len(options))
-	for _, option := range options {
-		optionByPos[[2]int{option.Category, option.Subsection}] = option.ID
-	}
-
-	var out []existingItemContext
-	serial := 1
-	for ci := range t.Categories {
-		for si := range t.Categories[ci].Subsections {
-			sectionID, ok := optionByPos[[2]int{ci, si}]
-			if !ok {
-				continue
-			}
-			for _, item := range t.Categories[ci].Subsections[si].Items {
-				out = append(out, existingItemContext{
-					Key:         fmt.Sprintf("K%d", serial),
-					SectionID:   sectionID,
-					Description: item.Description,
-					Status:      item.Status,
-				})
-				serial++
-			}
-		}
-	}
-	return out
+// RenderTeamMarkdown renders the team version: authors on every line.
+func RenderTeamMarkdown(v View) string {
+	return renderMarkdown(v, func(c CategoryView) string { return c.Name }, FormatTeamItem)
 }
 
-func ensureUndeterminedSection(t *ReportTemplate) (*TemplateSubsection, map[string]int) {
-	for ci := range t.Categories {
-		if strings.EqualFold(strings.TrimSpace(t.Categories[ci].Name), "Undetermined") {
-			if len(t.Categories[ci].Subsections) == 0 {
-				t.Categories[ci].Subsections = append(t.Categories[ci].Subsections, TemplateSubsection{})
-			}
-			return &t.Categories[ci].Subsections[0], buildItemIndex(t.Categories[ci].Subsections[0].Items)
-		}
-	}
-
-	t.Categories = append(t.Categories, TemplateCategory{
-		Name: "Undetermined",
-		Subsections: []TemplateSubsection{
-			{},
-		},
-	})
-	last := &t.Categories[len(t.Categories)-1].Subsections[0]
-	return last, make(map[string]int)
+// RenderBossMarkdown renders the boss version: authors in the Category heading.
+func RenderBossMarkdown(v View) string {
+	return renderMarkdown(v, func(c CategoryView) string {
+		return mergeCategoryHeadingAuthors(c.Name, categoryAuthors(c))
+	}, formatBossItem)
 }
 
-func buildItemIndex(items []TemplateItem) map[string]int {
-	index := make(map[string]int)
-	for i, item := range items {
-		index[itemIdentityKey(item)] = i
-	}
-	return index
-}
-
-func mergeExistingItem(existing, incoming TemplateItem) TemplateItem {
-	existing.Status = incoming.Status
-	existing.TicketIDs = incoming.TicketIDs
-	existing.Description = incoming.Description
-	if strings.TrimSpace(existing.Author) == "" {
-		existing.Author = incoming.Author
-	}
-	return existing
-}
-
-func reorderTemplateItems(t *ReportTemplate) {
-	for ci := range t.Categories {
-		for si := range t.Categories[ci].Subsections {
-			sub := &t.Categories[ci].Subsections[si]
-			if isSupportCasesSubsection(*sub) {
-				sub.Items = reorderSupportCasesItems(sub.Items)
-				continue
-			}
-			sub.Items = reorderItems(sub.Items)
-		}
-	}
-}
-
-func reorderItems(items []TemplateItem) []TemplateItem {
-	sorted := make([]TemplateItem, len(items))
-	copy(sorted, items)
-	sort.SliceStable(sorted, func(i, j int) bool {
-		bi, bj := statusBucket(sorted[i].Status), statusBucket(sorted[j].Status)
-		if bi != bj {
-			return bi < bj
-		}
-		// Within same status bucket: items without timestamp (carried over) first,
-		// then sort by reported_at ascending (newly added at the bottom).
-		zi, zj := sorted[i].ReportedAt.IsZero(), sorted[j].ReportedAt.IsZero()
-		if zi != zj {
-			return zi
-		}
-		return sorted[i].ReportedAt.Before(sorted[j].ReportedAt)
-	})
-	return sorted
-}
-
-func isSupportCasesSubsection(sub TemplateSubsection) bool {
-	if strings.EqualFold(strings.TrimSpace(sub.Name), "Support Cases") {
-		return true
-	}
-	header := strings.ToLower(strings.TrimSpace(sub.HeaderLine))
-	return strings.Contains(header, "support cases")
-}
-
-func reorderSupportCasesItems(items []TemplateItem) []TemplateItem {
-	existing := make([]TemplateItem, 0, len(items))
-	newlyAdded := make([]TemplateItem, 0, len(items))
-	for _, item := range items {
-		if item.IsNew {
-			newlyAdded = append(newlyAdded, item)
-			continue
-		}
-		existing = append(existing, item)
-	}
-
-	existing = reorderItems(existing)
-	sort.SliceStable(newlyAdded, func(i, j int) bool {
-		zi, zj := newlyAdded[i].ReportedAt.IsZero(), newlyAdded[j].ReportedAt.IsZero()
-		if zi != zj {
-			return zi
-		}
-		return newlyAdded[i].ReportedAt.Before(newlyAdded[j].ReportedAt)
-	})
-
-	return append(existing, newlyAdded...)
-}
-
-func itemIdentityKey(item TemplateItem) string {
-	return strings.ToLower(strings.TrimSpace(item.Description))
-}
-
-func renderTeamMarkdown(t *ReportTemplate) string {
-	return renderMarkdown(
-		t,
-		func(cat TemplateCategory) string { return cat.Name },
-		formatTeamItem,
-	)
-}
-
-func renderBossMarkdown(t *ReportTemplate) string {
-	return renderMarkdown(
-		t,
-		func(cat TemplateCategory) string {
-			return mergeCategoryHeadingAuthors(cat.Name, categoryAuthors(cat))
-		},
-		formatBossItem,
-	)
-}
-
-// RenderMarkdownByMode renders a template as markdown in the given mode ("team" or "boss").
-func RenderMarkdownByMode(t *ReportTemplate, mode string) string {
+// RenderMarkdownByMode renders "team" or "boss".
+func RenderMarkdownByMode(v View, mode string) string {
 	if mode == "boss" {
-		return renderBossMarkdown(t)
+		return RenderBossMarkdown(v)
 	}
-	return renderTeamMarkdown(t)
+	return RenderTeamMarkdown(v)
 }
 
-func renderMarkdown(
-	t *ReportTemplate,
-	categoryHeading func(cat TemplateCategory) string,
-	formatItem func(item TemplateItem) string,
-) string {
+func renderMarkdown(v View, heading func(CategoryView) string, format func(WorkItem) string) string {
 	var buf strings.Builder
-	if prefix := strings.TrimSpace(strings.Join(t.PrefixLines, "\n")); prefix != "" {
-		buf.WriteString(prefix)
-		buf.WriteString("\n\n")
-	}
-
-	for _, cat := range t.Categories {
-		if strings.TrimSpace(cat.MarkerLine) != "" {
-			buf.WriteString(strings.TrimSpace(cat.MarkerLine) + "\n\n")
-			continue
-		}
-		if len(cat.Subsections) == 0 {
-			continue
-		}
-		// Skip categories that have no items in any subsection
-		if !categoryHasItems(cat) {
-			continue
-		}
-		buf.WriteString(fmt.Sprintf("#### %s\n\n", categoryHeading(cat)))
-		for _, sub := range cat.Subsections {
-			if strings.TrimSpace(sub.HeaderLine) != "" {
-				buf.WriteString(strings.TrimSpace(sub.HeaderLine) + "\n")
+	for _, a := range v.Areas {
+		buf.WriteString("### " + a.Name + "\n\n")
+		for _, c := range a.Categories {
+			buf.WriteString("#### " + heading(c) + "\n\n")
+			for _, it := range c.Items {
+				buf.WriteString("- " + format(it) + "\n")
 			}
-			for _, item := range sub.Items {
-				prefix := "- "
-				if strings.TrimSpace(sub.HeaderLine) != "" {
-					prefix = "  - "
+			if len(c.Items) > 0 {
+				buf.WriteString("\n")
+			}
+			for _, s := range c.Sections {
+				buf.WriteString("- **" + s.Section.Name + "**\n")
+				for _, it := range s.Items {
+					buf.WriteString("  - " + format(it) + "\n")
 				}
-				buf.WriteString(prefix + formatItem(item) + "\n")
+				buf.WriteString("\n")
 			}
-			buf.WriteString("\n")
 		}
 	}
-
+	if len(v.Undetermined) > 0 {
+		buf.WriteString("#### " + UndeterminedHeading + "\n\n")
+		for _, it := range v.Undetermined {
+			buf.WriteString("- " + format(it) + "\n")
+		}
+	}
 	return strings.TrimSpace(buf.String()) + "\n"
 }
 
-func categoryHasItems(cat TemplateCategory) bool {
-	for _, sub := range cat.Subsections {
-		if len(sub.Items) > 0 {
-			return true
-		}
-	}
-	return false
-}
-
-func categoryAuthors(cat TemplateCategory) []string {
+func categoryAuthors(c CategoryView) []string {
 	seen := make(map[string]bool)
 	var out []string
-	for _, sub := range cat.Subsections {
-		for _, item := range sub.Items {
-			author := synthesizeName(item.Author)
-			if author == "" || seen[author] {
-				continue
+	add := func(items []WorkItem) {
+		for _, it := range items {
+			author := synthesizeName(it.Author)
+			if author != "" && !seen[author] {
+				seen[author] = true
+				out = append(out, author)
 			}
-			seen[author] = true
-			out = append(out, author)
 		}
+	}
+	add(c.Items)
+	for _, s := range c.Sections {
+		add(s.Items)
 	}
 	return out
 }
 
-func formatTeamItem(item TemplateItem) string {
-	status := statusForDisplay(item.Status)
-	author := synthesizeName(item.Author)
-	tickets := canonicalTicketIDs(item.TicketIDs)
-	description := stripLeadingTicketPrefixIfSame(item.Description, tickets)
-	description = synthesizeDescription(description)
-	ticketPrefix := ""
-	if tickets != "" {
-		ticketPrefix = fmt.Sprintf("[%s] ", tickets)
+// StatusText is the "(…)" part of a line: the Status, plus the Status Note when there is one.
+func StatusText(it WorkItem) string {
+	status := it.Status
+	if status == "" {
+		status = "filing…"
 	}
-	if author == "" {
-		return fmt.Sprintf("%s%s (%s)", ticketPrefix, description, status)
+	if note := strings.TrimSpace(it.StatusNote); note != "" && !strings.EqualFold(note, status) {
+		return status + ": " + note
 	}
-	return fmt.Sprintf("**%s** - %s%s (%s)", author, ticketPrefix, description, status)
+	return status
 }
 
-func formatBossItem(item TemplateItem) string {
-	status := statusForDisplay(item.Status)
-	tickets := canonicalTicketIDs(item.TicketIDs)
-	description := stripLeadingTicketPrefixIfSame(item.Description, tickets)
-	description = synthesizeDescription(description)
-	ticketPrefix := ""
-	if tickets != "" {
-		ticketPrefix = fmt.Sprintf("[%s] ", tickets)
+// FormatTeamItem is the code template "**Author** - [tickets] description (status)".
+func FormatTeamItem(it WorkItem) string {
+	author := synthesizeName(it.Author)
+	body := formatBossItem(it)
+	if author == "" {
+		return body
 	}
-	return fmt.Sprintf("%s%s (%s)", ticketPrefix, description, status)
+	return fmt.Sprintf("**%s** - %s", author, body)
 }
+
+func formatBossItem(it WorkItem) string {
+	return fmt.Sprintf("%s (%s)", ItemText(it), StatusText(it))
+}
+
+// ItemText is a Work Item's report text, "[tickets] Description", without author or status.
+func ItemText(it WorkItem) string {
+	tickets := canonicalTicketIDs(it.TicketIDs)
+	description := synthesizeDescription(stripLeadingTicketPrefixIfSame(it.Description, tickets))
+	if tickets == "" {
+		return description
+	}
+	return fmt.Sprintf("[%s] %s", tickets, description)
+}
+
+// SynthesizeName title-cases a person's name and drops aliases in parentheses.
+func SynthesizeName(name string) string { return synthesizeName(name) }
 
 func canonicalTicketIDs(ticketIDs string) string {
 	if strings.TrimSpace(ticketIDs) == "" {
@@ -814,90 +298,6 @@ func stripLeadingTicketPrefixIfSame(description, tickets string) string {
 		break
 	}
 	return description
-}
-
-func normalizeStatus(status string) string {
-	s := strings.ToLower(strings.TrimSpace(status))
-	switch s {
-	case "done":
-		return "done"
-	case "in testing", "in test":
-		return "in testing"
-	case "in progress":
-		return "in progress"
-	default:
-		return strings.TrimSpace(status)
-	}
-}
-
-func statusForDisplay(status string) string {
-	trimmed := strings.TrimSpace(status)
-	if trimmed == "" {
-		return "done"
-	}
-	if isFreeTextStatus(trimmed) {
-		return trimmed
-	}
-	return normalizeStatus(trimmed)
-}
-
-func isFreeTextStatus(status string) bool {
-	switch strings.ToLower(strings.TrimSpace(status)) {
-	case "done", "in testing", "in test", "in progress":
-		return false
-	default:
-		return strings.TrimSpace(status) != ""
-	}
-}
-
-func statusBucket(status string) int {
-	switch normalizeStatus(status) {
-	case "done":
-		return 0
-	case "in testing":
-		return 1
-	case "in progress":
-		return 2
-	default:
-		return 3
-	}
-}
-
-func stripCurrentTeamTitleFromPrefix(t *ReportTemplate, teamName string) {
-	if len(t.PrefixLines) == 0 {
-		return
-	}
-	var out []string
-	for _, line := range t.PrefixLines {
-		if isCurrentTeamTitleLine(line, teamName) {
-			continue
-		}
-		out = append(out, line)
-	}
-	t.PrefixLines = out
-}
-
-func isCurrentTeamTitleLine(line, teamName string) bool {
-	line = strings.TrimSpace(line)
-	if !strings.HasPrefix(line, "### ") {
-		return false
-	}
-	rest := strings.TrimSpace(strings.TrimPrefix(line, "### "))
-	parts := strings.Fields(rest)
-	if len(parts) < 2 {
-		return false
-	}
-	last := parts[len(parts)-1]
-	if len(last) != 8 {
-		return false
-	}
-	for _, r := range last {
-		if r < '0' || r > '9' {
-			return false
-		}
-	}
-	name := strings.Join(parts[:len(parts)-1], " ")
-	return strings.EqualFold(strings.TrimSpace(name), strings.TrimSpace(teamName))
 }
 
 func synthesizeName(name string) string {

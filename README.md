@@ -1,85 +1,46 @@
 # ReportBot
 
-A Slack bot that helps a development team track weekly work items and generate categorized markdown reports.
+A Slack bot that collects a development team's work items and files each one into the team's weekly report **as it arrives**, then publishes that report.
 
-Developers report completed work via slash commands. The bot also pulls merged/open GitLab MRs and GitHub PRs (manually or on a cron schedule). An LLM (Anthropic Claude or OpenAI) classifies items into sections derived from the previous report.
+Developers report work via slash commands. The bot also pulls merged/open GitLab MRs and GitHub PRs (manually or on a cron schedule). Every Work Item is filed into the report's Taxonomy (Area → Category → Section, kept in the database) right away:
 
-> **What started as "can an LLM sort bullet points into categories?"** turned into a self-improving classification system with memory, self-evaluation, and a second LLM that critiques the first one's homework. This project is an experiment in agentic AI patterns — the bot learns from its mistakes, writes its own rules, and occasionally gets things right on the first try. Built mostly by talking to Claude, because why write code yourself when you can argue with an AI about code instead.
+1. A decision model (System One protocol) picks the Section in one request, and in the same request answers the narrow questions code cannot decide — Status, ticket ID, whether a report is an Update to an existing Work Item — with calibrated probabilities.
+2. Confident picks are filed silently; doubtful ones ask the reporter "Where does this go?" with the model's top three Sections.
+3. If nobody answers within 24 hours (or before publishing), the Work Item is filed under the model's first choice; the reporter can still change it.
+4. An optional LLM (Anthropic Claude or an OpenAI-compatible endpoint) is used only for Structure Proposals: suggested new, split or retired Sections that a manager approves.
+
+The team sees the live Weekly Report in the web UI; managers publish it to Slack as markdown and an email draft. See `CONTEXT.md` for the domain terms and `docs/adr/` for the design decisions.
 
 ## Features
 
 ### Commands
 
-- `/report` (or `/rpt`) — Developers report work items via Slack
+- `/report` (or `/rpt`) — Report work items; each is filed on arrival and the reply shows where it went
 - `/fetch` — Pull merged and open GitLab MRs and/or GitHub PRs for the current calendar week
-- `/generate-report` (or `/gen`) — Generate a team markdown file (or boss `.eml` draft) and upload it to Slack
-- `/list` — View your items for this week with inline edit/delete actions (`/list all` for the team view)
-- `/check` — Managers: list missing members with inline nudge buttons
-- `/retrospect` — Managers: analyze recent corrections and suggest glossary/guide improvements
-- `/stats` — Managers: view classification accuracy dashboard and trends
+- `/generate-report` (or `/gen`) — Publish this week's report (team `.md` or boss `.eml`) and upload it to Slack
+- `/list` — View your items on this week's report with inline edit/delete actions (`/list all` for the team view)
+- `/check` — Managers: list missing members with nudge buttons, and merged code changes waiting in testing with Done buttons
+- `/retrospect` — Managers: generate Structure Proposals now (new, split or retired Sections, with Approve/Reject)
+- `/stats` — Managers: this week's filing (auto-filed vs asked, filed automatically because the reporter didn't answer, corrections by Section, Undetermined count)
 - `/help` — Show all commands and example usage
 
-### Report Generation
+### Filing on arrival
 
-- Two report modes: **team** (author per line) and **boss** (authors grouped by category)
-- Manager-only permissions for report generation and MR fetching
-- **Weekly nudge** — Automatically DMs team members on a configurable day to remind them to report
-- **Welcome message** — New channel members receive an intro message explaining how to use the bot
+- **One decision-model request per Work Item** picks the Section — a Choice over the active Sections (path plus any manager-written description), given the most similar past Work Items and where they were filed (TF-IDF) — and, when code cannot decide, asks for the Status, the ticket ID among several candidate numbers, and whether the report updates an Open Work Item. The Choice's confidence is the Placement confidence.
+- **Below `decision_model_confidence`** the item waits in Undetermined and the reporter gets "Where does this go?" buttons for the model's three most likely Sections; a click is a person Placement.
+- **Updates** are always confirmed by the reporter ("Looks like an update to …" [Update it] [It's new]).
+- **Code Changes** link to an Open Work Item on an exact ticket match; a merge moves an `in progress` Work Item to `in testing`. Unlinked ones become their own Work Items (`in testing` once merged — `done` is always a person's decision).
+- **Taxonomy edits** (web UI) re-file Open Work Items; confident moves happen automatically and a person whose choice was overridden gets an Undo button.
+- **Never lost**: if the decision model is unreachable, the item is filed as Undetermined and a sweep retries it.
+- **Fallback**: an unsure Work Item nobody placed within 24 hours, or still Undetermined when a manager confirms publishing, is filed under the decision model's most likely Section from its stored answer (no new model call). After a Taxonomy change the re-filing job re-asks unsure Work Items first, so the answer always matches the current Sections. The reporter is told "Filed under X automatically" with a Change button.
 
-### Agentic AI (Closed-Loop Classification)
+### Structure Proposals (optional LLM)
 
-The LLM classifier improves itself over time through a feedback loop:
+After each publish (and on `/retrospect`), the LLM proposes 0–3 changes: a new Section for a recurring theme among Undetermined and "Other…" Work Items, a split of a large Section, or retiring one unused for 8 weeks. Managers get Approve/Reject by DM; Approve applies it like a Taxonomy edit, a rejected change is not proposed again for 8 weeks, and an undecided one expires after 2 weeks. A retirement is checked again at approval. LLM-written notes for the decision model were tried and rejected (ADR 0003).
 
-- **Parallel batch classification** — Items are classified concurrently via goroutines (~3x speedup)
-- **Prompt caching** — Anthropic system prompts are cached across parallel batches (~40% cost reduction)
-- **TF-IDF example selection** — Few-shot examples are selected by relevance from 12 weeks of classification history, replacing blind "first N items"
-- **Generator-Critic loop** — Optional second LLM pass reviews all assignments and catches misclassifications before manager review
-- **Classification history** — Every LLM decision is persisted with confidence scores for auditability
-- **Correction capture** — Manager corrections (via edit modal or uncertainty buttons) are stored and fed back into future prompts
-- **Auto-growing glossary** — When the same correction appears 2+ times, a deterministic glossary rule is created automatically
-- **Uncertainty sampling** — Low-confidence items are surfaced to the manager with interactive section buttons after report generation
-- **Retrospective analysis** — `/retrospect` uses the LLM to find correction patterns and suggest glossary terms or guide updates
-- **Accuracy dashboard** — `/stats` shows classification metrics, confidence distribution, most-corrected sections, and weekly trends
+### Edit history
 
-```mermaid
-flowchart LR
-    subgraph Input["Input"]
-        direction TB
-        DEV["/report<br>(Slack)"]
-        GL["GitLab MRs /<br>GitHub PRs"]
-    end
-
-    subgraph Classify["Classify"]
-        direction TB
-        MEM["Memory<br>───<br>Glossary<br>Guide<br>Corrections"]
-        TFIDF["TF-IDF<br>Example<br>Selection"]
-        LLM["LLM Classifier<br>(parallel, cached)"]
-        CRITIC["Critic<br>(optional 2nd pass)"]
-        MEM -.->|enrich| LLM
-        TFIDF -.->|"few-shot<br>examples"| LLM
-        LLM --> CRITIC
-    end
-
-    subgraph Deliver["Deliver"]
-        direction TB
-        RPT["Weekly<br>Report"]
-        UNC["Uncertainty<br>Prompts"]
-        STATS["/stats<br>Dashboard"]
-    end
-
-    MGR["Manager"]
-
-    Input --> LLM
-    CRITIC --> Deliver
-    Deliver --> MGR
-
-    MGR -->|"corrections"| MEM
-
-    style Input fill:#1a5276,stroke:#333,color:#fff
-    style Classify fill:#1a1a2e,stroke:#69f,color:#fff
-    style Deliver fill:#0f3460,stroke:#69f,color:#fff
-    style MGR fill:#f96,stroke:#333,color:#000
-```
+Every Work Item edit (text, Status, Status Note, tickets), delete and confirmed Update is recorded in `work_item_edits` with before/after, who and where (Slack, the nudge DM, web, fetch, cut-over). Every Friday at 09:00 (`timezone`) a Draft Snapshot of the Weekly Report is stored in `draft_snapshots`, next to the Published Report. Together they show what people change by hand.
 
 See [docs/agentic-features-overview.md](docs/agentic-features-overview.md) for a detailed overview.
 
@@ -105,13 +66,13 @@ See [docs/agentic-features-overview.md](docs/agentic-features-overview.md) for a
    | `/report` | Report a work item |
    | `/rpt` | Alias of `/report` |
    | `/fetch` | Fetch merged and open GitLab MRs and/or GitHub PRs for this week |
-   | `/generate-report` | Generate the weekly report (`team`/`boss`) or post latest team report (`post`), optional `private` |
+   | `/generate-report` | Publish the weekly report (`team`/`boss`) or post latest team report (`post`), optional `private` |
    | `/gen` | Alias of `/generate-report` |
    | `/list` | List your work items for this week (`/list all` for the team view) |
-   | `/check` | List missing members with nudge buttons |
+   | `/check` | List missing members with nudge buttons, and merged code changes waiting in testing |
    | `/nudge` | Send a test nudge DM (self by default; managers can target one member) |
-   | `/retrospect` | Analyze corrections and suggest improvements |
-   | `/stats` | View classification accuracy dashboard |
+   | `/retrospect` | Generate Structure Proposals now |
+   | `/stats` | View this week's filing stats |
    | `/help` | Show help and usage |
 
 7. Install the app to your workspace
@@ -119,9 +80,8 @@ See [docs/agentic-features-overview.md](docs/agentic-features-overview.md) for a
 ### 2. Configure
 
 Configuration can be provided via **`config.yaml`** file, **environment variables**, or both. Env vars take precedence over YAML values.
-The repository `config.yaml` and `llm_glossary.yaml` are committed as examples.
-Put environment-specific overrides under `override/` (git-ignored), for example:
-`override/config.yaml` and `override/llm_glossary.yaml`.
+The repository `config.yaml` is committed as an example; never put real values in it.
+Put environment-specific settings under `override/` (git-ignored), for example `override/config.yaml`, and point `CONFIG_PATH` at it, or use environment variables.
 
 #### Option A: config.yaml (recommended)
 
@@ -138,26 +98,35 @@ gitlab_token: "glpat-..."
 gitlab_group_id: "my-team"
 gitlab_ref_ticket_label: "Jira"   # optional: parse ticket IDs from "Jira:" field in GitLab MR description; empty disables parsing
 
-# LLM
+# Decision model (System One protocol): files every Work Item
+decision_model_url: "https://api.compat.example"
+decision_model_api_key: "..."
+decision_model_name: "..."
+decision_model_confidence: 0.85  # Section confidence needed to file without asking
+similar_item_count: 30           # optional: similar past Work Items the decision model sees
+
+# Optional LLM, only for Structure Proposals (and /retrospect); leave llm_provider empty to skip
 llm_provider: "anthropic"       # "anthropic" or "openai"
-llm_batch_size: 50              # optional: items per LLM classification batch
-llm_confidence_threshold: 0.70  # optional: route below-threshold to Undetermined
-llm_example_count: 20           # optional: prior-report examples included in prompt
-llm_example_max_chars: 140      # optional: max chars per example snippet
-llm_glossary_path: "./llm_glossary.yaml"    # optional glossary memory file
-llm_critic_enabled: false   # optional: enable generator-critic second pass
+llm_reasoning_effort: ""        # optional (openai provider): low, medium or high; empty sends none
 anthropic_api_key: "sk-ant-..."
 openai_api_key: ""
-openai_base_url: "https://api.openai.com/v1"  # optional: OpenAI-compatible base URL (for example a lab-hosted gpt-oss endpoint)
+openai_base_url: "https://api.openai.com/v1"  # optional: OpenAI-compatible base URL
 
 # Permissions (Slack user IDs)
 manager_slack_ids:
   - "U01ABC123"
 
-# Team members (Slack full names) - used by /check and scheduled nudge
+# Team members (Slack full names or user IDs) - used by /check and scheduled nudge
 team_members:
   - "Member One"
   - "Member Two"
+
+# Owners of fetched and imported items -> Slack user ID. Plain keys are report author names
+# (migrate-v2 import only); "gitlab:<numeric id>" / "github:<numeric id>" are code-hosting
+# accounts (fetch only). Unmapped items are manager-only. Draft with migrate-v2 --suggest-author-ids.
+author_ids:
+  "Member One": "U02MEMBER1"
+  "gitlab:1234": "U02MEMBER1"
 
 # Automatic MR/PR fetching (cron expression, empty to disable)
 auto_fetch_schedule: "0 9 * * 1-5"  # weekdays at 9am
@@ -175,7 +144,7 @@ team_name: "Example Team"
 
 # Report channel (Slack channel ID for reminders)
 report_channel_id: "C01234567"
-external_http_timeout_seconds: 90  # optional: timeout for GitLab/GitHub/LLM HTTP calls
+external_http_timeout_seconds: 90  # optional: timeout for GitLab/GitHub/model HTTP calls
 tls_skip_verify: false             # optional: skip TLS cert verification for internal/corporate CAs
 
 # Web UI (optional)
@@ -198,17 +167,18 @@ export GITLAB_URL=https://gitlab.example.com
 export GITLAB_TOKEN=glpat-...
 export GITLAB_GROUP_ID=my-team
 export GITLAB_REF_TICKET_LABEL=Jira            # Optional: field label used for GitLab MR ticket parsing
-export LLM_PROVIDER=anthropic
+export DECISION_MODEL_URL=https://api.compat.example
+export DECISION_MODEL_API_KEY=...
+export DECISION_MODEL_NAME=...
+export DECISION_MODEL_CONFIDENCE=0.85           # Optional: default 0.85
+export SIMILAR_ITEM_COUNT=30                    # Optional: similar past Work Items the decision model sees
+export LLM_PROVIDER=anthropic                   # Optional: only Structure Proposals use the LLM
 export ANTHROPIC_API_KEY=sk-ant-...
 export OPENAI_API_KEY=
 export OPENAI_BASE_URL=https://api.openai.com/v1
-export LLM_BATCH_SIZE=50
-export LLM_CONFIDENCE_THRESHOLD=0.70
-export LLM_EXAMPLE_COUNT=20
-export LLM_EXAMPLE_MAX_CHARS=140
-export LLM_GLOSSARY_PATH=./llm_glossary.yaml
-export LLM_CRITIC_ENABLED=true                  # Optional: enable generator-critic loop
+export LLM_REASONING_EFFORT=low                 # Optional (openai provider): low, medium or high
 export MANAGER_SLACK_IDS="U01ABC123,U02DEF456"  # Comma-separated Slack user IDs
+export AUTHOR_IDS='{"Member One": "U02MEMBER1", "gitlab:1234": "U02MEMBER1"}'  # JSON: report name or gitlab:/github:<numeric id> -> Slack user ID
 export REPORT_CHANNEL_ID=C01234567
 export EXTERNAL_HTTP_TIMEOUT_SECONDS=90          # Optional: timeout for external API HTTP calls
 export TLS_SKIP_VERIFY=true                      # Optional: skip TLS cert verification
@@ -223,40 +193,47 @@ export MONDAY_CUTOFF_TIME=12:00
 export TIMEZONE=America/Los_Angeles
 ```
 
-Note: Category/subcategory headings are sourced from the previous report in `report_output_dir`.
+Note: the Taxonomy lives in the database and is edited in the web UI (`/taxonomy`); published `.md` files are output only.
 
-#### LLM Provider Defaults
+#### LLM (optional, Structure Proposals only)
 
 | Provider | Default Model |
 |---|---|
 | `anthropic` | `claude-sonnet-4-5-20250929` |
-| `openai` | `gpt-5-mini` |
+| `openai` | `gpt-4o-mini` |
 
-Set `llm_model` in YAML or `LLM_MODEL` env var to override.
-When `llm_provider=openai`, section classification uses the OpenAI-compatible `responses` API with schema-constrained JSON output.
-Set `llm_batch_size` / `LLM_BATCH_SIZE`, `llm_confidence_threshold` / `LLM_CONFIDENCE_THRESHOLD`, and `llm_example_count` / `llm_example_max_chars` to tune throughput, confidence gating, and prompt context size.
-Set `llm_glossary_path` / `LLM_GLOSSARY_PATH` to apply glossary memory rules (see `llm_glossary.yaml`).
-Set `llm_critic_enabled` / `LLM_CRITIC_ENABLED` to enable a second LLM pass that reviews classifications for errors.
-Set `openai_base_url` / `OPENAI_BASE_URL` when `llm_provider=openai` and you want to use an OpenAI-compatible endpoint instead of `api.openai.com` (for example a lab-hosted `gpt-oss-120b` server).
+Set `llm_model` in YAML or `LLM_MODEL` env var to override. Without `llm_provider`, everything works except Structure Proposals: `/retrospect` says the LLM isn't configured and `/stats` says proposals are off.
+When `llm_provider=openai`, proposals use the OpenAI-compatible `responses` API.
+Set `openai_base_url` / `OPENAI_BASE_URL` when `llm_provider=openai` and you want an OpenAI-compatible endpoint instead of `api.openai.com`.
+Set `llm_reasoning_effort` / `LLM_REASONING_EFFORT` (`low`, `medium`, `high`) to send a reasoning effort to an OpenAI-compatible reasoning model; empty sends none.
+Set `decision_model_url`, `decision_model_api_key` and `decision_model_name` (or `DECISION_MODEL_*`) for the decision model; requests go to `{decision_model_url}/v1/systemone`. `decision_model_confidence` is the Section Choice confidence needed to file without asking; `similar_item_count` sets how many similar past Work Items the decision model sees.
+
+Evaluated production settings (ship-gate eval on 592 past items):
+
+```yaml
+decision_model_name: "clef"
+decision_model_confidence: 0.85
+similar_item_count: 30
+```
+
+At 0.85, about 43% of items were filed automatically, at about 84% accuracy (95% CI 79–89%) against an answer key derived from the previous reports; 0.91 is the lowest setting that reached 90% (27% filed). The rest get "Where does this go?", whose three buttons contained the right Section for 88% of items. Watch `/stats` and revisit the threshold after a few weeks of real corrections.
 Set `external_http_timeout_seconds` / `EXTERNAL_HTTP_TIMEOUT_SECONDS` to tune timeout limits for GitLab/GitHub/LLM API requests.
 Set `tls_skip_verify` / `TLS_SKIP_VERIFY` to skip TLS certificate verification when connecting to internal or corporate API servers with self-signed or internal CA certificates.
 Set `web_enabled` / `WEB_ENABLED` to serve the report editor web UI alongside the Slack bot. Configure `web_client_id`, `web_client_secret` with your Slack app's OAuth credentials and set `web_session_secret` to a random 32-byte hex string for cookie signing. The web UI uses Slack OAuth for authentication and the same `manager_slack_ids` for permissions.
 
-Glossary example (`llm_glossary.yaml`):
+### Cut-over from report-time classification
 
-```yaml
-terms:
-  - phrase: "user pending"
-    section: "Cluster Manager"
-  - phrase: "database backup"
-    section: "Top Focus > HA Log Sync Enhancement"
+Run once against the existing database, with the latest published team report:
 
-status_hints:
-  - phrase: "in qa"
-    status: "in testing"
-  - phrase: "qa passed"
-    status: "done"
+```bash
+./reportbot migrate-v2 --report reports/TEAM_20260925.md --dry-run   # runs on a copy, prints every count
+./reportbot migrate-v2 --report reports/TEAM_20260925.md             # seed Taxonomy, import open lines, promote rows
+./reportbot migrate-v2 --report reports/TEAM_20260925.md --drop-v1   # back up the DB, then drop V1 tables/columns
 ```
+
+Imported lines get an owner only through `author_ids`. The run prints a binding report (author → Slack user ID, or "unmapped"); review it before `--drop-v1`. To draft `author_ids`, run `./reportbot migrate-v2 --report <latest.md> --suggest-author-ids`: it prints a YAML block, marked unverified, of exact name matches among `manager_slack_ids` and the Slack user IDs in `team_members`: report author names, plus `gitlab:<id>` / `github:<id>` lines for the last four weeks' MR/PR authors (annotated with username and display name). Unmatched entries are commented out. It writes nothing, and prints no suggestions if any roster lookup fails.
+
+Each step is idempotent. It seeds the Taxonomy from the report's headings, imports its open authored lines as Work Items with a person Placement, promotes existing rows that match a published line (Placement from the latest report showing them; rows still open in V1 but missing from the latest report are closed as done before that report's week, keeping their V1 status text as the Status Note), queues rows reported after that report for filing, and records fetched MRs/PRs as Code Changes (merged when the row was done, otherwise open). `--dry-run` runs all of this on a temporary copy and prints the counts: Sections, open lines, rows promoted and unmatched, old open rows closed as done, Statuses mapped, Code Changes, rows queued for filing, and the binding report. Until it has run, the web report shows only a "run the cut-over import" banner. `--drop-v1` refuses to run until those steps are done, and only after writing `<db>.<timestamp>.backup`.
 
 ### 3. Build & Run
 
@@ -279,7 +256,6 @@ docker build -t reportbot .
 ```bash
 docker run -d --name reportbot \
   -v /path/to/config.yaml:/app/config.yaml:ro \
-  -v /path/to/llm_glossary.yaml:/app/llm_glossary.yaml:ro \
   -v reportbot-data:/app/data \
   -v reports:/app/reports \
   reportbot
@@ -362,7 +338,9 @@ Managers can report on behalf of a team member:
 
 Delegated names support fuzzy matching against `team_members` (for example `{Member}` -> `Member Full Name`).
 
-Status is auto-extracted from the trailing parenthetical. Defaults to `done` if omitted.
+Status is taken from the trailing parenthetical when it is one of `in progress`, `in testing`, `blocked`, `done` (or a close synonym). Other wording is kept as the Status Note and the decision model picks the Status; with no parenthetical, it decides from the description.
+
+Once the Work Item is saved, the reply says "Saved — filing it…" (or shows the error), then shows where it was filed (Section, the report line, Status, tickets) or asks "Where does this go?".
 
 ### Fetching MRs/PRs
 
@@ -372,7 +350,7 @@ Manager only. Pulls all merged and open GitLab MRs and/or GitHub PRs for the cur
 /fetch
 ```
 
-Duplicates are skipped automatically based on MR/PR URL. Non-team authors (not in `team_members`) are filtered out.
+Already-tracked MRs/PRs are updated, not duplicated; a merge moves a linked `in progress` Work Item to `in testing`. Closed-unmerged ones are skipped. Non-team authors (not in `team_members`) are filtered out.
 
 **Automatic fetching**: Set `auto_fetch_schedule` to a cron expression and MRs/PRs will be imported on a schedule, with a summary posted to `report_channel_id`. Examples:
 
@@ -384,15 +362,15 @@ auto_fetch_schedule: "0 9 * * 5"     # Fridays at 9am
 
 ### Generating Reports
 
-Manager only. Two modes:
+Manager only. If items are still Undetermined, you are warned first (including how many will be filed under the decision model's first choice) and can publish anyway. Once confirmed, unanswered unsure Work Items are filed under the model's first choice and their reporters are told; then the live report is rendered — no model calls — stored as the week's Published Report (re-publishing replaces it), both the team `.md` and boss `.eml` are written, and the requested one is uploaded. With the LLM configured, the week's Structure Proposals are then sent to managers.
 
 ```
-/generate-report team            # Generate team markdown (.md) and upload to channel (default)
-/generate-report boss            # Generate boss email draft (.eml) and upload to channel (default)
-/generate-report boss private    # Send generated boss report to your DM
+/generate-report team            # Publish and upload the team markdown (.md) to the channel (default)
+/generate-report boss            # Publish and upload the boss email draft (.eml)
+/generate-report boss private    # Send it to your DM instead
 /generate-report post            # Post latest generated team markdown report to the current channel
 /generate-report post private    # Post latest generated team markdown report to your DM
-/gen private                     # Generate team report and send to your DM
+/gen private                     # Publish the team report and send it to your DM
 /gen team                # Alias of /generate-report team
 ```
 
@@ -419,7 +397,7 @@ Filename date suffix uses Friday of the reporting week, e.g. `TEAMX_20260220.md`
 
 ### Listing Items
 
-By default, `/list` shows only the caller's items for the current reporting week:
+By default, `/list` shows only the caller's items on the current Weekly Report (Open Work Items from any week, plus items done this week):
 
 ```
 /list
@@ -432,16 +410,18 @@ Managers and members can use `/list all` to see the full team list:
 ```
 
 `/list` now includes inline actions:
-- Members can edit/delete only their own items.
+- Members can edit/delete only their own items, matched by Slack user ID (never by name). Fetched and imported items get an owner only through `author_ids` (code changes by numeric GitLab/GitHub account ID); items without one are manager-only.
 - Managers can edit/delete all items.
 - Delete uses a confirmation modal.
-- Edit opens a modal with a text field for the description and a dropdown for the status.
+- Edit opens a modal with the description, Status, Status Note and Section. Choosing a Section is a person Placement; changing only the text files the item again.
 
 ### Nudge Reminders
 
 **Scheduled**: Every week on `nudge_day` (default Friday) at `nudge_time` (default 10:00 AM local), the bot DMs each user in `team_members` reminding them to report. To disable, leave `team_members` empty.
 
-**On-demand**: `/check` lists team members who haven't reported this week, with a "Nudge" button next to each member and a "Nudge All" button at the bottom. Clicking opens a confirmation before sending the DM.
+**On-demand**: `/check` lists team members who haven't reported this week, with a "Nudge" button next to each member and a "Nudge All" button at the bottom. Clicking opens a confirmation before sending the DM. It also lists merged code changes waiting in testing, each with a Done button.
+
+The nudge DM lists the member's Open Work Items with Done / status buttons.
 
 **Testing**:
 
@@ -463,11 +443,7 @@ Manager commands (`/fetch`, `/generate-report`, `/check`, `/retrospect`, `/stats
 
 ## Report Structure
 
-Report sections and sub-sections are sourced from the previous generated team report. Their order is preserved exactly.
-
-`/generate-report team` writes the team-mode markdown report to `report_output_dir`.
-
-`/generate-report boss` is derived from the generated team report for the same week and posted to Slack without writing a separate boss file.
+The Taxonomy (Area → Category → Section, with optional one-line Section descriptions) is stored in the database and edited by managers in the web UI. A Category with no Sections is itself a Section. Within a Section, items are ordered by Status (`in progress`, `in testing`, `blocked`, `done`), then by report time. An Open Work Item appears on every Weekly Report until it is done, then once more in the week it became done.
 
 ## Project Structure
 
@@ -477,17 +453,22 @@ reportbot/
   internal/app/             Bootstrap/wiring
   internal/config/          YAML + env var loading, validation, permission checks
   internal/domain/          Core types and calendar/week helpers
-  internal/storage/sqlite/  SQLite schema and CRUD
+  internal/storage/sqlite/  SQLite schema, versioned migrations and queries
   internal/httpx/           Shared external HTTP client/timeout config
   internal/integrations/slack/   Socket Mode bot, slash commands, member resolution helpers
   internal/integrations/github/  GitHub Search API client for merged/open PRs
   internal/integrations/gitlab/  GitLab API client for merged/open MRs
-  internal/integrations/llm/     LLM integration, TF-IDF examples, glossary helpers
-  internal/report/          Report template parsing, merge pipeline, markdown/EML rendering
+  internal/integrations/llm/     LLM prompts and parsing for Structure Proposals
+  internal/integrations/decision/ Decision-model client (System One protocol) with retries
+  internal/filing/          Filing on arrival: decision-model request, job queue, sweep, 24 h fallback, re-classification
+  internal/proposals/       Structure Proposals: evidence, validation, Approve/Reject
+  internal/cutover/         One-off migrate-v2 import from published reports
+  internal/publish/         Live Weekly Report and Published Report snapshots
+  internal/report/          Report view, markdown/EML rendering
   internal/fetch/           Reusable fetch-import logic and cron auto-fetch scheduler
   internal/nudge/           Scheduled and on-demand nudge DM sender
   Dockerfile           Multi-stage Docker build
-  docs/                Architecture diagrams and feature documentation
+  docs/adr/            Architecture decision records
 ```
 
 ## CI Coverage Visualization

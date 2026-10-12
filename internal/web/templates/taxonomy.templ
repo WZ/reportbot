@@ -1,0 +1,125 @@
+package templates
+
+import "fmt"
+
+type TaxonomyPageData struct {
+	CSRFToken     string
+	Reclassifying bool
+	Areas         []TaxNodeData
+	SectionGroups []OptionGroup
+}
+
+type TaxNodeData struct {
+	ID          int64
+	Level       string
+	Name        string
+	Description string
+	IsSection   bool
+	Children    []TaxNodeData
+}
+
+func childLevel(level string) string {
+	switch level {
+	case "area":
+		return "category"
+	case "category":
+		return "section"
+	}
+	return ""
+}
+
+templ csrfField(token string) {
+	<input type="hidden" name="csrf_token" value={ token }/>
+}
+
+templ TaxonomyPage(data TaxonomyPageData) {
+	@Layout("Taxonomy", data.CSRFToken, true, "taxonomy") {
+		<div class="editor-header">
+			<h1>Taxonomy</h1>
+		</div>
+		if data.Reclassifying {
+			<div class="flash flash-info">Re-filing Open Work Items…</div>
+		}
+		<div class="tax-tree">
+			for _, area := range data.Areas {
+				@taxNode(area, data)
+			}
+		</div>
+		<form class="tax-add" method="post" action="/taxonomy/nodes">
+			@csrfField(data.CSRFToken)
+			<input type="hidden" name="parent_id" value="0"/>
+			<input type="hidden" name="level" value="area"/>
+			<input type="text" name="name" placeholder="New Area" required/>
+			<input type="text" name="description" placeholder="Description"/>
+			<button type="submit" class="btn btn-secondary">Add Area</button>
+		</form>
+	}
+}
+
+templ taxNode(node TaxNodeData, data TaxonomyPageData) {
+	<div class={ "tax-node", "tax-" + node.Level }>
+		<div class="tax-row">
+			<span class="tax-level">{ node.Level }</span>
+			<span class="name">{ node.Name }</span>
+			if node.IsSection {
+				<span class="count">Section</span>
+			}
+			if node.Description != "" {
+				<span class="tax-desc">{ node.Description }</span>
+			}
+			<form method="post" action={ templ.SafeURL(fmt.Sprintf("/taxonomy/nodes/%d/move", node.ID)) }>
+				@csrfField(data.CSRFToken)
+				<button type="submit" name="dir" value="up" title="Move up">&uarr;</button>
+				<button type="submit" name="dir" value="down" title="Move down">&darr;</button>
+			</form>
+		</div>
+		<details class="tax-edit">
+			<summary>Edit</summary>
+			<form method="post" action={ templ.SafeURL(fmt.Sprintf("/taxonomy/nodes/%d", node.ID)) }>
+				@csrfField(data.CSRFToken)
+				<input type="text" name="name" value={ node.Name } required/>
+				<input type="text" name="description" value={ node.Description } placeholder="Description"/>
+				<button type="submit" class="btn btn-secondary">Save</button>
+			</form>
+			if node.IsSection {
+				<form method="post" action={ templ.SafeURL(fmt.Sprintf("/taxonomy/nodes/%d/merge", node.ID)) }>
+					@csrfField(data.CSRFToken)
+					<select name="into" required>
+						for _, g := range data.SectionGroups {
+							<optgroup label={ g.Label }>
+								for _, o := range g.Options {
+									if o.ID != node.ID {
+										<option value={ fmt.Sprintf("%d", o.ID) }>{ o.Name }</option>
+									}
+								}
+							</optgroup>
+						}
+					</select>
+					<button type="submit" class="btn btn-secondary">Merge into</button>
+				</form>
+				<form method="post" action={ templ.SafeURL(fmt.Sprintf("/taxonomy/nodes/%d/split", node.ID)) }>
+					@csrfField(data.CSRFToken)
+					<textarea name="names" rows="3" placeholder="New Section names, one per line" required></textarea>
+					<button type="submit" class="btn btn-secondary">Split</button>
+				</form>
+			}
+			<form method="post" action={ templ.SafeURL(fmt.Sprintf("/taxonomy/nodes/%d/retire", node.ID)) } onsubmit="return confirm('Retire this node and everything under it?')">
+				@csrfField(data.CSRFToken)
+				<button type="submit" class="btn btn-secondary">Retire</button>
+			</form>
+			if childLevel(node.Level) != "" {
+				<form method="post" action="/taxonomy/nodes">
+					@csrfField(data.CSRFToken)
+					<input type="hidden" name="parent_id" value={ fmt.Sprintf("%d", node.ID) }/>
+					<input type="hidden" name="level" value={ childLevel(node.Level) }/>
+					<input type="text" name="name" placeholder={ "New " + childLevel(node.Level) } required/>
+					<input type="text" name="description" placeholder="Description"/>
+					<button type="submit" class="btn btn-secondary">{ "Add " + childLevel(node.Level) }</button>
+				</form>
+			}
+		</details>
+		for _, child := range node.Children {
+			@taxNode(child, data)
+		}
+	</div>
+}

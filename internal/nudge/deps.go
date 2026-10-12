@@ -18,12 +18,8 @@ func ReportWeekRange(cfg Config, now time.Time) (time.Time, time.Time) {
 	return domain.ReportWeekRange(cfg, now)
 }
 
-func GetItemsByDateRange(db *sql.DB, from, to time.Time) ([]WorkItem, error) {
-	return sqlite.GetItemsByDateRange(db, from, to)
-}
-
-func GetInProgressItems(db *sql.DB) ([]WorkItem, error) {
-	return sqlite.GetInProgressItems(db)
+func GetOpenItems(db *sql.DB) ([]WorkItem, error) {
+	return sqlite.GetOpenItems(db)
 }
 
 func resolveUserIDs(api *slack.Client, identifiers []string) ([]string, []string, error) {

@@ -14,7 +14,6 @@
 #     reportbot:
 #       volumes:
 #         - ./my-custom-config.yaml:/app/config.yaml:ro
-#         - ./my-custom-glossary.yaml:/app/llm_glossary.yaml
 services:
   caddy:
     image: caddy:2-alpine
@@ -38,13 +37,12 @@ services:
       SLACK_APP_TOKEN: "${SLACK_APP_TOKEN}"
       GITLAB_TOKEN: "${GITLAB_TOKEN}"
       OPENAI_API_KEY: "${OPENAI_API_KEY}"
+      DECISION_MODEL_API_KEY: "${DECISION_MODEL_API_KEY}"
       WEB_CLIENT_SECRET: "${WEB_CLIENT_SECRET}"
       WEB_SESSION_SECRET: "${WEB_SESSION_SECRET}"
     volumes:
       - ./reportbot-data:/app/data
       - ./reportbot-reports:/app/reports
-      - ./llm_glossary.yaml:/app/llm_glossary.yaml
-      - ./llm_classification_guide.md:/app/llm_classification_guide.md
       - ./config.yaml:/app/config.yaml:ro
 
 volumes:

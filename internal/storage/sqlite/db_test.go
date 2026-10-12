@@ -5,12 +5,13 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"reportbot/internal/domain"
 )
 
 func newTestDB(t *testing.T) *sql.DB {
 	t.Helper()
-	dbPath := filepath.Join(t.TempDir(), "reportbot-test.db")
-	db, err := InitDB(dbPath)
+	db, err := InitDB(filepath.Join(t.TempDir(), "reportbot-test.db"))
 	if err != nil {
 		t.Fatalf("InitDB failed: %v", err)
 	}
@@ -18,518 +19,349 @@ func newTestDB(t *testing.T) *sql.DB {
 	return db
 }
 
-func TestInitDBAddsAuthorIDColumn(t *testing.T) {
-	db := newTestDB(t)
-
-	var count int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('work_items') WHERE name = 'author_id'`).Scan(&count); err != nil {
-		t.Fatalf("query pragma_table_info failed: %v", err)
+func seedSmallTaxonomy(t *testing.T, db *sql.DB) map[string]int64 {
+	t.Helper()
+	ids, err := SeedTaxonomy(db, []SeedArea{{Name: "Product A", Categories: []SeedCategory{
+		{Name: "Release", Sections: []string{"7.6.3", "7.4.7"}},
+		{Name: "Infrastructure"},
+	}}})
+	if err != nil {
+		t.Fatalf("SeedTaxonomy: %v", err)
 	}
-	if count != 1 {
-		t.Fatalf("expected author_id column to exist, count=%d", count)
-	}
+	return ids
 }
 
-func TestWorkItemCRUDAndQueries(t *testing.T) {
-	db := newTestDB(t)
-	base := time.Now().UTC().Truncate(time.Second)
-
-	item1 := WorkItem{
-		Description: "Implement feature A",
-		Author:      "Alice",
-		AuthorID:    "U001",
-		Source:      "slack",
-		Status:      "in progress",
-		ReportedAt:  base,
-	}
-	if err := InsertWorkItem(db, item1); err != nil {
-		t.Fatalf("InsertWorkItem failed: %v", err)
-	}
-
-	items := []WorkItem{
-		{
-			Description: "Fix bug B",
-			Author:      "Alice",
-			AuthorID:    "U001",
-			Source:      "slack",
-			Status:      "done",
-			ReportedAt:  base.Add(10 * time.Minute),
-		},
-		{
-			Description: "MR title",
-			Author:      "Bob",
-			AuthorID:    "",
-			Source:      "gitlab",
-			SourceRef:   "https://gitlab.example.com/group/proj/-/merge_requests/1",
-			Status:      "done",
-			ReportedAt:  base.Add(20 * time.Minute),
-		},
-	}
-	inserted, err := InsertWorkItems(db, items)
+func TestInitDBUpgradesV1Database(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "v1.db")
+	raw, err := sql.Open("sqlite3", path)
 	if err != nil {
-		t.Fatalf("InsertWorkItems failed: %v", err)
+		t.Fatal(err)
 	}
-	if inserted != 2 {
-		t.Fatalf("expected inserted=2, got %d", inserted)
+	if _, err := raw.Exec(`
+		CREATE TABLE work_items (
+			id INTEGER PRIMARY KEY AUTOINCREMENT, description TEXT NOT NULL, author TEXT NOT NULL,
+			source TEXT NOT NULL DEFAULT 'slack', source_ref TEXT DEFAULT '', category TEXT DEFAULT '',
+			status TEXT DEFAULT 'done', ticket_ids TEXT DEFAULT '', reported_at DATETIME NOT NULL,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP);
+		INSERT INTO work_items (description, author, category, status, reported_at)
+		VALUES ('old item', 'Dev A', 'S1_2', 'mr review', '2026-03-02 10:00:00-08:00');
+	`); err != nil {
+		t.Fatal(err)
 	}
-	if err := InsertWorkItem(db, WorkItem{
-		Description: "Legacy Slack entry",
-		Author:      "Charlie",
-		AuthorID:    "",
-		Source:      "slack",
-		Status:      "done",
-		ReportedAt:  base.Add(30 * time.Minute),
-	}); err != nil {
-		t.Fatalf("InsertWorkItem legacy slack failed: %v", err)
-	}
+	raw.Close()
 
-	exists, err := SourceRefExists(db, "https://gitlab.example.com/group/proj/-/merge_requests/1")
+	db, err := InitDB(path)
 	if err != nil {
-		t.Fatalf("SourceRefExists failed: %v", err)
+		t.Fatalf("InitDB on a V1 database: %v", err)
 	}
-	if !exists {
-		t.Fatal("expected SourceRefExists to return true")
-	}
-
-	from := base.Add(-1 * time.Hour)
-	to := base.Add(2 * time.Hour)
-	all, err := GetItemsByDateRange(db, from, to)
-	if err != nil {
-		t.Fatalf("GetItemsByDateRange failed: %v", err)
-	}
-	if len(all) != 4 {
-		t.Fatalf("expected 4 items, got %d", len(all))
-	}
-
-	idByDesc := make(map[string]int64, len(all))
-	for _, it := range all {
-		idByDesc[it.Description] = it.ID
-	}
-
-	slackItems, err := GetSlackItemsByAuthorAndDateRange(db, "Alice", from, to)
-	if err != nil {
-		t.Fatalf("GetSlackItemsByAuthorAndDateRange failed: %v", err)
-	}
-	if len(slackItems) != 2 {
-		t.Fatalf("expected 2 Slack items for Alice, got %d", len(slackItems))
-	}
-
-	pending, err := GetPendingSlackItemsByAuthorAndDateRange(db, "Alice", from, to)
-	if err != nil {
-		t.Fatalf("GetPendingSlackItemsByAuthorAndDateRange failed: %v", err)
-	}
-	if len(pending) != 1 {
-		t.Fatalf("expected 1 pending item for Alice, got %d", len(pending))
-	}
-	if pending[0].Description != "Implement feature A" {
-		t.Fatalf("unexpected pending item: %q", pending[0].Description)
-	}
-
-	authors, err := GetSlackAuthorsByDateRange(db, from, to)
-	if err != nil {
-		t.Fatalf("GetSlackAuthorsByDateRange failed: %v", err)
-	}
-	if !authors["Alice"] {
-		t.Fatal("expected Alice in slack authors map")
-	}
-	if authors["Bob"] {
-		t.Fatal("did not expect Bob in slack authors map")
-	}
-
-	authorIDs, err := GetSlackAuthorIDsByDateRange(db, from, to)
-	if err != nil {
-		t.Fatalf("GetSlackAuthorIDsByDateRange failed: %v", err)
-	}
-	if !authorIDs["U001"] {
-		t.Fatal("expected U001 in slack author_id map")
-	}
-	if len(authorIDs) != 1 {
-		t.Fatalf("expected only one non-empty slack author_id, got %d", len(authorIDs))
-	}
-
-	updateID := idByDesc["Implement feature A"]
-	if err := UpdateWorkItemTextAndStatus(db, updateID, "Implement feature A v2", "in testing"); err != nil {
-		t.Fatalf("UpdateWorkItemTextAndStatus failed: %v", err)
-	}
-	if err := UpdateWorkItemStatus(db, updateID, "done"); err != nil {
-		t.Fatalf("UpdateWorkItemStatus failed: %v", err)
-	}
-	if err := UpdateCategories(db, map[int64]string{updateID: "S0_0"}); err != nil {
-		t.Fatalf("UpdateCategories failed: %v", err)
-	}
-	if err := UpdateTicketIDs(db, map[int64]string{updateID: "123456"}); err != nil {
-		t.Fatalf("UpdateTicketIDs failed: %v", err)
-	}
-	if err := UpdateWorkItemCategory(db, updateID, "S1_0"); err != nil {
-		t.Fatalf("UpdateWorkItemCategory failed: %v", err)
-	}
-
-	updated, err := GetWorkItemByID(db, updateID)
-	if err != nil {
-		t.Fatalf("GetWorkItemByID failed: %v", err)
-	}
-	if updated.Description != "Implement feature A v2" {
-		t.Fatalf("unexpected updated description: %q", updated.Description)
-	}
-	if updated.Status != "done" {
-		t.Fatalf("unexpected updated status: %q", updated.Status)
-	}
-	if updated.TicketIDs != "123456" {
-		t.Fatalf("unexpected ticket IDs: %q", updated.TicketIDs)
-	}
-	if updated.Category != "S1_0" {
-		t.Fatalf("unexpected category: %q", updated.Category)
-	}
-
-	deleteID := idByDesc["Fix bug B"]
-	if err := DeleteWorkItemByID(db, deleteID); err != nil {
-		t.Fatalf("DeleteWorkItemByID failed: %v", err)
-	}
-	if _, err := GetWorkItemByID(db, deleteID); err == nil {
-		t.Fatal("expected deleted item lookup to fail")
-	}
-}
-
-func TestFindItemsByTicketID(t *testing.T) {
-	db := newTestDB(t)
-	now := time.Now().UTC().Truncate(time.Second)
-
-	items := []WorkItem{
-		{Description: "[1234] Fix login bug", Author: "Alice", AuthorID: "U001", Source: "slack", Status: "in progress", ReportedAt: now},
-		{Description: "Update API endpoint", Author: "Alice", AuthorID: "U001", Source: "gitlab", TicketIDs: "5678,9012", Status: "merged", ReportedAt: now.Add(time.Minute)},
-		{Description: "Unrelated task", Author: "Bob", AuthorID: "U002", Source: "slack", Status: "done", ReportedAt: now.Add(2 * time.Minute)},
-		{Description: "[12345] Similar ticket", Author: "Alice", AuthorID: "U001", Source: "slack", Status: "done", ReportedAt: now.Add(3 * time.Minute)},
-	}
-	if _, err := InsertWorkItems(db, items); err != nil {
-		t.Fatalf("InsertWorkItems: %v", err)
-	}
-
-	found, err := FindItemsByTicketID(db, "1234")
-	if err != nil {
-		t.Fatalf("FindItemsByTicketID: %v", err)
-	}
-	if len(found) < 1 {
-		t.Fatalf("expected at least 1 candidate, got %d", len(found))
-	}
-	hasExact := false
-	for _, f := range found {
-		if f.Description == "[1234] Fix login bug" {
-			hasExact = true
+	defer db.Close()
+	for _, col := range []string{"author_id", "status_note", "done_at", "section_id", "placed_by", "filing_state", "import_key", "category"} {
+		if ok, err := columnExists(db, "work_items", col); err != nil || !ok {
+			t.Fatalf("expected column %s after migration (err=%v)", col, err)
 		}
 	}
-	if !hasExact {
-		t.Fatal("expected to find [1234] item in candidates")
+	item, err := GetWorkItemByID(db, 1)
+	if err != nil || item.Description != "old item" || item.SectionID != 0 {
+		t.Fatalf("V1 row must survive untouched: %+v err=%v", item, err)
 	}
-
-	found2, err := FindItemsByTicketID(db, "5678")
-	if err != nil {
-		t.Fatalf("FindItemsByTicketID for ticket_ids: %v", err)
-	}
-	if len(found2) != 1 || found2[0].TicketIDs != "5678,9012" {
-		t.Fatalf("expected 1 item with ticket_ids containing 5678, got %d", len(found2))
-	}
-
-	found3, err := FindItemsByTicketID(db, "9999")
-	if err != nil {
-		t.Fatalf("FindItemsByTicketID no match: %v", err)
-	}
-	if len(found3) != 0 {
-		t.Fatalf("expected 0 items, got %d", len(found3))
+	if err := Migrate(db); err != nil {
+		t.Fatalf("migrations must be idempotent: %v", err)
 	}
 }
 
-func TestInsertWorkItemReturningID(t *testing.T) {
+func TestWeekMembershipAndDoneLifecycle(t *testing.T) {
 	db := newTestDB(t)
-	now := time.Now().UTC().Truncate(time.Second)
+	loc := time.FixedZone("PDT", -7*3600)
+	// Status changes stamp done_at with the current time, so use the current week.
+	monday, next := domain.CurrentWeekRangeAt(time.Now().In(loc))
 
-	id, err := InsertWorkItemReturningID(db, WorkItem{
-		Description: "Test item", Author: "Alice", AuthorID: "U001", Source: "slack", Status: "done", ReportedAt: now,
+	insert := func(desc, status string, at time.Time) int64 {
+		id, err := InsertWorkItem(db, WorkItem{Description: desc, Author: "Dev A", Source: "slack", Status: status, ReportedAt: at, FilingState: domain.FilingFiled})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	openOld := insert("open from last week", domain.StatusInProgress, monday.AddDate(0, 0, -3))
+	doneOld := insert("done last week", domain.StatusDone, monday.AddDate(0, 0, -3))
+	doneNow := insert("done this week", domain.StatusDone, monday.Add(time.Hour))
+	future := insert("next week", domain.StatusInProgress, next.Add(time.Hour))
+	// Same instant in UTC: must still count as this week.
+	utc := insert("reported in UTC", domain.StatusInProgress, monday.Add(2*time.Hour).UTC())
+	// An instant just before next Monday, written in UTC, is still this week.
+	edge := insert("edge in UTC", domain.StatusInProgress, next.Add(-time.Minute).UTC())
+
+	ids := func() map[int64]bool {
+		items, err := GetWeekItems(db, monday, next)
+		if err != nil {
+			t.Fatal(err)
+		}
+		m := map[int64]bool{}
+		for _, it := range items {
+			m[it.ID] = true
+		}
+		return m
+	}
+	got := ids()
+	if !got[openOld] || got[doneOld] || !got[doneNow] || got[future] || !got[utc] || !got[edge] {
+		t.Fatalf("unexpected week membership: %v", got)
+	}
+
+	if err := SetWorkItemStatus(db, openOld, domain.StatusDone, Actor{Via: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	it, _ := GetWorkItemByID(db, openOld)
+	if it.DoneAt.IsZero() {
+		t.Fatal("done must set done_at")
+	}
+	if !ids()[openOld] {
+		t.Fatal("an item done this week appears once more")
+	}
+	nextWeek, _ := GetWeekItems(db, next, next.AddDate(0, 0, 7))
+	for _, w := range nextWeek {
+		if w.ID == openOld {
+			t.Fatal("a done item drops off the following week")
+		}
+	}
+	if err := SetWorkItemStatus(db, openOld, domain.StatusInProgress, Actor{Via: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	if it, _ := GetWorkItemByID(db, openOld); !it.DoneAt.IsZero() {
+		t.Fatal("leaving done clears done_at")
+	}
+	if err := SetWorkItemStatus(db, openOld, "mr review", Actor{Via: "test"}); err == nil {
+		t.Fatal("unknown statuses are rejected")
+	}
+}
+
+func TestApplyFilingHistoryAndCorrections(t *testing.T) {
+	db := newTestDB(t)
+	ids := seedSmallTaxonomy(t, db)
+	s763, infra := ids[SeedKey("Product A", "Release", "7.6.3")], ids[SeedKey("Product A", "Infrastructure", "")]
+
+	newIDs, err := InsertWorkItemsForFiling(db, []WorkItem{{Description: "rack power", Author: "Dev A", Source: "slack", ReportedAt: time.Now()}}, `{"kind":"arrival"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := newIDs[0]
+	if it, _ := GetWorkItemByID(db, id); it.FilingState != domain.FilingPending || it.Status != "" {
+		t.Fatalf("new items wait for filing: %+v", it)
+	}
+	job, err := ClaimJob(db, time.Now())
+	if err != nil || job == nil || job.WorkItemID != id || job.Attempts != 1 {
+		t.Fatalf("expected the filing job: %+v err=%v", job, err)
+	}
+
+	p := 0.42
+	err = ApplyFiling(db, id, FilingOutcome{
+		Placement: Placement{PlacedBy: domain.PlacedByModel, Confidence: &p, ModelSectionID: s763,
+			FilingState: domain.FilingAsking, Reason: domain.ReasonLowConfidence, HistoryNote: ReasonArrival},
+		Status: domain.StatusBlocked, StatusNote: "waiting on vendor", TicketIDs: "1234567",
+		Judgments: []Judgment{{Kind: "section_choice", AnswerJSON: `{"confidence":0.42}`, Model: "m"}},
 	})
 	if err != nil {
-		t.Fatalf("InsertWorkItemReturningID: %v", err)
+		t.Fatal(err)
 	}
-	if id <= 0 {
-		t.Fatalf("expected positive ID, got %d", id)
+	it, _ := GetWorkItemByID(db, id)
+	if it.SectionID != 0 || it.Status != domain.StatusBlocked || it.StatusNote != "waiting on vendor" || it.TicketIDs != "1234567" ||
+		it.Confidence == nil || *it.Confidence != 0.42 || it.UndeterminedReason != domain.ReasonLowConfidence {
+		t.Fatalf("unexpected filed item: %+v", it)
 	}
-	item, err := GetWorkItemByID(db, id)
-	if err != nil {
-		t.Fatalf("GetWorkItemByID: %v", err)
+
+	// The reporter picks a different Section: that is a correction of the LLM's pick.
+	if err := SetPlacement(db, id, Placement{SectionID: infra, PlacedBy: domain.PlacedByPerson, HistoryNote: ReasonButton, ActorID: "U1"}); err != nil {
+		t.Fatal(err)
 	}
-	if item.Description != "Test item" {
-		t.Fatalf("unexpected description: %q", item.Description)
+	corr, err := GetRecentCorrections(db, time.Now().Add(-time.Hour), 10)
+	if err != nil || len(corr) != 1 || corr[0].FromSection != s763 || corr[0].ToSection != infra {
+		t.Fatalf("expected one correction %d->%d, got %+v err=%v", s763, infra, corr, err)
+	}
+	eventID, _ := LatestPlacementEventID(db, id)
+	ev, err := GetPlacementEvent(db, eventID)
+	if err != nil || ev.FromPlacedBy != domain.PlacedByModel || ev.ToSection != infra || ev.ActorID != "U1" {
+		t.Fatalf("unexpected history event: %+v err=%v", ev, err)
+	}
+	placed, _ := GetPlacedItems(db, 10)
+	if len(placed) != 1 || !placed[0].ByPerson || placed[0].SectionID != infra {
+		t.Fatalf("unexpected placed items: %+v", placed)
+	}
+	stats, err := GetWeekStats(db, time.Now().Add(-24*time.Hour), time.Now().Add(24*time.Hour))
+	if err != nil || stats.ItemsThisWeek != 1 || stats.Asked != 1 || stats.FiledByModel != 0 || stats.PersonCorrections[s763] != 1 {
+		t.Fatalf("unexpected stats: %+v err=%v", stats, err)
 	}
 }
 
-func TestClassificationHistoryCorrectionsAndStats(t *testing.T) {
+func TestJobsRetryKillAndReset(t *testing.T) {
 	db := newTestDB(t)
-	now := time.Now().UTC().Truncate(time.Second)
-
-	workItems := []WorkItem{
-		{
-			Description: "Improve API throughput",
-			Author:      "Alex",
-			AuthorID:    "U100",
-			Source:      "slack",
-			Status:      "done",
-			ReportedAt:  now,
-		},
-		{
-			Description: "Refactor dashboard cache",
-			Author:      "Casey",
-			AuthorID:    "U200",
-			Source:      "slack",
-			Status:      "in progress",
-			ReportedAt:  now.Add(1 * time.Minute),
-		},
+	jobID, _ := EnqueueJob(db, JobFile, 7, "")
+	job, _ := ClaimJob(db, time.Now())
+	if job == nil || job.ID != jobID {
+		t.Fatalf("expected job %d, got %+v", jobID, job)
 	}
-	if _, err := InsertWorkItems(db, workItems); err != nil {
-		t.Fatalf("InsertWorkItems failed: %v", err)
+	if again, _ := ClaimJob(db, time.Now()); again != nil {
+		t.Fatal("a running job is not claimed twice")
 	}
-
-	all, err := GetItemsByDateRange(db, now.Add(-1*time.Hour), now.Add(1*time.Hour))
-	if err != nil {
-		t.Fatalf("GetItemsByDateRange failed: %v", err)
+	if err := RetryJob(db, jobID, "boom", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
 	}
-	if len(all) != 2 {
-		t.Fatalf("expected 2 items, got %d", len(all))
+	if early, _ := ClaimJob(db, time.Now()); early != nil {
+		t.Fatal("a job is not claimed before run_after")
 	}
-
-	id1 := all[0].ID
-	id2 := all[1].ID
-
-	history := []ClassificationRecord{
-		{
-			WorkItemID:       id1,
-			SectionID:        "S0_0",
-			SectionLabel:     "Backend",
-			Confidence:       0.93,
-			NormalizedStatus: "done",
-			TicketIDs:        "111",
-			DuplicateOf:      "",
-			LLMProvider:      "openai",
-			LLMModel:         "gpt-test",
-		},
-		{
-			WorkItemID:       id2,
-			SectionID:        "S1_0",
-			SectionLabel:     "Infrastructure",
-			Confidence:       0.64,
-			NormalizedStatus: "in progress",
-			TicketIDs:        "",
-			DuplicateOf:      "",
-			LLMProvider:      "openai",
-			LLMModel:         "gpt-test",
-		},
+	if late, _ := ClaimJob(db, time.Now().Add(2*time.Hour)); late == nil || late.Attempts != 2 {
+		t.Fatalf("expected second attempt, got %+v", late)
 	}
-	if err := InsertClassificationHistory(db, history); err != nil {
-		t.Fatalf("InsertClassificationHistory failed: %v", err)
+	if n, _ := ResetRunningJobs(db); n != 1 {
+		t.Fatalf("expected crash recovery to re-queue 1 job, got %d", n)
 	}
-
-	latest, err := GetLatestClassification(db, id1)
-	if err != nil {
-		t.Fatalf("GetLatestClassification failed: %v", err)
+	if err := EnqueueReclassify(db); err != nil {
+		t.Fatal(err)
 	}
-	if latest.SectionID != "S0_0" {
-		t.Fatalf("unexpected latest section: %q", latest.SectionID)
+	if err := EnqueueReclassify(db); err != nil {
+		t.Fatal(err)
 	}
-
-	if err := InsertClassificationCorrection(db, ClassificationCorrection{
-		WorkItemID:         id1,
-		OriginalSectionID:  "S1_0",
-		OriginalLabel:      "Infrastructure",
-		CorrectedSectionID: "S0_0",
-		CorrectedLabel:     "Backend",
-		Description:        "Improve API throughput",
-		CorrectedBy:        "U999",
-	}); err != nil {
-		t.Fatalf("InsertClassificationCorrection #1 failed: %v", err)
-	}
-	if err := InsertClassificationCorrection(db, ClassificationCorrection{
-		WorkItemID:         id2,
-		OriginalSectionID:  "S1_0",
-		OriginalLabel:      "Infrastructure",
-		CorrectedSectionID: "S2_0",
-		CorrectedLabel:     "Data",
-		Description:        "Refactor dashboard cache",
-		CorrectedBy:        "U999",
-	}); err != nil {
-		t.Fatalf("InsertClassificationCorrection #2 failed: %v", err)
-	}
-
-	since := now.Add(-24 * time.Hour)
-
-	corrections, err := GetRecentCorrections(db, since, 10)
-	if err != nil {
-		t.Fatalf("GetRecentCorrections failed: %v", err)
-	}
-	if len(corrections) != 2 {
-		t.Fatalf("expected 2 corrections, got %d", len(corrections))
-	}
-
-	count, err := CountCorrectionsByPhrase(db, "Improve API throughput", "S0_0")
-	if err != nil {
-		t.Fatalf("CountCorrectionsByPhrase failed: %v", err)
-	}
-	if count != 1 {
-		t.Fatalf("expected count=1, got %d", count)
-	}
-
-	historical, err := GetClassifiedItemsWithSections(db, since, 10)
-	if err != nil {
-		t.Fatalf("GetClassifiedItemsWithSections failed: %v", err)
-	}
-	if len(historical) == 0 {
-		t.Fatal("expected at least one historical item")
-	}
-
-	stats, err := GetClassificationStats(db, since)
-	if err != nil {
-		t.Fatalf("GetClassificationStats failed: %v", err)
-	}
-	if stats.TotalClassifications != 2 {
-		t.Fatalf("expected total classifications=2, got %d", stats.TotalClassifications)
-	}
-	if stats.TotalCorrections != 2 {
-		t.Fatalf("expected total corrections=2, got %d", stats.TotalCorrections)
-	}
-
-	bySection, err := GetCorrectionsBySection(db, since)
-	if err != nil {
-		t.Fatalf("GetCorrectionsBySection failed: %v", err)
-	}
-	if len(bySection) == 0 {
-		t.Fatal("expected corrections by section to be non-empty")
-	}
-
-	trend, err := GetWeeklyClassificationTrend(db, since)
-	if err != nil {
-		t.Fatalf("GetWeeklyClassificationTrend failed: %v", err)
-	}
-	if len(trend) == 0 {
-		t.Fatal("expected weekly trend to be non-empty")
+	var n int
+	db.QueryRow(`SELECT COUNT(*) FROM jobs WHERE kind = 'reclassify'`).Scan(&n)
+	if n != 1 {
+		t.Fatalf("re-classification requests coalesce, got %d jobs", n)
 	}
 }
 
-func TestSourceRefUniquenessIgnoresDuplicates(t *testing.T) {
+func TestTaxonomyEditing(t *testing.T) {
 	db := newTestDB(t)
-	base := time.Now().UTC().Truncate(time.Second)
-
-	items := []WorkItem{
-		{
-			Description: "First import",
-			Author:      "Alice",
-			Source:      "gitlab",
-			SourceRef:   "https://gitlab.example.com/group/proj/-/merge_requests/99",
-			Status:      "done",
-			ReportedAt:  base,
-		},
-		{
-			Description: "Duplicate import",
-			Author:      "Alice",
-			Source:      "gitlab",
-			SourceRef:   "https://gitlab.example.com/group/proj/-/merge_requests/99",
-			Status:      "done",
-			ReportedAt:  base.Add(1 * time.Minute),
-		},
+	ids := seedSmallTaxonomy(t, db)
+	if _, err := SeedTaxonomy(db, nil); err == nil {
+		t.Fatal("seeding twice must fail")
 	}
-	inserted, err := InsertWorkItems(db, items)
+	s763, s747 := ids[SeedKey("Product A", "Release", "7.6.3")], ids[SeedKey("Product A", "Release", "7.4.7")]
+	release := ids[SeedKey("Product A", "Release", "")]
+
+	tax, _ := LoadTaxonomy(db)
+	secs := tax.Sections()
+	if len(secs) != 3 || secs[0].Path() != "Product A › Release › 7.6.3" || secs[2].Path() != "Product A › Infrastructure" {
+		t.Fatalf("unexpected sections: %+v", secs)
+	}
+	if _, err := InsertTaxonomyNode(db, s763, domain.LevelSection, "too deep", ""); err == nil {
+		t.Fatal("a Section cannot hold Sections")
+	}
+	newID, err := InsertTaxonomyNode(db, release, domain.LevelSection, "7.8.0", "next release")
 	if err != nil {
-		t.Fatalf("InsertWorkItems failed: %v", err)
+		t.Fatal(err)
 	}
-	if inserted != 1 {
-		t.Fatalf("expected only one inserted row for duplicate source_ref, got %d", inserted)
+	if err := MoveTaxonomyNode(db, newID, -1); err != nil {
+		t.Fatal(err)
 	}
-
-	// InsertWorkItem should also be idempotent for duplicate source/source_ref.
-	if err := InsertWorkItem(db, WorkItem{
-		Description: "Third duplicate",
-		Author:      "Alice",
-		Source:      "gitlab",
-		SourceRef:   "https://gitlab.example.com/group/proj/-/merge_requests/99",
-		Status:      "done",
-		ReportedAt:  base.Add(2 * time.Minute),
-	}); err != nil {
-		t.Fatalf("InsertWorkItem duplicate should not fail: %v", err)
+	tax, _ = LoadTaxonomy(db)
+	if kids := tax.Children(release); kids[1].ID != newID {
+		t.Fatalf("expected the new Section moved up one: %+v", kids)
+	}
+	if err := UpdateTaxonomyNode(db, s747, "7.4.8", "patch"); err != nil {
+		t.Fatal(err)
 	}
 
-	var count int
-	if err := db.QueryRow(
-		`SELECT COUNT(*) FROM work_items WHERE source = ? AND source_ref = ?`,
-		"gitlab", "https://gitlab.example.com/group/proj/-/merge_requests/99",
-	).Scan(&count); err != nil {
-		t.Fatalf("count query failed: %v", err)
+	itemID, _ := InsertWorkItem(db, WorkItem{Description: "x", Author: "A", Source: "slack", Status: domain.StatusInProgress,
+		ReportedAt: time.Now(), SectionID: s763, PlacedBy: domain.PlacedByModel, FilingState: domain.FilingFiled})
+	moved, err := MergeSections(db, s763, s747, "UMGR")
+	if err != nil || moved != 1 {
+		t.Fatalf("merge moved %d err=%v", moved, err)
 	}
-	if count != 1 {
-		t.Fatalf("expected exactly one row for duplicated source/source_ref, got %d", count)
+	it, _ := GetWorkItemByID(db, itemID)
+	if it.SectionID != s747 || it.PlacedBy != domain.PlacedByPerson {
+		t.Fatalf("merge moves items as a person decision: %+v", it)
+	}
+	tax, _ = LoadTaxonomy(db)
+	if _, ok := tax.Section(s763); ok {
+		t.Fatal("the merged-away Section is retired")
+	}
+	if err := RetireTaxonomyNode(db, release); err != nil {
+		t.Fatal(err)
+	}
+	tax, _ = LoadTaxonomy(db)
+	if len(tax.Sections()) != 1 {
+		t.Fatalf("retiring a Category retires its Sections: %+v", tax.Sections())
+	}
+	if s, ok := tax.SectionAny(s747); !ok || s.Name != "7.4.8" {
+		t.Fatalf("retired Sections still resolve for history: %+v", s)
 	}
 }
 
-func TestInitDBMigrationDeduplicatesExistingSourceRefs(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "migration-test.db")
-	rawDB, err := sql.Open("sqlite3", dbPath)
+func TestCodeChangesAndUpdates(t *testing.T) {
+	db := newTestDB(t)
+	existing, _ := InsertWorkItem(db, WorkItem{Description: "shard timeout", Author: "Dev A", Source: "slack",
+		Status: domain.StatusInProgress, TicketIDs: "1234567", ReportedAt: time.Now(), FilingState: domain.FilingFiled})
+
+	found, err := FindOpenItemsByTicket(db, "1234567")
+	if err != nil || len(found) != 1 || found[0].ID != existing {
+		t.Fatalf("exact ticket lookup failed: %+v err=%v", found, err)
+	}
+	if found, _ := FindOpenItemsByTicket(db, "123456"); len(found) != 0 {
+		t.Fatal("ticket lookup must be exact")
+	}
+
+	ccID, ownItem, err := InsertCodeChangeWithItem(db, domain.CodeChange{Source: "gitlab", SourceRef: "https://git.example/mr/1", Title: "fix timeout",
+		Author: "Dev A", State: "open"}, WorkItem{Description: "fix timeout", Author: "Dev A", Source: "gitlab", Status: domain.StatusInProgress, ReportedAt: time.Now()}, `{"kind":"code_change"}`)
 	if err != nil {
-		t.Fatalf("sql.Open failed: %v", err)
+		t.Fatal(err)
+	}
+	if _, ok, _ := GetCodeChangeByRef(db, "gitlab", "https://git.example/mr/1"); !ok {
+		t.Fatal("code change must be tracked by ref")
+	}
+	if err := SetCodeChangeSuggestion(db, ccID, existing); err != nil {
+		t.Fatal(err)
+	}
+	if err := ConfirmCodeChangeLink(db, ccID, existing, Actor{Via: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	cc, _ := GetCodeChange(db, ccID)
+	if cc.WorkItemID != existing || cc.LinkKind != domain.LinkLinked {
+		t.Fatalf("expected linked code change: %+v", cc)
+	}
+	if _, err := GetWorkItemByID(db, ownItem); err != sql.ErrNoRows {
+		t.Fatalf("the code change's own Work Item is removed when linked, err=%v", err)
 	}
 
-	_, err = rawDB.Exec(`
-		CREATE TABLE work_items (
-			id          INTEGER PRIMARY KEY AUTOINCREMENT,
-			description TEXT NOT NULL,
-			author      TEXT NOT NULL,
-			source      TEXT NOT NULL DEFAULT 'slack',
-			source_ref  TEXT DEFAULT '',
-			category    TEXT DEFAULT '',
-			status      TEXT DEFAULT 'done',
-			ticket_ids  TEXT DEFAULT '',
-			reported_at DATETIME NOT NULL,
-			created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
-		);
-	`)
+	newID, _ := InsertWorkItem(db, WorkItem{Description: "shard timeout fixed", Author: "Dev A", Source: "slack",
+		Status: domain.StatusInTesting, StatusNote: "verifying on lab", TicketIDs: "7654321", ReportedAt: time.Now()})
+	merged, err := ApplyUpdate(db, existing, newID, Actor{Via: "test"})
 	if err != nil {
-		_ = rawDB.Close()
-		t.Fatalf("create legacy table failed: %v", err)
+		t.Fatal(err)
 	}
+	if merged.Description != "shard timeout fixed" || merged.Status != domain.StatusInTesting || merged.TicketIDs != "1234567,7654321" {
+		t.Fatalf("unexpected merged item: %+v", merged)
+	}
+	if _, err := GetWorkItemByID(db, newID); err != sql.ErrNoRows {
+		t.Fatal("an Update does not become a separate Work Item")
+	}
+}
 
-	base := time.Now().UTC().Truncate(time.Second)
-	_, err = rawDB.Exec(
-		`INSERT INTO work_items (description, author, source, source_ref, status, reported_at) VALUES
-		 (?, ?, ?, ?, ?, ?),
-		 (?, ?, ?, ?, ?, ?),
-		 (?, ?, ?, ?, ?, ?)`,
-		"dup-1", "Alice", "github", "https://github.com/acme/repo/pull/1", "done", base,
-		"dup-2", "Alice", "github", "https://github.com/acme/repo/pull/1", "done", base.Add(1*time.Minute),
-		"unique", "Bob", "github", "https://github.com/acme/repo/pull/2", "done", base.Add(2*time.Minute),
-	)
-	if err != nil {
-		_ = rawDB.Close()
-		t.Fatalf("seed legacy duplicates failed: %v", err)
+func TestPublishedReportReplace(t *testing.T) {
+	db := newTestDB(t)
+	for _, md := range []string{"first", "second"} {
+		if err := SavePublishedReport(db, PublishedReport{WeekStart: "2026-09-07", TeamMarkdown: md, BossMarkdown: md, PublishedBy: "U1"}); err != nil {
+			t.Fatal(err)
+		}
 	}
-	_ = rawDB.Close()
+	r, ok, err := GetPublishedReport(db, "2026-09-07")
+	if err != nil || !ok || r.TeamMarkdown != "second" {
+		t.Fatalf("re-publishing replaces the week's report: %+v ok=%v err=%v", r, ok, err)
+	}
+	weeks, _ := ListPublishedWeeks(db)
+	if len(weeks) != 1 {
+		t.Fatalf("expected one published week, got %v", weeks)
+	}
+}
 
-	migratedDB, err := InitDB(dbPath)
-	if err != nil {
-		t.Fatalf("InitDB migration failed: %v", err)
+func TestFindOpenItemsByTicketIsExact(t *testing.T) {
+	db := newTestDB(t)
+	if _, err := InsertWorkItem(db, WorkItem{Description: "x", Author: "A", Source: "slack", Status: domain.StatusInProgress,
+		TicketIDs: "123, 456", ReportedAt: time.Now(), FilingState: domain.FilingFiled}); err != nil {
+		t.Fatal(err)
 	}
-	defer migratedDB.Close()
-
-	var dupCount int
-	if err := migratedDB.QueryRow(
-		`SELECT COUNT(*) FROM work_items WHERE source = ? AND source_ref = ?`,
-		"github", "https://github.com/acme/repo/pull/1",
-	).Scan(&dupCount); err != nil {
-		t.Fatalf("post-migration duplicate count query failed: %v", err)
+	for _, ticket := range []string{"1_3", "%", "12%", "_", "456 OR 1=1", ""} {
+		if items, err := FindOpenItemsByTicket(db, ticket); err != nil || len(items) != 0 {
+			t.Fatalf("ticket %q must match nothing, got %d (err=%v)", ticket, len(items), err)
+		}
 	}
-	if dupCount != 1 {
-		t.Fatalf("expected migration to keep only one duplicate row, got %d", dupCount)
-	}
-
-	// Verify unique index exists and enforces uniqueness.
-	_, err = migratedDB.Exec(
-		`INSERT INTO work_items (description, author, source, source_ref, status, reported_at)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
-		"dup-after-migration", "Alice", "github", "https://github.com/acme/repo/pull/1", "done", base.Add(3*time.Minute),
-	)
-	if err == nil {
-		t.Fatal("expected unique constraint error when inserting duplicate source/source_ref after migration")
+	if items, _ := FindOpenItemsByTicket(db, "456"); len(items) != 1 {
+		t.Fatal("an exact ticket must match")
 	}
 }

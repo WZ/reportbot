@@ -19,26 +19,25 @@ github_token: ""
 github_org: "my-github-org"
 github_repos: []  # optional: limit to specific repos, e.g. ["org/repo1", "org/repo2"]
 
-# LLM provider
-# supported values: anthropic, openai
-llm_provider: "anthropic"
+# Decision model (System One protocol). It files every Work Item: it picks the Section and,
+# when code cannot decide, the Status, ticket ID and Update, with calibrated probabilities.
+decision_model_url: "https://api.compat.example"
+decision_model_api_key: ""
+decision_model_name: ""
+# Section confidence needed to file without asking "Where does this go?"
+decision_model_confidence: 0.85
+# Similar past Work Items (with their Sections) the decision model sees when filing
+similar_item_count: 30
+
+# Optional LLM, used only for Structure Proposals (after publishing and on /retrospect).
+# Leave llm_provider empty to run without it. Supported values: anthropic, openai
+llm_provider: ""
 llm_model: "" # optional; uses provider default when empty
-llm_batch_size: 20
-llm_confidence_threshold: 0.70
-llm_example_count: 8
-llm_example_max_chars: 100
-
-# Optional glossary memory file for phrase/status hints
-llm_glossary_path: "./llm_glossary.yaml"
-
-# Enable generator-critic loop (second LLM pass to catch misclassifications)
-llm_critic_enabled: false
-
-# LLM API keys (set the one that matches llm_provider)
-anthropic_api_key: "sk-ant-your-key"
+# Reasoning effort for OpenAI-compatible providers (low, medium, high); empty sends none
+llm_reasoning_effort: ""
+anthropic_api_key: ""
 openai_api_key: ""
-# Optional base URL for OpenAI-compatible endpoints.
-# Leave default for api.openai.com, or point to a lab-hosted endpoint such as gpt-oss.
+# Optional base URL for OpenAI-compatible endpoints
 openai_base_url: "https://api.openai.com/v1"
 
 # Data and output paths
@@ -54,6 +53,17 @@ report_channel_id: "C01234567"
 # Manager Slack user IDs (controls access to /fetch, /generate-report, /check, /retrospect, /stats)
 manager_slack_ids:
   - "U01ABC123"
+
+# Owners of fetched and imported Work Items (who may edit them and receives their DMs).
+# Unmapped items are manager-only; names are never matched at run time.
+# - Plain keys are report author names, used only by the migrate-v2 import.
+# - "gitlab:<numeric user id>" / "github:<numeric user id>" are code-hosting accounts, used only by fetch.
+# Draft a reviewed starting point with: reportbot migrate-v2 --report <latest.md> --suggest-author-ids
+# Env override: AUTHOR_IDS='{"Alice Smith": "U01ALICE00", "gitlab:1234": "U01ALICE00"}'
+author_ids:
+  "Alice Smith": "U01ALICE00"
+  "gitlab:1234": "U01ALICE00"
+  "github:5678": "U01ALICE00"
 
 # Team member full names (as shown in Slack)
 team_members:

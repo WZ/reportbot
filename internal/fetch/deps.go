@@ -1,13 +1,11 @@
 package fetch
 
 import (
-	"database/sql"
 	"regexp"
 	"reportbot/internal/config"
 	"reportbot/internal/domain"
 	gh "reportbot/internal/integrations/github"
 	gl "reportbot/internal/integrations/gitlab"
-	"reportbot/internal/storage/sqlite"
 	"strings"
 	"time"
 )
@@ -29,24 +27,6 @@ func FetchGitHubPRs(cfg Config, from, to time.Time) ([]GitHubPR, error) {
 	return gh.FetchGitHubPRs(cfg, from, to)
 }
 
-func SourceRefExists(db *sql.DB, sourceRef string) (bool, error) {
-	return sqlite.SourceRefExists(db, sourceRef)
-}
-
-func InsertWorkItems(db *sql.DB, items []WorkItem) (int, error) {
-	return sqlite.InsertWorkItems(db, items)
-}
-
-func mapMRStatus(mr GitLabMR) string {
-	if mr.State == "merged" {
-		return "done"
-	}
-	if mr.State == "opened" {
-		return "in progress"
-	}
-	return "in progress"
-}
-
 func mrReportedAt(mr GitLabMR, loc *time.Location) time.Time {
 	if mr.State == "opened" && !mr.UpdatedAt.IsZero() {
 		return mr.UpdatedAt.In(loc)
@@ -58,16 +38,6 @@ func mrReportedAt(mr GitLabMR, loc *time.Location) time.Time {
 		return mr.CreatedAt.In(loc)
 	}
 	return time.Now().In(loc)
-}
-
-func mapPRStatus(pr GitHubPR) string {
-	if pr.State == "merged" {
-		return "done"
-	}
-	if pr.State == "open" {
-		return "in progress"
-	}
-	return "in progress"
 }
 
 func prReportedAt(pr GitHubPR, loc *time.Location) time.Time {
