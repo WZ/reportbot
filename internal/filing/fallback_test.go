@@ -1,6 +1,7 @@
 package filing
 
 import (
+	"context"
 	"strconv"
 	"testing"
 	"time"
@@ -19,6 +20,10 @@ func (e *env) askedAgo(t *testing.T, desc string, ago time.Duration) int64 {
 		t.Fatalf("setup: expected an unsure item, got %+v", it)
 	}
 	if _, err := e.db.Exec(`UPDATE model_judgments SET created_at = ? WHERE work_item_id = ?`, time.Now().Add(-ago), id); err != nil {
+		t.Fatal(err)
+	}
+	// The Taxonomy is older than the answer, so the answer is current.
+	if _, err := e.db.Exec(`UPDATE taxonomy_nodes SET updated_at = ?`, time.Now().Add(-ago-time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	return id
@@ -61,16 +66,50 @@ func TestFallbackFilesUnansweredItemsUnderTheModelsFirstChoiceAfter24Hours(t *te
 	}
 }
 
-func TestFallbackSkipsARetiredFirstChoice(t *testing.T) {
+func TestFallbackWaitsForAnAnswerAgainstTheCurrentTaxonomy(t *testing.T) {
 	e := newEnv(t)
 	id := e.askedAgo(t, "upgrade path", 25*time.Hour)
 	if err := sqlite.RetireTaxonomyNode(e.db, e.section["upgrade"]); err != nil {
 		t.Fatal(err)
 	}
 	e.queue.Sweep()
-	// pick("upgrade", 0.4) ranks infra second.
-	if it, _ := sqlite.GetWorkItemByID(e.db, id); it.SectionID != e.section["infra"] {
-		t.Fatalf("a retired #1 falls through to the next active Section: %+v", it)
+	if it, _ := sqlite.GetWorkItemByID(e.db, id); it.SectionID != 0 {
+		t.Fatalf("an answer from before the Taxonomy change is not used: %+v", it)
+	}
+	items, _ := sqlite.GetOpenItems(e.db)
+	if n := FileByFallback(e.db, e.notes, items, true); n != 0 {
+		t.Fatal("nor at publish")
+	}
+
+	// The re-filing job after the change re-asks unsure items and stores the answer.
+	e.pick("cluster", 0.5)
+	if err := e.filer.Reclassify(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if it, _ := sqlite.GetWorkItemByID(e.db, id); it.SectionID != 0 || it.FilingState != domain.FilingAsking {
+		t.Fatalf("an unsure re-ask keeps the item waiting for its reporter: %+v", it)
+	}
+	// Re-asking does not restart the reporter's 24 hours.
+	e.queue.Sweep()
+	if it, _ := sqlite.GetWorkItemByID(e.db, id); it.SectionID != e.section["cluster"] || it.PlacedBy != domain.PlacedByFallback {
+		t.Fatalf("the fallback uses the re-asked answer: %+v", it)
+	}
+}
+
+func TestReclassifyReasksDoneUnsureItems(t *testing.T) {
+	e := newEnv(t)
+	id := e.askedAgo(t, "upgrade path", time.Hour)
+	if err := sqlite.SetWorkItemStatus(e.db, id, domain.StatusDone, sqlite.Actor{Via: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sqlite.InsertTaxonomyNode(e.db, e.section["infra"], domain.LevelSection, "Racks", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.filer.Reclassify(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, current, err := sqlite.LatestSectionChoice(e.db, id); err != nil || !current {
+		t.Fatalf("a done Work Item still Undetermined is re-asked too: current=%v err=%v", current, err)
 	}
 }
 

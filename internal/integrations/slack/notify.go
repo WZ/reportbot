@@ -401,7 +401,7 @@ func handleLinkConfirm(api *slack.Client, db *sql.DB, cfg Config, cb slack.Inter
 	}
 	if cc.State == "merged" {
 		if it, err := GetWorkItemByID(db, target); err == nil && it.Status == domain.StatusInProgress {
-			_ = SetWorkItemStatus(db, target, domain.StatusInTesting, cb.User.ID)
+			_ = SetWorkItemStatus(db, target, domain.StatusInTesting, slackActor(cb.User.ID))
 		}
 	}
 	replyToAction(api, cb, fmt.Sprintf("Linked %q to the existing Work Item.", esc(cc.Title)))
@@ -508,7 +508,7 @@ func handleCheckDone(api *slack.Client, db *sql.DB, cfg Config, cb slack.Interac
 	if err != nil {
 		return
 	}
-	if err := SetWorkItemStatus(db, itemID, domain.StatusDone, cb.User.ID); err != nil {
+	if err := SetWorkItemStatus(db, itemID, domain.StatusDone, slackActor(cb.User.ID)); err != nil {
 		log.Printf("check done error item=%d: %v", itemID, err)
 		return
 	}

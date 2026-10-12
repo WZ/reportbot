@@ -263,7 +263,7 @@ func UpdateItem(cfg web.Config, db *sql.DB, wake func()) http.HandlerFunc {
 			sectionID = id
 		}
 		if err := web.UpdateWorkItemFields(db, item.ID, desc, status, strings.TrimSpace(r.FormValue("status_note")), strings.TrimSpace(r.FormValue("ticket_ids")),
-			sqlite.Actor{ID: middleware.UserID(r), Via: "web"}); err != nil {
+			sqlite.Actor{ID: middleware.UserID(r), Via: sqlite.ViaWeb}); err != nil {
 			log.Printf("Error updating item %d: %v", item.ID, err)
 			http.Error(w, "Failed to save Work Item", http.StatusInternalServerError)
 			return
@@ -316,7 +316,7 @@ func DeleteItem(db *sql.DB) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		if err := web.DeleteWorkItemByID(db, item.ID, sqlite.Actor{ID: middleware.UserID(r), Via: "web"}); err != nil {
+		if err := web.DeleteWorkItemByID(db, item.ID, sqlite.Actor{ID: middleware.UserID(r), Via: sqlite.ViaWeb}); err != nil {
 			log.Printf("Error deleting item %d: %v", item.ID, err)
 			http.Error(w, "Failed to delete Work Item", http.StatusInternalServerError)
 			return
@@ -354,8 +354,8 @@ func placeByPerson(db *sql.DB, itemID, sectionID int64, actorID string) error {
 	})
 }
 
-// GenerateReport publishes the week. Unanswered unsure Work Items are first filed by fallback;
-// with Undetermined Work Items left it asks for confirmation.
+// GenerateReport publishes the week. With Undetermined Work Items it first asks for confirmation;
+// once confirmed, unanswered unsure ones are filed by fallback before publishing.
 func GenerateReport(cfg web.Config, db *sql.DB, hooks web.PublishHooks) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		monday, _, _, _ := resolveWeek(cfg, r.URL.Query().Get("week"))
@@ -373,18 +373,25 @@ func GenerateReport(cfg web.Config, db *sql.DB, hooks web.PublishHooks) http.Han
 			fmt.Fprint(w, `<div class="flash flash-info">No Work Items this week.</div>`)
 			return
 		}
-		if hooks.Fallback != nil && hooks.Fallback(live.View.Undetermined) > 0 {
-			if live, err = web.LoadRange(db, monday, monday.AddDate(0, 0, 7)); err != nil {
-				log.Printf("Generate: failed to load report: %v", err)
-				fmt.Fprint(w, `<div class="flash flash-error">Failed to load the report. Check server logs.</div>`)
-				return
-			}
-		}
 		if n := len(live.View.Undetermined); n > 0 && r.FormValue("confirm") != "1" {
-			fmt.Fprintf(w, `<div class="flash flash-warning">%d Work Item(s) are still in Undetermined. `+
+			note := ""
+			m := 0
+			for _, it := range live.View.Undetermined {
+				if filing.EligibleForFallback(it) {
+					m++
+				}
+			}
+			if m > 0 {
+				note = fmt.Sprintf("Publishing files %d of them under the model's first choice and tells their reporters. ", m)
+			}
+			fmt.Fprintf(w, `<div class="flash flash-warning">%d Work Item(s) are still in Undetermined. %s`+
 				`<button class="btn btn-secondary" hx-post="/generate?week=%s&amp;confirm=1" hx-target="#generate-status" hx-swap="innerHTML">Publish anyway</button></div>`,
-				n, html.EscapeString(week))
+				n, html.EscapeString(note), html.EscapeString(week))
 			return
+		}
+		// Confirmed: unsure Work Items nobody answered go to the model's #1; the job reloads the report.
+		if hooks.Fallback != nil && len(live.View.Undetermined) > 0 {
+			hooks.Fallback(live.View.Undetermined)
 		}
 
 		jobID := fmt.Sprintf("gen-%d", rand.Int63())

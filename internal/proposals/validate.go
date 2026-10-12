@@ -1,4 +1,4 @@
-package learning
+package proposals
 
 import (
 	"fmt"
@@ -144,6 +144,9 @@ func ValidateProposal(p llm.StructureProposal, knownNames []string, parents map[
 		if err := plainText(r, maxProposalReason); err != nil {
 			return fmt.Errorf("reason %w", err)
 		}
+		if namesAuthor(r, authors) {
+			return fmt.Errorf("reason names a person")
+		}
 	}
 	return nil
 }
@@ -160,7 +163,7 @@ func startsWithKnown(ref string, known []string) bool {
 	return false
 }
 
-// TaxonomyNames are the names a note may use to refer to a Section.
+// TaxonomyNames are the names a proposal's text may use to refer to a Section.
 func TaxonomyNames(sections []domain.Section) []string {
 	seen := map[string]bool{}
 	var out []string

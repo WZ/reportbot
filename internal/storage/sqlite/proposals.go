@@ -9,47 +9,9 @@ import (
 	"reportbot/internal/domain"
 )
 
-// migrateLearning adds Structure Proposals. learned_notes, learned_notes_history, learning_runs
-// and replay_answers are unused; migrations here are additive, so they are not dropped.
-func migrateLearning(tx *sql.Tx) error {
+// migrateStructureProposals stores Structure Proposals and their decisions.
+func migrateStructureProposals(tx *sql.Tx) error {
 	_, err := tx.Exec(`
-	ALTER TABLE taxonomy_nodes ADD COLUMN learned_notes TEXT NOT NULL DEFAULT '';
-
-	CREATE TABLE learned_notes_history (
-		id         INTEGER PRIMARY KEY AUTOINCREMENT,
-		section_id INTEGER NOT NULL,
-		run_id     INTEGER,
-		old_notes  TEXT NOT NULL,
-		new_notes  TEXT NOT NULL,
-		action     TEXT NOT NULL,
-		actor_id   TEXT NOT NULL DEFAULT '',
-		undone_at  DATETIME,
-		created_at DATETIME NOT NULL
-	);
-	CREATE INDEX idx_lnh_section ON learned_notes_history(section_id, id);
-
-	CREATE TABLE learning_runs (
-		id           INTEGER PRIMARY KEY AUTOINCREMENT,
-		trigger      TEXT NOT NULL,
-		started_at   DATETIME NOT NULL,
-		signals      INTEGER NOT NULL DEFAULT 0,
-		sections     TEXT NOT NULL DEFAULT '[]',
-		candidates   TEXT NOT NULL DEFAULT '',
-		replay_items INTEGER NOT NULL DEFAULT 0,
-		old_accuracy REAL,
-		new_accuracy REAL,
-		decision     TEXT NOT NULL,
-		reason       TEXT NOT NULL DEFAULT '',
-		finished_at  DATETIME NOT NULL
-	);
-
-	CREATE TABLE replay_answers (
-		request_hash TEXT PRIMARY KEY,
-		answer_json  TEXT NOT NULL,
-		model        TEXT NOT NULL,
-		created_at   DATETIME NOT NULL
-	);
-
 	CREATE TABLE structure_proposals (
 		id           INTEGER PRIMARY KEY AUTOINCREMENT,
 		kind         TEXT NOT NULL,
@@ -66,58 +28,42 @@ func migrateLearning(tx *sql.Tx) error {
 	return err
 }
 
-// Kinds of learning signal.
-const (
-	SignalCorrection = "correction" // a person moved a model-filed Work Item elsewhere
-	SignalMisranked  = "misranked"  // a person filed an unsure Work Item somewhere other than the model's #1
-)
-
-// LearningSignal is one person decision that disagrees with the decision model.
-type LearningSignal struct {
-	EventID       int64
-	WorkItemID    int64
-	Description   string
-	Kind          string
-	ModelSection  int64
-	ChosenSection int64
-	OutsideTop3   bool   // the chosen Section was not among the model's three most likely
-	Author        string // the Work Item's author name
-	CreatedAt     time.Time
+// OtherPick is a person filing an unsure Work Item outside the decision model's three most
+// likely Sections: evidence that a Section may be missing.
+type OtherPick struct {
+	WorkItemID  int64
+	Description string
+	Author      string
 }
 
-// GetLearningSignals returns corrections and mis-ranked picks recorded after since, oldest first.
-func GetLearningSignals(db *sql.DB, since time.Time) ([]LearningSignal, error) {
+// GetOtherPicks returns person Placements after since that left Undetermined or a Fallback
+// Placement for a Section outside the model's top 3, oldest first.
+func GetOtherPicks(db *sql.DB, since time.Time) ([]OtherPick, error) {
 	rows, err := db.Query(
-		`SELECT h.id, h.work_item_id, w.description, h.from_section, h.from_placed_by, h.to_section, h.model_section, h.created_at,
-		    w.author,
+		`SELECT h.work_item_id, w.description, w.author, h.to_section,
 		    COALESCE((SELECT j.answer_json FROM model_judgments j WHERE j.work_item_id = h.work_item_id AND j.kind = 'section_choice'
 		              AND julianday(j.created_at) <= julianday(h.created_at) ORDER BY j.id DESC LIMIT 1), '')
 		 FROM placement_history h JOIN work_items w ON w.id = h.work_item_id
-		 WHERE h.placed_by = 'person' AND h.reason NOT IN ('import', 'undo', 'taxonomy_merge')
-		   AND h.to_section IS NOT NULL AND julianday(h.created_at) > julianday(?)
-		 ORDER BY h.id`, since)
+		 WHERE h.placed_by = ? AND h.reason NOT IN (?, ?, ?)
+		   AND h.to_section IS NOT NULL AND (h.from_section IS NULL OR h.from_placed_by = ?)
+		   AND julianday(h.created_at) > julianday(?)
+		 ORDER BY h.id`,
+		domain.PlacedByPerson, ReasonImport, ReasonUndo, ReasonTaxonomyMerge, domain.PlacedByFallback, since)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []LearningSignal
+	var out []OtherPick
 	for rows.Next() {
-		var s LearningSignal
-		var from, model sql.NullInt64
-		var fromBy, answer string
-		if err := rows.Scan(&s.EventID, &s.WorkItemID, &s.Description, &from, &fromBy, &s.ChosenSection, &model, &s.CreatedAt, &s.Author, &answer); err != nil {
+		var p OtherPick
+		var chosen int64
+		var answer string
+		if err := rows.Scan(&p.WorkItemID, &p.Description, &p.Author, &chosen, &answer); err != nil {
 			return nil, err
 		}
-		switch {
-		case from.Valid && fromBy == domain.PlacedByModel && from.Int64 != s.ChosenSection:
-			s.Kind, s.ModelSection = SignalCorrection, from.Int64
-		case !from.Valid && model.Valid && model.Int64 != s.ChosenSection:
-			s.Kind, s.ModelSection = SignalMisranked, model.Int64
-			s.OutsideTop3 = !inTop3(answer, s.ChosenSection)
-		default:
-			continue
+		if answer != "" && !inTop3(answer, chosen) {
+			out = append(out, p)
 		}
-		out = append(out, s)
 	}
 	return out, rows.Err()
 }
@@ -163,6 +109,8 @@ const (
 	ProposalPending  = "proposed"
 	ProposalApproved = "approved"
 	ProposalRejected = "rejected"
+	ProposalStale    = "stale"   // no longer valid when a manager tried to approve it
+	ProposalExpired  = "expired" // nobody decided in time
 )
 
 // Proposal is a stored Structure Proposal; Key identifies the same change across weeks.
@@ -209,23 +157,36 @@ func ReopenProposal(db *sql.DB, id int64) error {
 	return err
 }
 
-// BlockedProposalKeys are changes not to propose again: pending ones, and ones decided since.
-func BlockedProposalKeys(db *sql.DB, decidedSince time.Time) (map[string]bool, error) {
-	rows, err := db.Query(`SELECT dedupe_key FROM structure_proposals WHERE state = ? OR julianday(decided_at) >= julianday(?)`,
-		ProposalPending, decidedSince)
+// BlockedProposals are changes not to propose again: pending ones, and ones approved or
+// rejected since decidedSince. Stale and expired proposals do not block.
+func BlockedProposals(db *sql.DB, decidedSince time.Time) ([]Proposal, error) {
+	rows, err := db.Query(
+		`SELECT id, kind, dedupe_key, payload_json, affected, state, decided_by FROM structure_proposals
+		 WHERE state = ? OR (state IN (?, ?) AND julianday(decided_at) >= julianday(?))`,
+		ProposalPending, ProposalApproved, ProposalRejected, decidedSince)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	out := map[string]bool{}
+	var out []Proposal
 	for rows.Next() {
-		var k string
-		if err := rows.Scan(&k); err != nil {
+		var p Proposal
+		if err := rows.Scan(&p.ID, &p.Kind, &p.Key, &p.PayloadJSON, &p.Affected, &p.State, &p.DecidedBy); err != nil {
 			return nil, err
 		}
-		out[k] = true
+		out = append(out, p)
 	}
 	return out, rows.Err()
+}
+
+// ExpireProposals marks pending proposals created before createdBefore as expired.
+func ExpireProposals(db *sql.DB, createdBefore time.Time) (int64, error) {
+	res, err := db.Exec(`UPDATE structure_proposals SET state = ?, decided_at = ? WHERE state = ? AND julianday(created_at) < julianday(?)`,
+		ProposalExpired, time.Now(), ProposalPending, createdBefore)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
 // SectionActivity is how much a Section is used, for Structure Proposals.

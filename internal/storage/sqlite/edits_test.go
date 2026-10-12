@@ -77,19 +77,19 @@ func TestEditsAreRecordedWithBeforeAfterWhoAndWhen(t *testing.T) {
 	}
 }
 
-func TestReportDraftReplacesPerWeek(t *testing.T) {
+func TestDraftSnapshotReplacesPerWeek(t *testing.T) {
 	db := newTestDB(t)
-	if err := SaveReportDraft(db, ReportDraft{WeekStart: "2026-10-05", TeamMarkdown: "t1", BossMarkdown: "b1", ItemCount: 3}); err != nil {
+	if err := SaveDraftSnapshot(db, DraftSnapshot{WeekStart: "2026-10-05", TeamMarkdown: "t1", BossMarkdown: "b1", ItemCount: 3}); err != nil {
 		t.Fatal(err)
 	}
-	if err := SaveReportDraft(db, ReportDraft{WeekStart: "2026-10-05", TeamMarkdown: "t2", BossMarkdown: "b2", ItemCount: 4, UndeterminedCount: 1}); err != nil {
+	if err := SaveDraftSnapshot(db, DraftSnapshot{WeekStart: "2026-10-05", TeamMarkdown: "t2", BossMarkdown: "b2", ItemCount: 4, UndeterminedCount: 1}); err != nil {
 		t.Fatal(err)
 	}
-	d, ok, err := GetReportDraft(db, "2026-10-05")
+	d, ok, err := GetDraftSnapshot(db, "2026-10-05")
 	if err != nil || !ok || d.TeamMarkdown != "t2" || d.ItemCount != 4 || d.UndeterminedCount != 1 || d.CreatedAt.IsZero() {
-		t.Fatalf("draft: %+v ok=%v err=%v", d, ok, err)
+		t.Fatalf("Draft Snapshot: %+v ok=%v err=%v", d, ok, err)
 	}
 	if _, ok, _ := GetPublishedReport(db, "2026-10-05"); ok {
-		t.Fatal("a draft is not a Published Report")
+		t.Fatal("a Draft Snapshot is not a Published Report")
 	}
 }

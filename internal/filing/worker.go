@@ -161,7 +161,8 @@ func (q *Queue) Sweep() int {
 }
 
 // Reclassify re-files Open Work Items after a Taxonomy edit; confident moves apply even to
-// person-placed items, whose owner is told and can undo.
+// person-placed items, whose owner is told and can undo. Unsure Undetermined items, done or
+// not, are re-asked so the fallback never uses an answer from before the edit.
 func (f *Filer) Reclassify(ctx context.Context) error {
 	c, err := f.loadContext()
 	if err != nil {
@@ -171,9 +172,15 @@ func (f *Filer) Reclassify(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	asking, err := sqlite.GetAskingItems(f.DB)
+	if err != nil {
+		return err
+	}
 	var items []domain.WorkItem
-	for _, it := range open {
-		if it.FilingState != domain.FilingPending {
+	seen := map[int64]bool{}
+	for _, it := range append(open, asking...) {
+		if it.FilingState != domain.FilingPending && !seen[it.ID] {
+			seen[it.ID] = true
 			items = append(items, it)
 		}
 	}
@@ -214,6 +221,18 @@ func (f *Filer) Reclassify(ctx context.Context) error {
 		case it.SectionID != 0 && !currentActive:
 			if err := sqlite.SetPlacement(f.DB, it.ID, sqlite.Placement{PlacedBy: domain.PlacedByModel, ModelSectionID: pick,
 				FilingState: domain.FilingFiled, Reason: domain.ReasonSectionRetired, HistoryNote: sqlite.ReasonReclassify}); err != nil {
+				return err
+			}
+		case it.SectionID == 0 && it.FilingState == domain.FilingAsking:
+			// Keep the unsure answer, computed against the current Taxonomy, for the fallback.
+			js := judgments(r.resp)
+			for i := range js {
+				js[i].WorkItemID = it.ID
+				if js[i].Kind == "section_choice" {
+					js[i].Subject = sqlite.SubjectReask
+				}
+			}
+			if err := sqlite.InsertJudgments(f.DB, js); err != nil {
 				return err
 			}
 		}

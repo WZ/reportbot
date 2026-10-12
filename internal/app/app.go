@@ -22,8 +22,8 @@ import (
 	"reportbot/internal/integrations/github"
 	"reportbot/internal/integrations/gitlab"
 	slackbot "reportbot/internal/integrations/slack"
-	"reportbot/internal/learning"
 	"reportbot/internal/nudge"
+	"reportbot/internal/proposals"
 	"reportbot/internal/publish"
 	"reportbot/internal/storage/sqlite"
 	"reportbot/internal/web"
@@ -73,21 +73,14 @@ func Main() {
 		Notify:   notifier,
 	})
 	queue.Start(ctx)
-	publish.StartDraftScheduler(ctx, db, cfg)
+	publish.StartDraftSnapshotScheduler(ctx, db, cfg)
 
 	hooks := web.PublishHooks{Fallback: func(items []domain.WorkItem) int { return filing.FileByFallback(db, notifier, items, true) }}
 	// Structure Proposals need the LLM; without it they stay off and filing works as before.
-	var proposals slackbot.Proposals
+	var proposer slackbot.Proposer
 	if cfg.LLMConfigured() {
-		learner := &learning.Learner{DB: db, Cfg: cfg, Wake: queue.Wake, Notify: &slackbot.LearningNotifier{API: api, DB: db, Cfg: cfg}}
-		proposals = learner
-		hooks.AfterPublish = func() {
-			ctx, cancel := context.WithTimeout(ctx, 30*time.Minute)
-			defer cancel()
-			if _, err := learner.ProposeStructure(ctx); err != nil {
-				log.Printf("structure proposals after publish: %v", err)
-			}
-		}
+		svc := &proposals.Service{DB: db, Cfg: cfg, Wake: queue.Wake, Notify: &slackbot.ProposalNotifier{API: api, DB: db, Cfg: cfg}}
+		proposer, hooks.AfterPublish = svc, svc.AfterPublish
 	} else {
 		log.Printf("Structure Proposals disabled: no LLM configured")
 	}
@@ -130,7 +123,7 @@ func Main() {
 	}()
 
 	log.Println("Starting Engineering Report Bot...")
-	if err := slackbot.StartSlackBot(cfg, db, api, queue.Wake, proposals); err != nil {
+	if err := slackbot.StartSlackBot(cfg, db, api, queue.Wake, proposer); err != nil {
 		log.Fatalf("Slack bot error: %v", err)
 	}
 }

@@ -90,11 +90,6 @@ func UpdateTaxonomyNode(db *sql.DB, id int64, name, description string) error {
 	return err
 }
 
-func SetSectionDescription(db *sql.DB, id int64, description string) error {
-	_, err := db.Exec(`UPDATE taxonomy_nodes SET description = ?, updated_at = ? WHERE id = ?`, strings.TrimSpace(description), time.Now(), id)
-	return err
-}
-
 // MoveTaxonomyNode swaps the node with its previous (delta<0) or next (delta>0) active sibling.
 func MoveTaxonomyNode(db *sql.DB, id int64, delta int) error {
 	tx, err := db.Begin()

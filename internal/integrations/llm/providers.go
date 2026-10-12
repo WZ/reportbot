@@ -21,10 +21,6 @@ type LLMUsage struct {
 	CacheReadInputTokens     int64
 }
 
-func (u LLMUsage) TotalTokens() int64 {
-	return u.InputTokens + u.OutputTokens
-}
-
 func (u *LLMUsage) Add(other LLMUsage) {
 	u.InputTokens += other.InputTokens
 	u.OutputTokens += other.OutputTokens

@@ -1,4 +1,4 @@
-package learning
+package proposals
 
 import (
 	"context"
@@ -17,6 +17,7 @@ import (
 
 	"reportbot/internal/config"
 	"reportbot/internal/domain"
+	"reportbot/internal/integrations/llm"
 	"reportbot/internal/storage/sqlite"
 )
 
@@ -33,7 +34,7 @@ func (r *recorder) ProposalsReady(ps []StoredProposal) {
 
 type env struct {
 	db       *sql.DB
-	l        *Learner
+	l        *Service
 	rec      *recorder
 	sec      map[string]int64
 	llmCalls atomic.Int32
@@ -42,7 +43,7 @@ type env struct {
 
 func newEnv(t *testing.T) *env {
 	t.Helper()
-	db, err := sqlite.InitDB(filepath.Join(t.TempDir(), "learning.db"))
+	db, err := sqlite.InitDB(filepath.Join(t.TempDir(), "proposals.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +73,7 @@ func newEnv(t *testing.T) *env {
 	}))
 	t.Cleanup(llmSrv.Close)
 	cfg := config.Config{LLMProvider: "openai", OpenAIBaseURL: llmSrv.URL, OpenAIAPIKey: "k", Location: time.UTC}
-	e.l = &Learner{DB: db, Cfg: cfg, Notify: e.rec}
+	e.l = &Service{DB: db, Cfg: cfg, Notify: e.rec}
 	e.llmText = func(string) string { return "[]" }
 	return e
 }
@@ -223,4 +224,120 @@ func TestRejectedProposalCoolsDown(t *testing.T) {
 	if again, _ := e.l.ProposeStructure(context.Background()); len(again) != 1 {
 		t.Fatalf("after the cooldown it may be proposed again: %+v", again)
 	}
+}
+
+func TestRewordedNewSectionWithTheSameEvidenceStaysRejected(t *testing.T) {
+	e := newEnv(t)
+	ids := e.seedUnplaced(t, 6)
+	eng := e.category(t, "Engineering")
+	name := "Telemetry"
+	e.llmText = func(string) string {
+		return fmt.Sprintf(`[{"kind":"new","parent_id":%d,"name":%q,"item_ids":%s}]`, eng, name, idsJSON(ids[:5]))
+	}
+	got, _ := e.l.ProposeStructure(context.Background())
+	if len(got) != 1 {
+		t.Fatalf("setup: %+v", got)
+	}
+	if err := e.l.RejectProposal(got[0].ID, "U1"); err != nil {
+		t.Fatal(err)
+	}
+	name = "Metrics export"
+	if again, _ := e.l.ProposeStructure(context.Background()); len(again) != 0 {
+		t.Fatalf("a reworded proposal with the same evidence stays rejected: %+v", again)
+	}
+	// Mostly the same evidence counts as the same change too.
+	e.llmText = func(string) string {
+		return fmt.Sprintf(`[{"kind":"new","parent_id":%d,"name":"Observability","item_ids":%s}]`, eng, idsJSON(ids[1:6]))
+	}
+	if again, _ := e.l.ProposeStructure(context.Background()); len(again) != 0 {
+		t.Fatalf("overlapping evidence stays rejected: %+v", again)
+	}
+}
+
+func TestPendingProposalsExpireAfterTwoWeeks(t *testing.T) {
+	e := newEnv(t)
+	ids := e.seedUnplaced(t, 5)
+	eng := e.category(t, "Engineering")
+	e.llmText = func(string) string {
+		return fmt.Sprintf(`[{"kind":"new","parent_id":%d,"name":"Telemetry","item_ids":%s}]`, eng, idsJSON(ids))
+	}
+	first, _ := e.l.ProposeStructure(context.Background())
+	if len(first) != 1 {
+		t.Fatalf("setup: %+v", first)
+	}
+	e.l.Now = func() time.Time { return time.Now().AddDate(0, 0, 7*ProposalExpiryWeeks+1) }
+	again, err := e.l.ProposeStructure(context.Background())
+	if err != nil || len(again) != 1 {
+		t.Fatalf("an expired proposal may be proposed again: %+v %v", again, err)
+	}
+	if p, _ := sqlite.GetProposal(e.db, first[0].ID); p.State != sqlite.ProposalExpired {
+		t.Fatalf("the undecided proposal expired: %+v", p)
+	}
+	if _, err := e.l.ApproveProposal(first[0].ID, "U1"); err != ErrAlreadyDecided {
+		t.Fatalf("an expired proposal cannot be approved: %v", err)
+	}
+}
+
+func TestRetireIsRecheckedAtApproval(t *testing.T) {
+	e := newEnv(t)
+	payload := fmt.Sprintf(`{"kind":"retire","section_id":%d}`, e.sec["infra"])
+	id, err := sqlite.InsertProposal(e.db, sqlite.Proposal{Kind: llm.ProposeRetire, Key: "retire:x", PayloadJSON: payload})
+	if err != nil {
+		t.Fatal(err)
+	}
+	open := e.insert(t, "rack swap", time.Now())
+	if err := sqlite.SetPlacement(e.db, open, sqlite.Placement{SectionID: e.sec["infra"], PlacedBy: domain.PlacedByPerson, HistoryNote: sqlite.ReasonButton}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.l.ApproveProposal(id, "U1"); err != ErrProposalStale {
+		t.Fatalf("a Section with Open Work Items is not retired: %v", err)
+	}
+	if p, _ := sqlite.GetProposal(e.db, id); p.State != sqlite.ProposalStale {
+		t.Fatalf("the proposal is marked stale: %+v", p)
+	}
+	tax, _ := sqlite.LoadTaxonomy(e.db)
+	if _, ok := tax.Section(e.sec["infra"]); !ok {
+		t.Fatal("the Section stays")
+	}
+}
+
+func TestMovedFallbackIsProposalEvidence(t *testing.T) {
+	e := newEnv(t)
+	id := e.insert(t, "export dashboards", time.Now())
+	low := 0.4
+	probs := fmt.Sprintf(`{"%s":0.4,"%s":0.3,"%s":0.2}`, domain.SectionKey(e.sec["cluster"]), domain.SectionKey(e.sec["infra"]), domain.SectionKey(e.sec["upgrade"]))
+	if err := sqlite.ApplyFiling(e.db, id, sqlite.FilingOutcome{
+		Placement: sqlite.Placement{PlacedBy: domain.PlacedByModel, Confidence: &low, ModelSectionID: e.sec["cluster"], FilingState: domain.FilingAsking,
+			Reason: domain.ReasonLowConfidence, HistoryNote: sqlite.ReasonArrival},
+		Judgments: []sqlite.Judgment{{Kind: "section_choice", Subject: "section", Model: "m", AnswerJSON: `{"probabilities":` + probs + `}`}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := sqlite.PlaceByFallback(e.db, id, e.sec["cluster"]); !ok {
+		t.Fatal("setup")
+	}
+	telemetry, _ := sqlite.InsertTaxonomyNode(e.db, e.category(t, "Engineering"), domain.LevelSection, "Telemetry", "")
+	if err := sqlite.SetPlacement(e.db, id, sqlite.Placement{SectionID: telemetry, PlacedBy: domain.PlacedByPerson, HistoryNote: sqlite.ReasonWebMove}); err != nil {
+		t.Fatal(err)
+	}
+	in, _, _, err := e.l.proposalInput(mustTaxonomy(t, e))
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, it := range in.Unplaced {
+		found = found || it.ID == id
+	}
+	if !found {
+		t.Fatalf("a fallback moved outside the model's top 3 is evidence: %+v", in.Unplaced)
+	}
+}
+
+func mustTaxonomy(t *testing.T, e *env) domain.Taxonomy {
+	t.Helper()
+	tax, err := sqlite.LoadTaxonomy(e.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tax
 }

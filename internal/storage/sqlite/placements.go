@@ -269,10 +269,10 @@ func GetWeekStats(db *sql.DB, monday, nextMonday time.Time) (WeekStats, error) {
 		    COALESCE(SUM(EXISTS (SELECT 1 FROM model_judgments j WHERE j.work_item_id = w.id AND j.kind = 'section_choice')
 		         AND NOT EXISTS (SELECT 1 FROM placement_history h WHERE h.work_item_id = w.id AND h.placed_by = 'model' AND h.to_section IS NOT NULL)), 0),
 		    COALESCE(SUM(w.filing_state = 'failed'), 0),
-		    COALESCE(SUM(EXISTS (SELECT 1 FROM placement_history h WHERE h.work_item_id = w.id AND h.placed_by = 'fallback' AND h.to_section IS NOT NULL)), 0)
+		    COALESCE(SUM(EXISTS (SELECT 1 FROM placement_history h WHERE h.work_item_id = w.id AND h.placed_by = ? AND h.to_section IS NOT NULL)), 0)
 		 FROM work_items w
 		 WHERE julianday(w.reported_at) >= julianday(?) AND julianday(w.reported_at) < julianday(?) AND w.source <> 'import'`,
-		monday, nextMonday,
+		domain.PlacedByFallback, monday, nextMonday,
 	).Scan(&s.ItemsThisWeek, &s.FiledByModel, &s.Asked, &s.FailedFiling, &s.FiledByFallback)
 	if err != nil {
 		return s, err
@@ -320,21 +320,36 @@ func HasBeenFiled(db *sql.DB, itemID int64) (bool, error) {
 // ReasonFallback is the placement_history reason for a fallback Placement.
 const ReasonFallback = "fallback"
 
+// SubjectReask marks a Section Choice re-asked after a Taxonomy change; the reporter was not asked again.
+const SubjectReask = "reask"
+
 // GetFallbackCandidates returns Undetermined Work Items the decision model was unsure about,
-// whose reporter was asked before askedBefore and has not picked a Section.
+// whose reporter was last asked before askedBefore and has not picked a Section.
 func GetFallbackCandidates(db *sql.DB, askedBefore time.Time) ([]WorkItem, error) {
 	return queryWorkItems(db,
 		`SELECT `+workItemColumns+` FROM work_items w
-		 WHERE w.section_id IS NULL AND w.filing_state = 'asking' AND w.undetermined_reason = 'low_confidence'
-		   AND (SELECT MAX(julianday(j.created_at)) FROM model_judgments j WHERE j.work_item_id = w.id AND j.kind = 'section_choice') <= julianday(?)
-		 ORDER BY w.id`, askedBefore)
+		 WHERE w.section_id IS NULL AND w.filing_state = ? AND w.undetermined_reason = ?
+		   AND (SELECT MAX(julianday(j.created_at)) FROM model_judgments j
+		        WHERE j.work_item_id = w.id AND j.kind = 'section_choice' AND j.subject <> ?) <= julianday(?)
+		 ORDER BY w.id`, domain.FilingAsking, domain.ReasonLowConfidence, SubjectReask, askedBefore)
 }
 
-// LatestSectionChoice returns the raw answer of the item's most recent Section Choice.
-func LatestSectionChoice(db *sql.DB, itemID int64) (string, error) {
-	var answer string
-	err := db.QueryRow(`SELECT answer_json FROM model_judgments WHERE work_item_id = ? AND kind = 'section_choice' ORDER BY id DESC LIMIT 1`, itemID).Scan(&answer)
-	return answer, err
+// LatestSectionChoice returns the raw answer of the item's most recent Section Choice and whether
+// it was given after the last Taxonomy change (an older answer may name pre-change Sections).
+func LatestSectionChoice(db *sql.DB, itemID int64) (answer string, current bool, err error) {
+	err = db.QueryRow(
+		`SELECT j.answer_json,
+		    julianday(j.created_at) >= COALESCE((SELECT MAX(julianday(updated_at)) FROM taxonomy_nodes), 0)
+		 FROM model_judgments j WHERE j.work_item_id = ? AND j.kind = 'section_choice' ORDER BY j.id DESC LIMIT 1`, itemID).Scan(&answer, &current)
+	return answer, current, err
+}
+
+// GetAskingItems returns every Work Item Undetermined because the decision model was unsure,
+// done or not, so a Taxonomy change can re-ask about them.
+func GetAskingItems(db *sql.DB) ([]WorkItem, error) {
+	return queryWorkItems(db,
+		`SELECT `+workItemColumns+` FROM work_items WHERE section_id IS NULL AND filing_state = ? AND undetermined_reason = ? ORDER BY id`,
+		domain.FilingAsking, domain.ReasonLowConfidence)
 }
 
 // PlaceByFallback files a still-unanswered Work Item under sectionID; it reports false when a

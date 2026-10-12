@@ -13,8 +13,8 @@ import (
 // Work Item is filed under the decision model's #1 Section.
 const FallbackWait = 24 * time.Hour
 
-// eligibleForFallback: Undetermined because the decision model was unsure, and nobody has picked.
-func eligibleForFallback(it domain.WorkItem) bool {
+// EligibleForFallback: Undetermined because the decision model was unsure, and nobody has picked.
+func EligibleForFallback(it domain.WorkItem) bool {
 	return it.SectionID == 0 && it.FilingState == domain.FilingAsking && it.UndeterminedReason == domain.ReasonLowConfidence
 }
 
@@ -28,12 +28,15 @@ func FileByFallback(db *sql.DB, n Notifier, items []domain.WorkItem, atPublish b
 	}
 	filed := 0
 	for _, it := range items {
-		if !eligibleForFallback(it) {
+		if !EligibleForFallback(it) {
 			continue
 		}
-		answer, err := sqlite.LatestSectionChoice(db, it.ID)
+		answer, current, err := sqlite.LatestSectionChoice(db, it.ID)
 		if err != nil {
 			log.Printf("filing fallback item=%d: %v", it.ID, err)
+			continue
+		}
+		if !current { // the re-filing job re-asks after a Taxonomy change
 			continue
 		}
 		var sec domain.Section

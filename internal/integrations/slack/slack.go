@@ -1,7 +1,6 @@
 package slackbot
 
 import (
-	"context"
 	"database/sql"
 	"fmt"
 	"log"
@@ -68,11 +67,11 @@ var wakeFiling = func() {}
 
 // StartSlackBot runs the Socket Mode loop; wake tells the filing workers new jobs exist.
 // p is nil when no LLM is configured.
-func StartSlackBot(cfg Config, db *sql.DB, api *slack.Client, wake func(), p Proposals) error {
+func StartSlackBot(cfg Config, db *sql.DB, api *slack.Client, wake func(), p Proposer) error {
 	if wake != nil {
 		wakeFiling = wake
 	}
-	proposals = p
+	proposer = p
 	client := socketmode.New(api)
 
 	go func() {
@@ -484,15 +483,11 @@ func publishReport(api *slack.Client, db *sql.DB, cfg Config, channelID, userID,
 		postEphemeralTo(api, channelID, userID, "No Work Items found for this week.")
 		return
 	}
-	// Unsure Work Items nobody answered go to the model's #1 Section; no model is called.
-	if filing.FileByFallback(db, NewNotifier(api, db, cfg), live.View.Undetermined, true) > 0 {
-		if live, err = publish.LoadWeek(db, cfg, time.Now()); err != nil {
-			postEphemeralTo(api, channelID, userID, fmt.Sprintf("Error loading the report: %v", err))
-			return
-		}
-	}
 	if n := len(live.View.Undetermined); n > 0 && !confirmed {
 		text := fmt.Sprintf("%d Work Item(s) are still in Undetermined.", n)
+		if m := fallbackCount(live.View.Undetermined); m > 0 {
+			text += fmt.Sprintf(" Publishing files %d of them under the model's first choice and tells their reporters.", m)
+		}
 		if link := liveReportLink(cfg); link != "" {
 			text += " " + link
 		}
@@ -507,6 +502,13 @@ func publishReport(api *slack.Client, db *sql.DB, cfg Config, channelID, userID,
 		}
 		return
 	}
+	// Confirmed: unsure Work Items nobody answered go to the model's #1 Section; no model is called.
+	if filing.FileByFallback(db, NewNotifier(api, db, cfg), live.View.Undetermined, true) > 0 {
+		if live, err = publish.LoadWeek(db, cfg, time.Now()); err != nil {
+			postEphemeralTo(api, channelID, userID, fmt.Sprintf("Error loading the report: %v", err))
+			return
+		}
+	}
 
 	res, err := publish.Publish(db, cfg, live, userID)
 	if err != nil {
@@ -514,8 +516,8 @@ func publishReport(api *slack.Client, db *sql.DB, cfg Config, channelID, userID,
 		log.Printf("generate-report publish error: %v", err)
 		return
 	}
-	if proposals != nil {
-		go proposeAfterPublish(proposals)
+	if proposer != nil {
+		go proposer.AfterPublish()
 	}
 	filePath, title := res.TeamPath, fmt.Sprintf("%s team report", cfg.TeamName)
 	if mode == "boss" {
@@ -530,13 +532,15 @@ func publishReport(api *slack.Client, db *sql.DB, cfg Config, channelID, userID,
 	log.Printf("generate-report done items=%d mode=%s", live.View.ItemCount(), mode)
 }
 
-// proposeAfterPublish generates the week's Structure Proposals; they reach managers by DM.
-func proposeAfterPublish(l Proposals) {
-	ctx, cancel := context.WithTimeout(context.Background(), retrospectTimeout)
-	defer cancel()
-	if _, err := l.ProposeStructure(ctx); err != nil {
-		log.Printf("structure proposals after publish: %v", err)
+// fallbackCount is how many of items publishing would file by fallback.
+func fallbackCount(items []WorkItem) int {
+	n := 0
+	for _, it := range items {
+		if filing.EligibleForFallback(it) {
+			n++
+		}
 	}
+	return n
 }
 
 func uploadReportFile(api *slack.Client, channelID, userID string, sendPrivate bool, filePath, title, comment string) error {
@@ -670,19 +674,6 @@ func sanitizeReportFilenamePart(s string) string {
 		return "report"
 	}
 	return sanitized
-}
-
-func formatTokenCount(tokens int64) string {
-	if tokens < 1000 {
-		return fmt.Sprintf("%d", tokens)
-	}
-	rounded := (tokens + 50) / 100
-	whole := rounded / 10
-	decimal := rounded % 10
-	if decimal == 0 {
-		return fmt.Sprintf("%dk", whole)
-	}
-	return fmt.Sprintf("%d.%dk", whole, decimal)
 }
 
 func handleListItems(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashCommand) {
@@ -1613,7 +1604,7 @@ func handleNudgeDoneAction(api *slack.Client, db *sql.DB, cfg Config, cb slack.I
 		log.Printf("nudge done denied item=%d target=%s", itemID, targetUserID)
 		return
 	}
-	if err := SetWorkItemStatus(db, itemID, domain.StatusDone, cb.User.ID); err != nil {
+	if err := SetWorkItemStatus(db, itemID, domain.StatusDone, nudgeActor(cb.User.ID)); err != nil {
 		log.Printf("nudge done update error item=%d: %v", itemID, err)
 		return
 	}
@@ -1637,7 +1628,7 @@ func handleNudgeMoreAction(api *slack.Client, db *sql.DB, cfg Config, cb slack.I
 		log.Printf("nudge status denied item=%d target=%s", itemID, targetUserID)
 		return
 	}
-	if err := SetWorkItemStatus(db, itemID, status, cb.User.ID); err != nil {
+	if err := SetWorkItemStatus(db, itemID, status, nudgeActor(cb.User.ID)); err != nil {
 		log.Printf("nudge status update error item=%d status=%q: %v", itemID, status, err)
 		return
 	}
@@ -1801,7 +1792,7 @@ func handleHelp(api *slack.Client, cfg Config, cmd slack.SlashCommand) {
 			"`/gen` — Alias of `/generate-report`.",
 			"`/check` — List missing members with nudge buttons, and merged code changes waiting in testing.",
 			"`/nudge <member>` — Send a test nudge DM to one member.",
-			"`/retrospect` — Generate structure proposals now (new, split or retired Sections) for managers to approve.",
+			"`/retrospect` — Generate Structure Proposals now (new, split or retired Sections) for managers to approve.",
 			"`/stats` — Show this week's filing stats.",
 		)
 	}

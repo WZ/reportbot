@@ -11,7 +11,7 @@ import (
 	"reportbot/internal/domain"
 	"reportbot/internal/filing"
 	"reportbot/internal/integrations/llm"
-	"reportbot/internal/learning"
+	"reportbot/internal/proposals"
 	sqlitedb "reportbot/internal/storage/sqlite"
 
 	"github.com/slack-go/slack"
@@ -20,14 +20,14 @@ import (
 type fakeProposals struct {
 	mu        sync.Mutex
 	proposed  int
-	result    []learning.StoredProposal
+	result    []proposals.StoredProposal
 	approved  []int64
 	rejected  []int64
 	decideErr error
 	done      chan struct{}
 }
 
-func (f *fakeProposals) ProposeStructure(ctx context.Context) ([]learning.StoredProposal, error) {
+func (f *fakeProposals) ProposeStructure(ctx context.Context) ([]proposals.StoredProposal, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.proposed++
@@ -38,12 +38,14 @@ func (f *fakeProposals) ProposeStructure(ctx context.Context) ([]learning.Stored
 	return f.result, nil
 }
 
-func (f *fakeProposals) ApproveProposal(id int64, actor string) (learning.StoredProposal, error) {
+func (f *fakeProposals) ApproveProposal(id int64, actor string) (proposals.StoredProposal, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.approved = append(f.approved, id)
-	return learning.StoredProposal{ID: id, StructureProposal: llm.StructureProposal{Kind: llm.ProposeRetire, SectionID: 9}}, f.decideErr
+	return proposals.StoredProposal{ID: id, StructureProposal: llm.StructureProposal{Kind: llm.ProposeRetire, SectionID: 9}}, f.decideErr
 }
+
+func (f *fakeProposals) AfterPublish() { _, _ = f.ProposeStructure(context.Background()) }
 
 func (f *fakeProposals) RejectProposal(id int64, actor string) error {
 	f.mu.Lock()
@@ -52,11 +54,11 @@ func (f *fakeProposals) RejectProposal(id int64, actor string) error {
 	return f.decideErr
 }
 
-func withProposals(t *testing.T, p Proposals) {
+func withProposals(t *testing.T, p Proposer) {
 	t.Helper()
-	old := proposals
-	proposals = p
-	t.Cleanup(func() { proposals = old })
+	old := proposer
+	proposer = p
+	t.Cleanup(func() { proposer = old })
 }
 
 var mgrCfg = Config{Location: time.UTC, ManagerSlackIDs: []string{"UMGR"}, LLMProvider: "openai"}
@@ -64,7 +66,7 @@ var mgrCfg = Config{Location: time.UTC, ManagerSlackIDs: []string{"UMGR"}, LLMPr
 func TestRetrospectOnlyGeneratesProposals(t *testing.T) {
 	db := newTestDB(t)
 	api, rec := newSlackRecorder(t)
-	f := &fakeProposals{result: []learning.StoredProposal{{ID: 7, Affected: 5,
+	f := &fakeProposals{result: []proposals.StoredProposal{{ID: 7, Affected: 5,
 		StructureProposal: llm.StructureProposal{Kind: llm.ProposeNew, ParentID: 1, Name: "Telemetry"}}}}
 	cmd := slack.SlashCommand{Command: "/retrospect", ChannelID: "C1"}
 
@@ -102,10 +104,15 @@ func TestProposalButtonsAreManagerOnlyAndOnce(t *testing.T) {
 	if len(f.approved) != 1 || f.approved[0] != 7 || len(f.rejected) != 1 || f.rejected[0] != 8 {
 		t.Fatalf("manager buttons: %+v", f)
 	}
-	f.decideErr = learning.ErrAlreadyDecided
+	f.decideErr = proposals.ErrAlreadyDecided
 	handleBlockActions(api, db, mgrCfg, interaction("UMGR", actionProposalApprove, "7", rec.srv.URL+"/respond"))
 	if r := lastResponse(rec); !strings.Contains(r, "already decided") {
 		t.Fatalf("approve twice: %s", r)
+	}
+	f.decideErr = proposals.ErrProposalStale
+	handleBlockActions(api, db, mgrCfg, interaction("UMGR", actionProposalApprove, "9", rec.srv.URL+"/respond"))
+	if r := lastResponse(rec); !strings.Contains(r, "Open Work Items") || !strings.Contains(r, "Not applied") {
+		t.Fatalf("a stale retire is refused with a reason: %s", r)
 	}
 }
 
@@ -121,11 +128,11 @@ func lastResponse(rec *slackRecorder) string {
 
 func TestProposalBlocksHaveUniqueActions(t *testing.T) {
 	tax := domain.Taxonomy{Nodes: []domain.TaxonomyNode{{ID: 1, Level: domain.LevelArea, Name: "Product A"}}}
-	text, blocks := ProposalBlocks(tax, []learning.StoredProposal{
+	text, blocks := ProposalBlocks(tax, []proposals.StoredProposal{
 		{ID: 7, Affected: 5, StructureProposal: llm.StructureProposal{Kind: llm.ProposeNew, ParentID: 1, Name: "Telemetry", Description: "Metrics"}},
 	})
 	b := blocksJSON(blocks)
-	if !strings.Contains(text, "1 report structure proposal") || !strings.Contains(b, "Telemetry") || !strings.Contains(b, "5 Work Items") ||
+	if !strings.Contains(text, "1 Structure Proposal") || !strings.Contains(b, "Telemetry") || !strings.Contains(b, "5 Work Items") ||
 		!strings.Contains(b, actionProposalApprove) || !strings.Contains(b, actionProposalReject) {
 		t.Fatalf("proposal DM: %s %s", text, b)
 	}
@@ -148,7 +155,7 @@ func TestFallbackNoteOffersChange(t *testing.T) {
 	}
 }
 
-func TestPublishFilesUnansweredItemsByFallbackThenProposes(t *testing.T) {
+func TestPublishFallbackRunsOnlyAfterConfirmation(t *testing.T) {
 	db := newTestDB(t)
 	api, rec := newSlackRecorder(t)
 	cm, infra := seedSections(t, db)
@@ -165,13 +172,26 @@ func TestPublishFilesUnansweredItemsByFallbackThenProposes(t *testing.T) {
 	withProposals(t, f)
 
 	handleGenerateReport(api, db, cfg, slack.SlashCommand{Command: "/generate-report", UserID: "UMGR", ChannelID: "C1"})
+	warning := rec.lastText("chat.postEphemeral")
+	if !strings.Contains(warning, "still in Undetermined") || !strings.Contains(warning, "first choice") {
+		t.Fatalf("the manager is warned first, and told what publishing will do: %s", warning)
+	}
+	if it, _ := sqlitedb.GetWorkItemByID(db, id); it.SectionID != 0 || rec.count("chat.postMessage") != 0 {
+		t.Fatalf("nothing is filed and nobody is DMed before the manager confirms: %+v", it)
+	}
+
+	// Publish anyway: the fallback runs, then the report is published.
+	handleBlockActions(api, db, cfg, interaction("UMGR", actionPublishAnyway, "team|false", ""))
 	if it, _ := sqlitedb.GetWorkItemByID(db, id); it.SectionID != infra || it.PlacedBy != domain.PlacedByFallback {
-		t.Fatalf("publishing files the unanswered item under the model's #1 first: %+v", it)
+		t.Fatalf("after confirming, the unanswered item is filed under the model's #1: %+v", it)
+	}
+	if rec.count("chat.postMessage") == 0 {
+		t.Fatal("the reporter is told after the manager confirms")
 	}
 	var n int
 	db.QueryRow(`SELECT COUNT(*) FROM published_reports`).Scan(&n)
-	if n != 1 || strings.Contains(rec.lastText("chat.postEphemeral"), "still in Undetermined") {
-		t.Fatal("with nothing left Undetermined the report publishes without a warning")
+	if n != 1 {
+		t.Fatal("the report is published after confirmation")
 	}
 	select {
 	case <-done:
@@ -203,7 +223,7 @@ func blocksJSON(blocks []slack.Block) string {
 
 func TestUntrustedTextIsEscapedInProposalMessages(t *testing.T) {
 	evil := "Racks & <!channel> <http://x.example|click>"
-	ps := []learning.StoredProposal{{ID: 7, StructureProposal: llm.StructureProposal{Kind: llm.ProposeNew, ParentID: 1, Name: "<!channel>",
+	ps := []proposals.StoredProposal{{ID: 7, StructureProposal: llm.StructureProposal{Kind: llm.ProposeNew, ParentID: 1, Name: "<!channel>",
 		Description: evil, Reason: evil}}}
 	tax := domain.Taxonomy{Nodes: []domain.TaxonomyNode{{ID: 1, Level: domain.LevelArea, Name: "<@U1> Area"}}}
 	pText, pBlocks := ProposalBlocks(tax, ps)

@@ -1,5 +1,5 @@
 // Package publish renders the live Weekly Report, stores it as the week's Published Report, and
-// keeps a Friday draft snapshot. No model is called here.
+// keeps a Friday Draft Snapshot. No model is called here.
 package publish
 
 import (
@@ -65,10 +65,10 @@ func Publish(db *sql.DB, cfg config.Config, live Live, by string) (Result, error
 	return r, err
 }
 
-const draftHour = 9 // the Weekly Report is snapshotted as a draft on Fridays at 09:00
+const draftHour = 9 // the Draft Snapshot is taken on Fridays at 09:00
 
-// NextDraftTime is the next Friday 09:00 after now in loc.
-func NextDraftTime(now time.Time, loc *time.Location) time.Time {
+// NextDraftSnapshotTime is the next Friday 09:00 after now in loc.
+func NextDraftSnapshotTime(now time.Time, loc *time.Location) time.Time {
 	now = now.In(loc)
 	days := (int(time.Friday) - int(now.Weekday()) + 7) % 7
 	next := time.Date(now.Year(), now.Month(), now.Day()+days, draftHour, 0, 0, 0, loc)
@@ -78,36 +78,36 @@ func NextDraftTime(now time.Time, loc *time.Location) time.Time {
 	return next
 }
 
-// SaveDraft stores the current Weekly Report, rendered as publishing renders it, as the week's draft.
-func SaveDraft(db *sql.DB, cfg config.Config, now time.Time) error {
+// SaveDraftSnapshot stores the current Weekly Report, rendered as publishing renders it, as the week's Draft Snapshot.
+func SaveDraftSnapshot(db *sql.DB, cfg config.Config, now time.Time) error {
 	live, err := LoadWeek(db, cfg, now)
 	if err != nil {
 		return err
 	}
-	return sqlite.SaveReportDraft(db, sqlite.ReportDraft{
+	return sqlite.SaveDraftSnapshot(db, sqlite.DraftSnapshot{
 		WeekStart: live.Monday.Format("2006-01-02"), TeamMarkdown: report.RenderTeamMarkdown(live.View),
 		BossMarkdown: report.RenderBossMarkdown(live.View), ItemCount: live.View.ItemCount(), UndeterminedCount: len(live.View.Undetermined),
 	})
 }
 
-// StartDraftScheduler saves a draft snapshot every Friday at 09:00 until ctx ends.
-func StartDraftScheduler(ctx context.Context, db *sql.DB, cfg config.Config) {
+// StartDraftSnapshotScheduler saves a Draft Snapshot every Friday at 09:00 until ctx ends.
+func StartDraftSnapshotScheduler(ctx context.Context, db *sql.DB, cfg config.Config) {
 	loc := cfg.Location
 	if loc == nil {
 		loc = time.Local
 	}
 	go func() {
 		for {
-			next := NextDraftTime(time.Now(), loc)
+			next := NextDraftSnapshotTime(time.Now(), loc)
 			select {
 			case <-ctx.Done():
 				return
 			case <-time.After(time.Until(next)):
 			}
-			if err := SaveDraft(db, cfg, time.Now()); err != nil {
-				log.Printf("report draft: %v", err)
+			if err := SaveDraftSnapshot(db, cfg, time.Now()); err != nil {
+				log.Printf("Draft Snapshot: %v", err)
 			} else {
-				log.Printf("report draft saved for the week of %s", next.Format("2006-01-02"))
+				log.Printf("Draft Snapshot saved on %s", next.Format("2006-01-02"))
 			}
 		}
 	}()

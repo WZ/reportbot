@@ -187,6 +187,17 @@ func TestRunImportsPromotesAndIsIdempotent(t *testing.T) {
 			t.Fatal("a closed old row must not appear on a V2 Weekly Report")
 		}
 	}
+	// Overwriting a V1 row is recorded as an edit by the cut-over.
+	for _, id := range []int64{shard.ID, node.ID} {
+		edits, err := sqlite.GetWorkItemEdits(db, id)
+		if err != nil || len(edits) != 1 || edits[0].Via != sqlite.ViaCutover || edits[0].Kind != sqlite.EditFields || edits[0].After == nil {
+			t.Fatalf("cut-over overwrite of row %d must be recorded: %+v err=%v", id, edits, err)
+		}
+	}
+	if edits, _ := sqlite.GetWorkItemEdits(db, node.ID); edits[0].After.Status != domain.StatusDone || edits[0].After.StatusNote != "mr review" {
+		t.Fatalf("recorded after-state: %+v", edits[0].After)
+	}
+
 	// Unmatched rows stay history with no Placement.
 	if never, _ := sqlite.GetWorkItemByID(db, 3); never.SectionID != 0 || never.Status != domain.StatusDone {
 		t.Fatalf("unexpected unmatched row: %+v", never)

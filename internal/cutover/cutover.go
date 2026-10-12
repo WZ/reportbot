@@ -285,10 +285,17 @@ func Run(db *sql.DB, dbPath string, o Options) (Summary, error) {
 			if ids := byNorm[NormalizeDescription(l.Description)]; len(ids) > 0 && !claimed[ids[0]] {
 				id := ids[0]
 				claimed[id] = true
+				before, err := sqlite.SnapshotItemTx(tx, id)
+				if err != nil {
+					return err
+				}
 				if _, err := tx.Exec(`UPDATE work_items SET status = ?, status_note = ?, ticket_ids = CASE WHEN ? <> '' THEN ? ELSE ticket_ids END,
 					author_id = CASE WHEN COALESCE(author_id, '') = '' THEN ? ELSE author_id END,
 					done_at = NULL, section_id = ?, placed_by = ?, filing_state = 'filed', undetermined_reason = '', import_key = ?, updated_at = ? WHERE id = ?`,
 					status, note, l.TicketIDs, l.TicketIDs, authorID, nullID(section), placedBy, importKey(l), o.Now, id); err != nil {
+					return err
+				}
+				if err := sqlite.RecordEditTx(tx, id, before, sqlite.Actor{Via: sqlite.ViaCutover}); err != nil {
 					return err
 				}
 				if err := recordImport(tx, id, section, placedBy, o.Now); err != nil {
@@ -342,8 +349,15 @@ func Run(db *sql.DB, dbPath string, o Options) (Summary, error) {
 			status, note := LineStatus(r.status)
 			if !r.reportedAt.Before(latestWeekEnd) {
 				// Reported after the latest published report: still live, so the models file it.
+				before, err := sqlite.SnapshotItemTx(tx, r.id)
+				if err != nil {
+					return err
+				}
 				if _, err := tx.Exec(`UPDATE work_items SET status = ?, status_note = ?, done_at = CASE WHEN ? = 'done' THEN reported_at END,
 						filing_state = 'pending', updated_at = ? WHERE id = ?`, status, note, status, o.Now, r.id); err != nil {
+					return err
+				}
+				if err := sqlite.RecordEditTx(tx, r.id, before, sqlite.Actor{Via: sqlite.ViaCutover}); err != nil {
 					return err
 				}
 				if _, err := tx.Exec(`INSERT INTO jobs (kind, work_item_id, payload, state, attempts, run_after, created_at, updated_at)
@@ -382,9 +396,16 @@ func Run(db *sql.DB, dbPath string, o Options) (Summary, error) {
 			}
 			doneAtValue := doneAt
 			sum.Statuses[status]++
+			before, err := sqlite.SnapshotItemTx(tx, r.id)
+			if err != nil {
+				return err
+			}
 			if _, err := tx.Exec(`UPDATE work_items SET status = ?, status_note = ?, done_at = ?, section_id = ?, placed_by = ?,
 					filing_state = 'filed', undetermined_reason = '', updated_at = ? WHERE id = ?`,
 				status, note, doneAtValue, nullID(section), placedBy, o.Now, r.id); err != nil {
+				return err
+			}
+			if err := sqlite.RecordEditTx(tx, r.id, before, sqlite.Actor{Via: sqlite.ViaCutover}); err != nil {
 				return err
 			}
 			if err := recordImport(tx, r.id, section, placedBy, o.Now); err != nil {

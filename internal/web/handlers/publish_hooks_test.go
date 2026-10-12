@@ -34,11 +34,13 @@ func (e *testEnv) waitJob(body string) string {
 	}
 }
 
-func TestGenerate_FallbackFilesBeforePublishingThenProposes(t *testing.T) {
+func TestGenerate_FallbackRunsOnlyAfterConfirmation(t *testing.T) {
 	e := newEnv(t)
 	proposed := make(chan struct{})
+	called := 0
 	e.withHooks(web.PublishHooks{
 		Fallback: func(items []domain.WorkItem) int {
+			called++
 			for _, it := range items {
 				if _, err := e.db.Exec(`UPDATE work_items SET section_id = ?, placed_by = 'fallback' WHERE id = ?`, e.sec["Ops"], it.ID); err != nil {
 					t.Error(err)
@@ -48,12 +50,20 @@ func TestGenerate_FallbackFilesBeforePublishingThenProposes(t *testing.T) {
 		},
 		AfterPublish: func() { close(proposed) },
 	})
-	status := e.waitJob(e.do(http.MethodPost, "/generate?week="+testWeek, manager, nil).Body.String())
-	if !strings.Contains(status, "flash-success") {
-		t.Fatalf("with nothing left Undetermined after the fallback, publish proceeds: %s", status)
+	body := e.do(http.MethodPost, "/generate?week="+testWeek, manager, nil).Body.String()
+	if !strings.Contains(body, "Undetermined") || !strings.Contains(body, "confirm=1") || called != 0 {
+		t.Fatalf("the warning comes first and runs no fallback (called=%d): %s", called, body)
+	}
+	if it := e.item("bob"); it.SectionID != 0 {
+		t.Fatalf("cancelling leaves Undetermined items untouched: %+v", it)
+	}
+
+	status := e.waitJob(e.do(http.MethodPost, "/generate?week="+testWeek+"&confirm=1", manager, nil).Body.String())
+	if !strings.Contains(status, "flash-success") || called != 1 {
+		t.Fatalf("after confirming, the fallback runs and the report publishes (called=%d): %s", called, status)
 	}
 	if it := e.item("bob"); it.PlacedBy != domain.PlacedByFallback {
-		t.Fatalf("the fallback files the item first: %+v", it)
+		t.Fatalf("the fallback files the item before publishing: %+v", it)
 	}
 	select {
 	case <-proposed:
