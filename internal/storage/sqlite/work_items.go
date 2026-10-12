@@ -223,33 +223,69 @@ func GetSlackAuthorIDsByDateRange(db *sql.DB, from, to time.Time) (map[string]bo
 	return authorIDs, rows.Err()
 }
 
-// UpdateWorkItemFields edits text, Status, Status Note and tickets, keeping done_at consistent.
-func UpdateWorkItemFields(db *sql.DB, id int64, description, status, statusNote, ticketIDs string) error {
+// UpdateWorkItemFields edits text, Status, Status Note and tickets, keeping done_at consistent,
+// and records the edit.
+func UpdateWorkItemFields(db *sql.DB, id int64, description, status, statusNote, ticketIDs string, by Actor) error {
+	return inTx(db, func(tx *sql.Tx) error {
+		return updateFields(tx, id, description, status, statusNote, ticketIDs, EditFields, 0, by)
+	})
+}
+
+func updateFields(q querier, id int64, description, status, statusNote, ticketIDs, kind string, related int64, by Actor) error {
 	if !domain.IsStatus(status) {
 		return fmt.Errorf("invalid status %q", status)
 	}
-	_, err := db.Exec(
+	before, err := snapshotOf(q, id)
+	if err != nil {
+		return err
+	}
+	if _, err := q.Exec(
 		`UPDATE work_items
 		 SET description = ?, status = ?, status_note = ?, ticket_ids = ?, updated_at = ?,
 		     done_at = CASE WHEN ? = 'done' THEN COALESCE(done_at, ?) ELSE NULL END
 		 WHERE id = ?`,
 		description, status, statusNote, ticketIDs, time.Now(), status, time.Now(), id,
-	)
-	return err
+	); err != nil {
+		return err
+	}
+	after := ItemSnapshot{Description: description, Status: status, StatusNote: statusNote, TicketIDs: ticketIDs}
+	return recordEdit(q, id, kind, &before, &after, related, by)
 }
 
-// SetWorkItemStatus changes Status; done sets done_at, leaving done clears it.
-func SetWorkItemStatus(db *sql.DB, id int64, status string) error {
+// SetWorkItemStatus changes Status; done sets done_at, leaving done clears it. The edit is recorded.
+func SetWorkItemStatus(db *sql.DB, id int64, status string, by Actor) error {
 	if !domain.IsStatus(status) {
 		return fmt.Errorf("invalid status %q", status)
 	}
-	_, err := db.Exec(
-		`UPDATE work_items SET status = ?, updated_at = ?,
-		     done_at = CASE WHEN ? = 'done' THEN COALESCE(done_at, ?) ELSE NULL END
-		 WHERE id = ?`,
-		status, time.Now(), status, time.Now(), id,
-	)
-	return err
+	return inTx(db, func(tx *sql.Tx) error {
+		before, err := snapshotOf(tx, id)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(
+			`UPDATE work_items SET status = ?, updated_at = ?,
+			     done_at = CASE WHEN ? = 'done' THEN COALESCE(done_at, ?) ELSE NULL END
+			 WHERE id = ?`,
+			status, time.Now(), status, time.Now(), id,
+		); err != nil {
+			return err
+		}
+		after := before
+		after.Status = status
+		return recordEdit(tx, id, EditStatus, &before, &after, 0, by)
+	})
+}
+
+func inTx(db *sql.DB, fn func(tx *sql.Tx) error) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := fn(tx); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // SetFilingPending marks an item as waiting for the models and queues a filing job.
@@ -268,28 +304,42 @@ func SetFilingPending(db *sql.DB, id int64, payload string) error {
 	return tx.Commit()
 }
 
-func DeleteWorkItemByID(db *sql.DB, id int64) error {
-	tx, err := db.Begin()
-	if err != nil {
+// DeleteWorkItemByID deletes a Work Item and records what was deleted.
+func DeleteWorkItemByID(db *sql.DB, id int64, by Actor) error {
+	return inTx(db, func(tx *sql.Tx) error { return deleteItem(tx, id, by) })
+}
+
+func deleteItem(q querier, id int64, by Actor) error {
+	before, err := snapshotOf(q, id)
+	if err != nil && err != sql.ErrNoRows {
 		return err
 	}
-	defer tx.Rollback()
-	for _, q := range []string{
+	if err := removeItemRows(q, id); err != nil {
+		return err
+	}
+	if err == sql.ErrNoRows {
+		return nil
+	}
+	return recordEdit(q, id, EditDelete, &before, nil, 0, by)
+}
+
+func removeItemRows(q querier, id int64) error {
+	for _, stmt := range []string{
 		`DELETE FROM placement_history WHERE work_item_id = ?`,
 		`DELETE FROM jobs WHERE work_item_id = ?`,
 		`UPDATE code_changes SET work_item_id = NULL WHERE work_item_id = ?`,
 		`DELETE FROM work_items WHERE id = ?`,
 	} {
-		if _, err := tx.Exec(q, id); err != nil {
+		if _, err := q.Exec(stmt, id); err != nil {
 			return err
 		}
 	}
-	return tx.Commit()
+	return nil
 }
 
 // ApplyUpdate applies a confirmed Update: the existing item takes the new report's text,
-// Status, Status Note and tickets, and the new report row is deleted.
-func ApplyUpdate(db *sql.DB, existingID, newID int64) (WorkItem, error) {
+// Status, Status Note and tickets, and the new report row is deleted; one edit is recorded.
+func ApplyUpdate(db *sql.DB, existingID, newID int64, by Actor) (WorkItem, error) {
 	newItem, err := GetWorkItemByID(db, newID)
 	if err != nil {
 		return WorkItem{}, err
@@ -299,10 +349,13 @@ func ApplyUpdate(db *sql.DB, existingID, newID int64) (WorkItem, error) {
 		return WorkItem{}, err
 	}
 	tickets := mergeTickets(existing.TicketIDs, newItem.TicketIDs)
-	if err := UpdateWorkItemFields(db, existingID, newItem.Description, newItem.Status, newItem.StatusNote, tickets); err != nil {
-		return WorkItem{}, err
-	}
-	if err := DeleteWorkItemByID(db, newID); err != nil {
+	err = inTx(db, func(tx *sql.Tx) error {
+		if err := updateFields(tx, existingID, newItem.Description, newItem.Status, newItem.StatusNote, tickets, EditUpdateMerge, newID, by); err != nil {
+			return err
+		}
+		return removeItemRows(tx, newID)
+	})
+	if err != nil {
 		return WorkItem{}, err
 	}
 	return GetWorkItemByID(db, existingID)

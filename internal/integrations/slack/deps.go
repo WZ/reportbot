@@ -65,13 +65,16 @@ func GetWorkItemByID(db *sql.DB, id int64) (WorkItem, error) {
 	return sqlite.GetWorkItemByID(db, id)
 }
 
-func SetWorkItemStatus(db *sql.DB, id int64, status string) error {
-	return sqlite.SetWorkItemStatus(db, id, status)
+func SetWorkItemStatus(db *sql.DB, id int64, status, userID string) error {
+	return sqlite.SetWorkItemStatus(db, id, status, slackActor(userID))
 }
 
-func DeleteWorkItemByID(db *sql.DB, id int64) error {
-	return sqlite.DeleteWorkItemByID(db, id)
+func DeleteWorkItemByID(db *sql.DB, id int64, userID string) error {
+	return sqlite.DeleteWorkItemByID(db, id, slackActor(userID))
 }
+
+// slackActor records a Work Item edit made in Slack by userID.
+func slackActor(userID string) sqlite.Actor { return sqlite.Actor{ID: userID, Via: "slack"} }
 
 func LoadTaxonomy(db *sql.DB) (domain.Taxonomy, error) {
 	return sqlite.LoadTaxonomy(db)

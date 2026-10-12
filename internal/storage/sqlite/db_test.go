@@ -107,7 +107,7 @@ func TestWeekMembershipAndDoneLifecycle(t *testing.T) {
 		t.Fatalf("unexpected week membership: %v", got)
 	}
 
-	if err := SetWorkItemStatus(db, openOld, domain.StatusDone); err != nil {
+	if err := SetWorkItemStatus(db, openOld, domain.StatusDone, Actor{Via: "test"}); err != nil {
 		t.Fatal(err)
 	}
 	it, _ := GetWorkItemByID(db, openOld)
@@ -123,13 +123,13 @@ func TestWeekMembershipAndDoneLifecycle(t *testing.T) {
 			t.Fatal("a done item drops off the following week")
 		}
 	}
-	if err := SetWorkItemStatus(db, openOld, domain.StatusInProgress); err != nil {
+	if err := SetWorkItemStatus(db, openOld, domain.StatusInProgress, Actor{Via: "test"}); err != nil {
 		t.Fatal(err)
 	}
 	if it, _ := GetWorkItemByID(db, openOld); !it.DoneAt.IsZero() {
 		t.Fatal("leaving done clears done_at")
 	}
-	if err := SetWorkItemStatus(db, openOld, "mr review"); err == nil {
+	if err := SetWorkItemStatus(db, openOld, "mr review", Actor{Via: "test"}); err == nil {
 		t.Fatal("unknown statuses are rejected")
 	}
 }
@@ -308,7 +308,7 @@ func TestCodeChangesAndUpdates(t *testing.T) {
 	if err := SetCodeChangeSuggestion(db, ccID, existing); err != nil {
 		t.Fatal(err)
 	}
-	if err := ConfirmCodeChangeLink(db, ccID, existing); err != nil {
+	if err := ConfirmCodeChangeLink(db, ccID, existing, Actor{Via: "test"}); err != nil {
 		t.Fatal(err)
 	}
 	cc, _ := GetCodeChange(db, ccID)
@@ -321,7 +321,7 @@ func TestCodeChangesAndUpdates(t *testing.T) {
 
 	newID, _ := InsertWorkItem(db, WorkItem{Description: "shard timeout fixed", Author: "Dev A", Source: "slack",
 		Status: domain.StatusInTesting, StatusNote: "verifying on lab", TicketIDs: "7654321", ReportedAt: time.Now()})
-	merged, err := ApplyUpdate(db, existing, newID)
+	merged, err := ApplyUpdate(db, existing, newID, Actor{Via: "test"})
 	if err != nil {
 		t.Fatal(err)
 	}

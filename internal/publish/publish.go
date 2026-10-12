@@ -1,9 +1,11 @@
-// Package publish renders the live Weekly Report and stores it as the week's Published Report.
-// No model is called here.
+// Package publish renders the live Weekly Report, stores it as the week's Published Report, and
+// keeps a Friday draft snapshot. No model is called here.
 package publish
 
 import (
+	"context"
 	"database/sql"
+	"log"
 	"time"
 
 	"reportbot/internal/config"
@@ -61,4 +63,52 @@ func Publish(db *sql.DB, cfg config.Config, live Live, by string) (Result, error
 		UndeterminedCount: len(live.View.Undetermined), PublishedBy: by,
 	})
 	return r, err
+}
+
+const draftHour = 9 // the Weekly Report is snapshotted as a draft on Fridays at 09:00
+
+// NextDraftTime is the next Friday 09:00 after now in loc.
+func NextDraftTime(now time.Time, loc *time.Location) time.Time {
+	now = now.In(loc)
+	days := (int(time.Friday) - int(now.Weekday()) + 7) % 7
+	next := time.Date(now.Year(), now.Month(), now.Day()+days, draftHour, 0, 0, 0, loc)
+	if !next.After(now) {
+		next = next.AddDate(0, 0, 7)
+	}
+	return next
+}
+
+// SaveDraft stores the current Weekly Report, rendered as publishing renders it, as the week's draft.
+func SaveDraft(db *sql.DB, cfg config.Config, now time.Time) error {
+	live, err := LoadWeek(db, cfg, now)
+	if err != nil {
+		return err
+	}
+	return sqlite.SaveReportDraft(db, sqlite.ReportDraft{
+		WeekStart: live.Monday.Format("2006-01-02"), TeamMarkdown: report.RenderTeamMarkdown(live.View),
+		BossMarkdown: report.RenderBossMarkdown(live.View), ItemCount: live.View.ItemCount(), UndeterminedCount: len(live.View.Undetermined),
+	})
+}
+
+// StartDraftScheduler saves a draft snapshot every Friday at 09:00 until ctx ends.
+func StartDraftScheduler(ctx context.Context, db *sql.DB, cfg config.Config) {
+	loc := cfg.Location
+	if loc == nil {
+		loc = time.Local
+	}
+	go func() {
+		for {
+			next := NextDraftTime(time.Now(), loc)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(time.Until(next)):
+			}
+			if err := SaveDraft(db, cfg, time.Now()); err != nil {
+				log.Printf("report draft: %v", err)
+			} else {
+				log.Printf("report draft saved for the week of %s", next.Format("2006-01-02"))
+			}
+		}
+	}()
 }

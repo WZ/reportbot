@@ -1,7 +1,9 @@
 package handlers
 
 import (
+	"fmt"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"testing"
@@ -69,5 +71,21 @@ func TestGenerate_WarnsWhenUndeterminedRemain(t *testing.T) {
 	}
 	if _, ok, _ := sqlite.GetPublishedReport(e.db, testWeek); ok {
 		t.Fatal("nothing is published before confirmation")
+	}
+}
+
+func TestWebEditsAndDeletesAreRecorded(t *testing.T) {
+	e := newEnv(t)
+	form := url.Values{"description": {"Fix ingest lag on shard 3"}, "status": {"blocked"}, "section_id": {fmt.Sprint(e.sec["Ingest"])}}
+	expectCode(t, e.do(http.MethodPost, itemPath(e.items["alice"], ""), alice, form), http.StatusOK)
+	edits, err := sqlite.GetWorkItemEdits(e.db, e.items["alice"])
+	if err != nil || len(edits) != 1 || edits[0].ActorID != alice.id || edits[0].Via != "web" ||
+		edits[0].Before.Description != "Fix ingest lag" || edits[0].After.Status != domain.StatusBlocked {
+		t.Fatalf("web edit: %+v err=%v", edits, err)
+	}
+	expectCode(t, e.do(http.MethodPost, itemPath(e.items["alice"], "/delete"), alice, nil), http.StatusOK)
+	edits, _ = sqlite.GetWorkItemEdits(e.db, e.items["alice"])
+	if len(edits) != 2 || edits[1].Kind != sqlite.EditDelete || edits[1].ActorID != alice.id {
+		t.Fatalf("web delete: %+v", edits)
 	}
 }

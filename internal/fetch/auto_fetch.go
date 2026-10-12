@@ -220,7 +220,7 @@ func moveToTesting(db *sql.DB, itemID int64, result *FetchResult) error {
 		return nil
 	}
 	result.MovedToTesting++
-	return sqlite.SetWorkItemStatus(db, itemID, domain.StatusInTesting)
+	return sqlite.SetWorkItemStatus(db, itemID, domain.StatusInTesting, sqlite.Actor{Via: "fetch"})
 }
 
 // FormatFetchSummary returns a human-readable summary of a FetchResult.

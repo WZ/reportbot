@@ -262,7 +262,8 @@ func UpdateItem(cfg web.Config, db *sql.DB, wake func()) http.HandlerFunc {
 			}
 			sectionID = id
 		}
-		if err := web.UpdateWorkItemFields(db, item.ID, desc, status, strings.TrimSpace(r.FormValue("status_note")), strings.TrimSpace(r.FormValue("ticket_ids"))); err != nil {
+		if err := web.UpdateWorkItemFields(db, item.ID, desc, status, strings.TrimSpace(r.FormValue("status_note")), strings.TrimSpace(r.FormValue("ticket_ids")),
+			sqlite.Actor{ID: middleware.UserID(r), Via: "web"}); err != nil {
 			log.Printf("Error updating item %d: %v", item.ID, err)
 			http.Error(w, "Failed to save Work Item", http.StatusInternalServerError)
 			return
@@ -315,7 +316,7 @@ func DeleteItem(db *sql.DB) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		if err := web.DeleteWorkItemByID(db, item.ID); err != nil {
+		if err := web.DeleteWorkItemByID(db, item.ID, sqlite.Actor{ID: middleware.UserID(r), Via: "web"}); err != nil {
 			log.Printf("Error deleting item %d: %v", item.ID, err)
 			http.Error(w, "Failed to delete Work Item", http.StatusInternalServerError)
 			return

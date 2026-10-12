@@ -1227,7 +1227,7 @@ func handleViewSubmission(api *slack.Client, db *sql.DB, cfg Config, cb slack.In
 		channelID = cb.Channel.ID
 	}
 
-	if err := updateWorkItemFields(db, itemID, description, status, statusNote, item.TicketIDs); err != nil {
+	if err := updateWorkItemFields(db, itemID, description, status, statusNote, item.TicketIDs, slackActor(userID)); err != nil {
 		log.Printf("edit modal update error id=%d: %v", itemID, err)
 		return
 	}
@@ -1268,7 +1268,7 @@ func deleteItemAction(api *slack.Client, db *sql.DB, cfg Config, channelID, user
 		return
 	}
 
-	if err := DeleteWorkItemByID(db, itemID); err != nil {
+	if err := DeleteWorkItemByID(db, itemID, userID); err != nil {
 		postEphemeralTo(api, channelID, userID, fmt.Sprintf("Delete failed: %v", err))
 		return
 	}
@@ -1613,7 +1613,7 @@ func handleNudgeDoneAction(api *slack.Client, db *sql.DB, cfg Config, cb slack.I
 		log.Printf("nudge done denied item=%d target=%s", itemID, targetUserID)
 		return
 	}
-	if err := SetWorkItemStatus(db, itemID, domain.StatusDone); err != nil {
+	if err := SetWorkItemStatus(db, itemID, domain.StatusDone, cb.User.ID); err != nil {
 		log.Printf("nudge done update error item=%d: %v", itemID, err)
 		return
 	}
@@ -1637,7 +1637,7 @@ func handleNudgeMoreAction(api *slack.Client, db *sql.DB, cfg Config, cb slack.I
 		log.Printf("nudge status denied item=%d target=%s", itemID, targetUserID)
 		return
 	}
-	if err := SetWorkItemStatus(db, itemID, status); err != nil {
+	if err := SetWorkItemStatus(db, itemID, status, cb.User.ID); err != nil {
 		log.Printf("nudge status update error item=%d status=%q: %v", itemID, status, err)
 		return
 	}

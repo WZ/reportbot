@@ -406,7 +406,7 @@ func TestReportBody_NoContentUntilVersionChanges(t *testing.T) {
 		t.Error("expected an empty 204 body")
 	}
 
-	if err := sqlite.UpdateWorkItemFields(e.db, e.items["alice"], "Fix ingest lag", domain.StatusBlocked, "", ""); err != nil {
+	if err := sqlite.UpdateWorkItemFields(e.db, e.items["alice"], "Fix ingest lag", domain.StatusBlocked, "", "", sqlite.Actor{Via: "test"}); err != nil {
 		t.Fatal(err)
 	}
 	rr = e.do(http.MethodGet, path, bob, nil)

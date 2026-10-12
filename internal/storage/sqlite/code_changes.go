@@ -105,7 +105,7 @@ func SetCodeChangeSuggestion(db *sql.DB, id, suggestedFor int64) error {
 }
 
 // ConfirmCodeChangeLink links a Code Change to target and deletes the Work Item it had of its own.
-func ConfirmCodeChangeLink(db *sql.DB, id, target int64) error {
+func ConfirmCodeChangeLink(db *sql.DB, id, target int64, by Actor) error {
 	c, err := GetCodeChange(db, id)
 	if err != nil {
 		return err
@@ -115,7 +115,7 @@ func ConfirmCodeChangeLink(db *sql.DB, id, target int64) error {
 		return err
 	}
 	if own != 0 && own != target {
-		return DeleteWorkItemByID(db, own)
+		return DeleteWorkItemByID(db, own, by)
 	}
 	return nil
 }

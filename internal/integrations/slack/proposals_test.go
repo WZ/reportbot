@@ -231,3 +231,28 @@ func TestFallbackAndFilingRepliesEscapeItemText(t *testing.T) {
 		t.Fatalf("filing replies must escape item text and Section names: %s", b)
 	}
 }
+
+func TestSlackEditsUpdatesAndStatusChangesAreRecorded(t *testing.T) {
+	db := newTestDB(t)
+	api, rec := newSlackRecorder(t)
+	cm, _ := seedSections(t, db)
+	add := func(desc string) int64 {
+		id, err := sqlitedb.InsertWorkItem(db, domain.WorkItem{Description: desc, Author: "Dev A", AuthorID: "U1", Source: "slack",
+			Status: domain.StatusInProgress, ReportedAt: time.Now(), SectionID: cm, FilingState: domain.FilingFiled, PlacedBy: domain.PlacedByModel})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	existing, report := add("shard timeout"), add("shard timeout fixed")
+	handleBlockActions(api, db, mgrCfg, interaction("U1", actionUpdateConfirm, itoa(existing)+":"+itoa(report), rec.srv.URL+"/respond"))
+	edits, _ := sqlitedb.GetWorkItemEdits(db, existing)
+	if len(edits) != 1 || edits[0].Kind != sqlitedb.EditUpdateMerge || edits[0].ActorID != "U1" || edits[0].Via != "slack" || edits[0].RelatedItemID != report {
+		t.Fatalf("Update merge from Slack: %+v", edits)
+	}
+	handleBlockActions(api, db, mgrCfg, interaction("UMGR", actionCheckDone, itoa(existing), ""))
+	edits, _ = sqlitedb.GetWorkItemEdits(db, existing)
+	if len(edits) != 2 || edits[1].Kind != sqlitedb.EditStatus || edits[1].ActorID != "UMGR" || edits[1].After.Status != domain.StatusDone {
+		t.Fatalf("Done from /check: %+v", edits)
+	}
+}

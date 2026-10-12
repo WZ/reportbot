@@ -50,7 +50,7 @@ func TestPublishSnapshotsTheLiveReport(t *testing.T) {
 	}
 
 	// The Published Report does not change when live items change, until re-published.
-	sqlite.SetWorkItemStatus(db, 1, domain.StatusDone)
+	sqlite.SetWorkItemStatus(db, 1, domain.StatusDone, sqlite.Actor{Via: "test"})
 	again, _, _ := sqlite.GetPublishedReport(db, "2026-09-07")
 	if again.TeamMarkdown != stored.TeamMarkdown {
 		t.Fatal("a Published Report is a snapshot")

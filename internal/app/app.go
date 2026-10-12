@@ -24,6 +24,7 @@ import (
 	slackbot "reportbot/internal/integrations/slack"
 	"reportbot/internal/learning"
 	"reportbot/internal/nudge"
+	"reportbot/internal/publish"
 	"reportbot/internal/storage/sqlite"
 	"reportbot/internal/web"
 	"reportbot/internal/web/handlers"
@@ -72,6 +73,7 @@ func Main() {
 		Notify:   notifier,
 	})
 	queue.Start(ctx)
+	publish.StartDraftScheduler(ctx, db, cfg)
 
 	hooks := web.PublishHooks{Fallback: func(items []domain.WorkItem) int { return filing.FileByFallback(db, notifier, items, true) }}
 	// Structure Proposals need the LLM; without it they stay off and filing works as before.

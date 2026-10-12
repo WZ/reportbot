@@ -352,7 +352,7 @@ func handleUpdateConfirm(api *slack.Client, db *sql.DB, cfg Config, cb slack.Int
 		replyToAction(api, cb, "You can only update your own Work Items.")
 		return
 	}
-	merged, err := applyUpdate(db, existingID, newID)
+	merged, err := applyUpdate(db, existingID, newID, slackActor(cb.User.ID))
 	if err != nil {
 		log.Printf("update confirm error existing=%d new=%d: %v", existingID, newID, err)
 		replyToAction(api, cb, fmt.Sprintf("Update failed: %v", err))
@@ -394,14 +394,14 @@ func handleLinkConfirm(api *slack.Client, db *sql.DB, cfg Config, cb slack.Inter
 	if err != nil || (cc.AuthorID != cb.User.ID && !cfg.IsManagerID(cb.User.ID)) {
 		return
 	}
-	if err := confirmCodeChangeLink(db, ccID, target); err != nil {
+	if err := confirmCodeChangeLink(db, ccID, target, slackActor(cb.User.ID)); err != nil {
 		log.Printf("link confirm error cc=%d target=%d: %v", ccID, target, err)
 		replyToAction(api, cb, fmt.Sprintf("Link failed: %v", err))
 		return
 	}
 	if cc.State == "merged" {
 		if it, err := GetWorkItemByID(db, target); err == nil && it.Status == domain.StatusInProgress {
-			_ = SetWorkItemStatus(db, target, domain.StatusInTesting)
+			_ = SetWorkItemStatus(db, target, domain.StatusInTesting, cb.User.ID)
 		}
 	}
 	replyToAction(api, cb, fmt.Sprintf("Linked %q to the existing Work Item.", esc(cc.Title)))
@@ -508,7 +508,7 @@ func handleCheckDone(api *slack.Client, db *sql.DB, cfg Config, cb slack.Interac
 	if err != nil {
 		return
 	}
-	if err := SetWorkItemStatus(db, itemID, domain.StatusDone); err != nil {
+	if err := SetWorkItemStatus(db, itemID, domain.StatusDone, cb.User.ID); err != nil {
 		log.Printf("check done error item=%d: %v", itemID, err)
 		return
 	}
