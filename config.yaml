@@ -29,9 +29,8 @@ decision_model_confidence: 0.85
 # Similar past Work Items (with their Sections) the decision model sees when filing
 similar_item_count: 30
 
-# Optional LLM for the learning loops (Learned Notes, Structure Proposals, Second
-# Opinion) and /retrospect. Leave llm_provider empty to turn them off; filing works
-# without it. Supported values: anthropic, openai
+# Optional LLM, used only for Structure Proposals (after publishing and on /retrospect).
+# Leave llm_provider empty to run without it. Supported values: anthropic, openai
 llm_provider: ""
 llm_model: "" # optional; uses provider default when empty
 # Reasoning effort for OpenAI-compatible providers (low, medium, high); empty sends none

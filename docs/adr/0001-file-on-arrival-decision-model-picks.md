@@ -4,7 +4,7 @@ status: accepted
 
 # File Work Items on arrival: the decision model picks the Section
 
-Work Items are filed when they arrive (`/report`, fetch), not when the Weekly Report is generated, so the team sees a live report and the reporter can fix a doubtful Placement while the context is fresh. One decision-model request (System One protocol, internal gateway) per Work Item picks the Section — a Choice over the active Sections, given the most similar past Work Items and where they were filed — and in the same request answers the narrow questions code cannot decide: the Status, which ticket ID is meant, and whether the report is an Update to an existing Work Item. The Choice's calibrated confidence decides whether to file without asking. The LLM only improves the context and handles leftovers (ADR 0003).
+Work Items are filed when they arrive (`/report`, fetch), not when the Weekly Report is generated, so the team sees a live report and the reporter can fix a doubtful Placement while the context is fresh. One decision-model request (System One protocol, internal gateway) per Work Item picks the Section — a Choice over the active Sections, given the most similar past Work Items and where they were filed — and in the same request answers the narrow questions code cannot decide: the Status, which ticket ID is meant, and whether the report is an Update to an existing Work Item. The Choice's calibrated confidence decides whether to file without asking. An optional LLM only proposes Taxonomy changes for managers to approve; LLM-written context for the decision model was tried and rejected (ADR 0003).
 
 ## Considered Options
 
@@ -26,4 +26,4 @@ The answer key is V1's output as edited by people, which favours V1's own labels
 - The decision model being unreachable degrades the Work Item to Undetermined with a retry sweep; it is never lost.
 - The decision model must be given the most similar past Work Items and where they were filed; measured accuracy depends on that context far more than on wording.
 - The gateway rejects structured `instructions`; supporting data goes in `state` and questions reference it by path.
-- The LLM is optional; without it the learning loops of ADR 0003 are off and filing works the same.
+- The LLM is optional; without it Structure Proposals are off and filing works the same.

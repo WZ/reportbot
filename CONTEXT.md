@@ -27,20 +27,16 @@ The holding place for Work Items that could not be confidently filed into a Sect
 _Avoid_: UND, uncategorized
 
 **Placement**:
-The Section a Work Item is filed under, together with who decided it (the decision model, the assistant's Second Opinion, or a person) and how likely the decision model judged that Section to be right.
+The Section a Work Item is filed under, together with who decided it (the decision model, the fallback, or a person) and how likely the decision model judged that Section to be right.
 _Avoid_: classification, category (for the item's filing)
-
-**Learned Notes**:
-A short note on a Section, at most about two sentences, saying what belongs there and what goes to a neighbouring Section instead. It is drafted by the LLM from people's disagreements with the decision model and applied only when a replay of recent person decisions shows it helps. It is kept apart from the manager-written description; managers can edit, clear or undo it.
-_Avoid_: glossary, hints, auto-description
 
 **Structure Proposal**:
 A change to the Taxonomy (a new Section, a split, or a retirement) that the LLM suggests from the week's Work Items and that a manager approves or rejects. A rejected change is not proposed again for 8 weeks.
 _Avoid_: suggestion, auto-taxonomy
 
-**Second Opinion**:
-The assistant (the LLM) choosing one of the decision model's three most likely Sections for an unsure Work Item that nobody placed within 24 hours, or that is still Undetermined when the report is published. The reporter is told and can change it.
-_Avoid_: fallback classification, LLM pick
+**Fallback Placement**:
+Filing an unsure Work Item under the decision model's most likely Section when nobody answered "Where does this go?" within 24 hours, or before the report was published. No model is asked again; the reporter is told and can change it.
+_Avoid_: second opinion, auto-pick
 
 ### Work
 
@@ -71,3 +67,11 @@ _Avoid_: report draft, template
 **Published Report**:
 The immutable snapshot of a Weekly Report as it was sent; re-publishing the same week replaces it.
 _Avoid_: generated report, final report
+
+**Draft Snapshot**:
+The Weekly Report as it stood on Friday at 09:00, rendered as publishing would render it; compared with the Published Report it shows what people changed before sending.
+_Avoid_: preview, draft report file
+
+**Work Item Edit**:
+One recorded change a person (or the system) made to a Work Item's text, Status, Status Note or tickets, a delete, or a confirmed Update, with what it was before and after, who and when.
+_Avoid_: audit entry, change log

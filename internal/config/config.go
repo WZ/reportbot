@@ -29,7 +29,7 @@ type Config struct {
 	GitHubOrg   string   `yaml:"github_org"`
 	GitHubRepos []string `yaml:"github_repos"`
 
-	// The LLM is optional; the learning loops and /retrospect need it. Empty llm_provider means none.
+	// The LLM is optional; only Structure Proposals use it. Empty llm_provider means none.
 	LLMProvider string `yaml:"llm_provider"`
 	LLMModel    string `yaml:"llm_model"`
 	// Reasoning effort sent to OpenAI-compatible providers; empty sends none.
@@ -400,7 +400,7 @@ func (c Config) AccountAuthorID(host string, accountID int64) string {
 	return c.AuthorIDs[fmt.Sprintf("%s:%d", host, accountID)]
 }
 
-// LLMConfigured reports whether an LLM is set up for the learning loops.
+// LLMConfigured reports whether an LLM is set up for Structure Proposals.
 func (c Config) LLMConfigured() bool { return c.LLMProvider != "" }
 
 func (c Config) GitLabConfigured() bool {

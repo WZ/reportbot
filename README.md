@@ -6,7 +6,8 @@ Developers report work via slash commands. The bot also pulls merged/open GitLab
 
 1. A decision model (System One protocol) picks the Section in one request, and in the same request answers the narrow questions code cannot decide — Status, ticket ID, whether a report is an Update to an existing Work Item — with calibrated probabilities.
 2. Confident picks are filed silently; doubtful ones ask the reporter "Where does this go?" with the model's top three Sections.
-3. An optional LLM (Anthropic Claude or an OpenAI-compatible endpoint) runs the learning loops: nightly Learned Notes per Section (applied only if a replay of recent person decisions improves accuracy), weekly Structure Proposals for managers, and a Second Opinion on unsure Work Items nobody placed.
+3. If nobody answers within 24 hours (or before publishing), the Work Item is filed under the model's first choice; the reporter can still change it.
+4. An optional LLM (Anthropic Claude or an OpenAI-compatible endpoint) is used only for Structure Proposals: suggested new, split or retired Sections that a manager approves.
 
 The team sees the live Weekly Report in the web UI; managers publish it to Slack as markdown and an email draft. See `CONTEXT.md` for the domain terms and `docs/adr/` for the design decisions.
 
@@ -19,25 +20,27 @@ The team sees the live Weekly Report in the web UI; managers publish it to Slack
 - `/generate-report` (or `/gen`) — Publish this week's report (team `.md` or boss `.eml`) and upload it to Slack
 - `/list` — View your items on this week's report with inline edit/delete actions (`/list all` for the team view)
 - `/check` — Managers: list missing members with nudge buttons, and merged code changes waiting in testing with Done buttons
-- `/retrospect` — Managers: run the learning loops now (Learned Notes behind the replay gate, Structure Proposals) and see what was applied, discarded or proposed
-- `/stats` — Managers: this week's filing (auto-filed vs asked, filed by the assistant, corrections by Section, Undetermined count)
+- `/retrospect` — Managers: generate Structure Proposals now (new, split or retired Sections, with Approve/Reject)
+- `/stats` — Managers: this week's filing (auto-filed vs asked, filed automatically because the reporter didn't answer, corrections by Section, Undetermined count)
 - `/help` — Show all commands and example usage
 
 ### Filing on arrival
 
-- **One decision-model request per Work Item** picks the Section — a Choice over the active Sections (path plus any manager-written description and Learned Notes), given the most similar past Work Items and where they were filed (TF-IDF) — and, when code cannot decide, asks for the Status, the ticket ID among several candidate numbers, and whether the report updates an Open Work Item. The Choice's confidence is the Placement confidence.
+- **One decision-model request per Work Item** picks the Section — a Choice over the active Sections (path plus any manager-written description), given the most similar past Work Items and where they were filed (TF-IDF) — and, when code cannot decide, asks for the Status, the ticket ID among several candidate numbers, and whether the report updates an Open Work Item. The Choice's confidence is the Placement confidence.
 - **Below `decision_model_confidence`** the item waits in Undetermined and the reporter gets "Where does this go?" buttons for the model's three most likely Sections; a click is a person Placement.
 - **Updates** are always confirmed by the reporter ("Looks like an update to …" [Update it] [It's new]).
 - **Code Changes** link to an Open Work Item on an exact ticket match; a merge moves an `in progress` Work Item to `in testing`. Unlinked ones become their own Work Items (`in testing` once merged — `done` is always a person's decision).
 - **Taxonomy edits** (web UI) re-file Open Work Items; confident moves happen automatically and a person whose choice was overridden gets an Undo button.
 - **Never lost**: if the decision model is unreachable, the item is filed as Undetermined and a sweep retries it.
+- **Fallback**: an unsure Work Item nobody placed within 24 hours, or still Undetermined at publish, is filed under the decision model's most likely Section from its stored answer (no new model call). The reporter is told "Filed under X automatically" with a Change button.
 
-### Continuous learning (needs the LLM)
+### Structure Proposals (optional LLM)
 
-- **Learned Notes** (nightly at 02:00 in `timezone`): for up to three Sections with new corrections or mis-ranked "Where does this go?" picks from at least two people, the LLM drafts a short contrastive note ("what belongs here; what goes to X instead"). It is kept apart from the manager-written description and validated as plain text that names only existing Sections and no people. The decision model then re-runs its Section Choice on the last 8 weeks of person decisions (at least 60) with the current and the candidate notes; the notes are applied only on +2 points overall with no Section of 5+ items losing. Managers get a digest DM with the full notes and Undo; the web Taxonomy editor shows, edits and clears them.
-- **Structure Proposals** (after each publish): 0–3 suggested new, split or retired Sections, sent to managers with Approve/Reject. Approve applies it like a Taxonomy edit; a rejected change is not proposed again for 8 weeks.
-- **Second Opinion**: an unsure Work Item nobody placed within 24 hours, or still Undetermined at publish, is filed by the assistant under one of the decision model's top 3 Sections; the reporter is told and can Change it. `/stats` counts these apart.
-- The confidence threshold stays fixed (`decision_model_confidence`); nothing tunes it automatically.
+After each publish (and on `/retrospect`), the LLM proposes 0–3 changes: a new Section for a recurring theme among Undetermined and "Other…" Work Items, a split of a large Section, or retiring one unused for 8 weeks. Managers get Approve/Reject by DM; Approve applies it like a Taxonomy edit, and a rejected change is not proposed again for 8 weeks. LLM-written notes for the decision model were tried and rejected (ADR 0003).
+
+### Edit history
+
+Every Work Item edit (text, Status, Status Note, tickets), delete and confirmed Update is recorded in `work_item_edits` with before/after, who and where (Slack, web, fetch). Every Friday at 09:00 (`timezone`) a draft of the Weekly Report is stored in `report_drafts`, next to the Published Report. Together they show what people change by hand.
 
 See [docs/agentic-features-overview.md](docs/agentic-features-overview.md) for a detailed overview.
 
@@ -68,7 +71,7 @@ See [docs/agentic-features-overview.md](docs/agentic-features-overview.md) for a
    | `/list` | List your work items for this week (`/list all` for the team view) |
    | `/check` | List missing members with nudge buttons, and merged code changes waiting in testing |
    | `/nudge` | Send a test nudge DM (self by default; managers can target one member) |
-   | `/retrospect` | Run the learning loops now |
+   | `/retrospect` | Generate Structure Proposals now |
    | `/stats` | View this week's filing stats |
    | `/help` | Show help and usage |
 
@@ -102,7 +105,7 @@ decision_model_name: "..."
 decision_model_confidence: 0.85  # Section confidence needed to file without asking
 similar_item_count: 30           # optional: similar past Work Items the decision model sees
 
-# Optional LLM for the learning loops and /retrospect; leave llm_provider empty to turn them off
+# Optional LLM, only for Structure Proposals (and /retrospect); leave llm_provider empty to skip
 llm_provider: "anthropic"       # "anthropic" or "openai"
 llm_reasoning_effort: ""        # optional (openai provider): low, medium or high; empty sends none
 anthropic_api_key: "sk-ant-..."
@@ -169,7 +172,7 @@ export DECISION_MODEL_API_KEY=...
 export DECISION_MODEL_NAME=...
 export DECISION_MODEL_CONFIDENCE=0.85           # Optional: default 0.85
 export SIMILAR_ITEM_COUNT=30                    # Optional: similar past Work Items the decision model sees
-export LLM_PROVIDER=anthropic                   # Optional: the learning loops use the LLM
+export LLM_PROVIDER=anthropic                   # Optional: only Structure Proposals use the LLM
 export ANTHROPIC_API_KEY=sk-ant-...
 export OPENAI_API_KEY=
 export OPENAI_BASE_URL=https://api.openai.com/v1
@@ -192,15 +195,15 @@ export TIMEZONE=America/Los_Angeles
 
 Note: the Taxonomy lives in the database and is edited in the web UI (`/taxonomy`); published `.md` files are output only.
 
-#### LLM (optional, learning loops)
+#### LLM (optional, Structure Proposals only)
 
 | Provider | Default Model |
 |---|---|
 | `anthropic` | `claude-sonnet-4-5-20250929` |
 | `openai` | `gpt-4o-mini` |
 
-Set `llm_model` in YAML or `LLM_MODEL` env var to override. Without `llm_provider`, filing works as usual but the learning loops are off: `/retrospect` says the LLM isn't configured and `/stats` says the loops are off.
-When `llm_provider=openai`, the loops use the OpenAI-compatible `responses` API.
+Set `llm_model` in YAML or `LLM_MODEL` env var to override. Without `llm_provider`, everything works except Structure Proposals: `/retrospect` says the LLM isn't configured and `/stats` says proposals are off.
+When `llm_provider=openai`, proposals use the OpenAI-compatible `responses` API.
 Set `openai_base_url` / `OPENAI_BASE_URL` when `llm_provider=openai` and you want an OpenAI-compatible endpoint instead of `api.openai.com`.
 Set `llm_reasoning_effort` / `LLM_REASONING_EFFORT` (`low`, `medium`, `high`) to send a reasoning effort to an OpenAI-compatible reasoning model; empty sends none.
 Set `decision_model_url`, `decision_model_api_key` and `decision_model_name` (or `DECISION_MODEL_*`) for the decision model; requests go to `{decision_model_url}/v1/systemone`. `decision_model_confidence` is the Section Choice confidence needed to file without asking; `similar_item_count` sets how many similar past Work Items the decision model sees.
@@ -359,7 +362,7 @@ auto_fetch_schedule: "0 9 * * 5"     # Fridays at 9am
 
 ### Generating Reports
 
-Manager only. With the LLM configured, publishing first gives a Second Opinion on still-Undetermined Work Items (at most about a minute). It then renders the live report, stores it as the week's Published Report (re-publishing replaces it), writes both the team `.md` and boss `.eml`, and uploads the requested one. If items are still Undetermined, you are warned first and can publish anyway. After publishing, the week's Structure Proposals are sent to managers.
+Manager only. Publishing first files unanswered unsure Work Items under the decision model's first choice, then renders the live report — no model calls — stores it as the week's Published Report (re-publishing replaces it), writes both the team `.md` and boss `.eml`, and uploads the requested one. If items are still Undetermined, you are warned first and can publish anyway. With the LLM configured, the week's Structure Proposals are then sent to managers.
 
 ```
 /generate-report team            # Publish and upload the team markdown (.md) to the channel (default)
@@ -455,10 +458,10 @@ reportbot/
   internal/integrations/slack/   Socket Mode bot, slash commands, member resolution helpers
   internal/integrations/github/  GitHub Search API client for merged/open PRs
   internal/integrations/gitlab/  GitLab API client for merged/open MRs
-  internal/integrations/llm/     LLM prompts and parsing for Learned Notes, Structure Proposals and the Second Opinion
+  internal/integrations/llm/     LLM prompts and parsing for Structure Proposals
   internal/integrations/decision/ Decision-model client (System One protocol) with retries
-  internal/filing/          Filing on arrival: decision-model request, job queue, sweep, re-classification
-  internal/learning/        Learning loops: replay gate, Learned Notes, Structure Proposals, Second Opinion, schedulers
+  internal/filing/          Filing on arrival: decision-model request, job queue, sweep, 24 h fallback, re-classification
+  internal/learning/        Structure Proposals: evidence, validation, Approve/Reject
   internal/cutover/         One-off migrate-v2 import from published reports
   internal/publish/         Live Weekly Report and Published Report snapshots
   internal/report/          Report view, markdown/EML rendering
