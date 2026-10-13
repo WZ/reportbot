@@ -122,11 +122,15 @@ team_members:
   - "Member Two"
 
 # Owners of fetched and imported items -> Slack user ID. Plain keys are report author names
-# (migrate-v2 import only); "gitlab:<numeric id>" / "github:<numeric id>" are code-hosting
-# accounts (fetch only). Unmapped items are manager-only. Draft with migrate-v2 --suggest-author-ids.
+# (migrate-v2 import only); "gitlab:<numeric id or username>" / "github:<numeric id or login>"
+# are code-hosting accounts (fetch only). Usernames match exactly, ignoring case, and must be
+# updated here if renamed or reused; numeric IDs never change. When an ID key and a username key
+# both match and disagree, the ID key wins (logged). Unmapped items are manager-only. Draft with
+# migrate-v2 --suggest-author-ids.
 author_ids:
   "Member One": "U02MEMBER1"
-  "gitlab:1234": "U02MEMBER1"
+  "gitlab:mone": "U02MEMBER1"   # username key
+  "github:1234": "U02MEMBER1"   # numeric account ID key
 
 # Automatic MR/PR fetching (cron expression, empty to disable)
 auto_fetch_schedule: "0 9 * * 1-5"  # weekdays at 9am
@@ -178,7 +182,7 @@ export OPENAI_API_KEY=
 export OPENAI_BASE_URL=https://api.openai.com/v1
 export LLM_REASONING_EFFORT=low                 # Optional (openai provider): low, medium or high
 export MANAGER_SLACK_IDS="U01ABC123,U02DEF456"  # Comma-separated Slack user IDs
-export AUTHOR_IDS='{"Member One": "U02MEMBER1", "gitlab:1234": "U02MEMBER1"}'  # JSON: report name or gitlab:/github:<numeric id> -> Slack user ID
+export AUTHOR_IDS='{"Member One": "U02MEMBER1", "gitlab:mone": "U02MEMBER1", "github:1234": "U02MEMBER1"}'  # JSON: report name or gitlab:/github:<numeric id or username> -> Slack user ID
 export REPORT_CHANNEL_ID=C01234567
 export EXTERNAL_HTTP_TIMEOUT_SECONDS=90          # Optional: timeout for external API HTTP calls
 export TLS_SKIP_VERIFY=true                      # Optional: skip TLS cert verification
@@ -231,7 +235,7 @@ Run once against the existing database, with the latest published team report:
 ./reportbot migrate-v2 --report reports/TEAM_20260925.md --drop-v1   # back up the DB, then drop V1 tables/columns
 ```
 
-Imported lines get an owner only through `author_ids`. The run prints a binding report (author → Slack user ID, or "unmapped"); review it before `--drop-v1`. To draft `author_ids`, run `./reportbot migrate-v2 --report <latest.md> --suggest-author-ids`: it prints a YAML block, marked unverified, of exact name matches among `manager_slack_ids` and the Slack user IDs in `team_members`: report author names, plus `gitlab:<id>` / `github:<id>` lines for the last four weeks' MR/PR authors (annotated with username and display name). Unmatched entries are commented out. It writes nothing, and prints no suggestions if any roster lookup fails.
+Imported lines get an owner only through `author_ids`. The run prints a binding report (author → Slack user ID, or "unmapped"); review it before `--drop-v1`. To draft `author_ids`, run `./reportbot migrate-v2 --report <latest.md> --suggest-author-ids`: it prints a YAML block, marked unverified, of exact name matches among `manager_slack_ids` and the Slack user IDs in `team_members`: report author names, plus `gitlab:<username>` / `github:<login>` lines for the last four weeks' MR/PR authors (annotated with the numeric ID and display name, e.g. `"gitlab:dlee": "U02MEMBER1"  # id 24, Dana Lee`). Unmatched entries are commented out. It writes nothing, and prints no suggestions if any roster lookup fails.
 
 Each step is idempotent. It seeds the Taxonomy from the report's headings, imports its open authored lines as Work Items with a person Placement, promotes existing rows that match a published line (Placement from the latest report showing them; rows still open in V1 but missing from the latest report are closed as done before that report's week, keeping their V1 status text as the Status Note), queues rows reported after that report for filing, and records fetched MRs/PRs as Code Changes (merged when the row was done, otherwise open). `--dry-run` runs all of this on a temporary copy and prints the counts: Sections, open lines, rows promoted and unmatched, old open rows closed as done, Statuses mapped, Code Changes, rows queued for filing, and the binding report. Until it has run, the web report shows only a "run the cut-over import" banner. `--drop-v1` refuses to run until those steps are done, and only after writing `<db>.<timestamp>.backup`.
 
@@ -350,7 +354,7 @@ Manager only. Pulls all merged and open GitLab MRs and/or GitHub PRs for the cur
 /fetch
 ```
 
-Already-tracked MRs/PRs are updated, not duplicated; a merge moves a linked `in progress` Work Item to `in testing`. Closed-unmerged ones are skipped. Non-team authors are filtered out. An author is on the team if a name entry in `team_members` matches their name or username, or, for a Slack user ID entry, if `author_ids` maps their `gitlab:<id>` / `github:<id>` account to that ID or that user's Slack real or display name matches (looked up via `users.info`, cached for an hour; on a lookup failure the filter uses name entries and `author_ids` only and logs a warning). This filter only decides what is imported; owners still come only from `author_ids`.
+Already-tracked MRs/PRs are updated, not duplicated; a merge moves a linked `in progress` Work Item to `in testing`. Closed-unmerged ones are skipped. Non-team authors are filtered out. An author is on the team if a name entry in `team_members` matches their name or username, or, for a Slack user ID entry, if `author_ids` maps their `gitlab:` / `github:` account key (numeric ID or username) to that ID or that user's Slack real or display name matches (looked up via `users.info`, cached for an hour; on a lookup failure the filter uses name entries and `author_ids` only and logs a warning). This filter only decides what is imported; owners still come only from `author_ids`.
 
 **Automatic fetching**: Set `auto_fetch_schedule` to a cron expression and MRs/PRs will be imported on a schedule, with a summary posted to `report_channel_id`. Examples:
 
@@ -410,7 +414,7 @@ Managers and members can use `/list all` to see the full team list:
 ```
 
 `/list` now includes inline actions:
-- Members can edit/delete only their own items, matched by Slack user ID (never by name). Fetched and imported items get an owner only through `author_ids` (code changes by numeric GitLab/GitHub account ID); items without one are manager-only.
+- Members can edit/delete only their own items, matched by Slack user ID (never by name). Fetched and imported items get an owner only through `author_ids` (code changes by GitLab/GitHub numeric account ID or username, never display name); items without one are manager-only.
 - Managers can edit/delete all items.
 - Delete uses a confirmation modal.
 - Edit opens a modal with the description, Status, Status Note and Section. Choosing a Section is a person Placement; changing only the text files the item again.

@@ -30,9 +30,9 @@ type FetchResult struct {
 
 // Hooks connect fetching to the rest of the bot without importing it.
 type Hooks struct {
-	// ResolveAccount returns the Slack user ID configured for a code-hosting account
-	// ("gitlab" or "github", numeric account ID), "" if none. Names never bind an owner.
-	ResolveAccount func(host string, accountID int64) string
+	// ResolveAccount returns the Slack user ID configured for a code-hosting account by numeric
+	// ID or username, "" if none, and a warning when those disagree. Display names never bind.
+	ResolveAccount func(host string, accountID int64, username string) (slackID, warn string)
 	// TeamNames returns the Slack profile names of the given Slack user IDs, for the team filter only.
 	TeamNames func(slackIDs []string) ([]string, error)
 	Wake      func() // start filing new Work Items now
@@ -70,7 +70,7 @@ func FetchAndImportMRs(cfg Config, db *sql.DB, hooks Hooks) (FetchResult, error)
 				}
 				changes = append(changes, fetched{cc: domain.CodeChange{Source: "gitlab", SourceRef: mr.WebURL, Title: mr.Title,
 					Author: mr.AuthorName, TicketIDs: mr.TicketIDs, State: codeChangeState(mr.State), MergedAt: mr.MergedAt},
-					host: "gitlab", accountID: mr.AuthorID, reportedAt: mrReportedAt(mr, cfg.Location)})
+					host: "gitlab", accountID: mr.AuthorID, username: mr.Author, reportedAt: mrReportedAt(mr, cfg.Location)})
 			}
 		}
 	}
@@ -92,7 +92,7 @@ func FetchAndImportMRs(cfg Config, db *sql.DB, hooks Hooks) (FetchResult, error)
 				}
 				changes = append(changes, fetched{cc: domain.CodeChange{Source: "github", SourceRef: pr.HTMLURL, Title: pr.Title,
 					Author: pr.AuthorName, TicketIDs: githubTicketIDs(pr, cfg.GitLabRefTicketLabel), State: codeChangeState(pr.State), MergedAt: pr.MergedAt},
-					host: "github", accountID: pr.AuthorID, reportedAt: prReportedAt(pr, cfg.Location)})
+					host: "github", accountID: pr.AuthorID, username: pr.Author, reportedAt: prReportedAt(pr, cfg.Location)})
 			}
 		}
 	}
@@ -125,6 +125,7 @@ type fetched struct {
 	cc         domain.CodeChange
 	host       string // "gitlab" | "github"
 	accountID  int64
+	username   string // GitLab username or GitHub login
 	reportedAt time.Time
 }
 
@@ -174,7 +175,11 @@ func importCodeChanges(db *sql.DB, changes []fetched, hooks Hooks, result *Fetch
 			continue
 		}
 		if hooks.ResolveAccount != nil {
-			cc.AuthorID = hooks.ResolveAccount(f.host, f.accountID)
+			var warn string
+			cc.AuthorID, warn = hooks.ResolveAccount(f.host, f.accountID, f.username)
+			if warn != "" {
+				log.Printf("auto-fetch WARNING: %s", warn)
+			}
 		}
 		if target := exactTicketMatch(db, cc.TicketIDs); target != 0 {
 			cc.WorkItemID = target

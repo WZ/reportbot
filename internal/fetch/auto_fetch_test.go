@@ -1,7 +1,11 @@
 package fetch
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -145,28 +149,97 @@ func TestCodeChangeOwnersBindOnlyByAccountID(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	// Plain keys are report names; a code-hosting display name or username equal to one must not bind.
+	// Plain keys are report names; a code-hosting display name or username equal to one must not bind,
+	// nor may a display name equal to a username key.
 	cfg := config.Config{AuthorIDs: map[string]string{"dana lee": "UDANA0001", "dlee": "UDANA0001",
-		"gitlab:7": "UREAL0007", "github:9": "UREAL0009"}}
+		"gitlab:7": "UREAL0007", "github:9": "UREAL0009", "gitlab:grant": "UGRANT0001"}}
 	now := time.Now()
 	changes := []fetched{
-		{cc: domain.CodeChange{Source: "gitlab", SourceRef: "https://git.example/mr/a", Title: "a", Author: "Dana Lee", State: "open"}, host: "gitlab", accountID: 100, reportedAt: now},
-		{cc: domain.CodeChange{Source: "gitlab", SourceRef: "https://git.example/mr/b", Title: "b", Author: "dlee", State: "open"}, host: "gitlab", accountID: 101, reportedAt: now},
-		{cc: domain.CodeChange{Source: "gitlab", SourceRef: "https://git.example/mr/c", Title: "c", Author: "Anyone", State: "open"}, host: "gitlab", accountID: 7, reportedAt: now},
-		{cc: domain.CodeChange{Source: "github", SourceRef: "https://git.example/pr/d", Title: "d", Author: "Dana Lee", State: "open"}, host: "github", accountID: 7, reportedAt: now},
-		{cc: domain.CodeChange{Source: "github", SourceRef: "https://git.example/pr/e", Title: "e", Author: "dlee", State: "open"}, host: "github", accountID: 9, reportedAt: now},
+		{cc: domain.CodeChange{Source: "gitlab", SourceRef: "https://git.example/mr/a", Title: "a", Author: "Dana Lee", State: "open"}, host: "gitlab", accountID: 100, username: "dana", reportedAt: now},
+		{cc: domain.CodeChange{Source: "gitlab", SourceRef: "https://git.example/mr/b", Title: "b", Author: "dlee", State: "open"}, host: "gitlab", accountID: 101, username: "dlee", reportedAt: now},
+		{cc: domain.CodeChange{Source: "gitlab", SourceRef: "https://git.example/mr/c", Title: "c", Author: "Anyone", State: "open"}, host: "gitlab", accountID: 7, username: "anyone", reportedAt: now},
+		{cc: domain.CodeChange{Source: "github", SourceRef: "https://git.example/pr/d", Title: "d", Author: "Dana Lee", State: "open"}, host: "github", accountID: 7, username: "dana", reportedAt: now},
+		{cc: domain.CodeChange{Source: "github", SourceRef: "https://git.example/pr/e", Title: "e", Author: "dlee", State: "open"}, host: "github", accountID: 9, username: "dlee", reportedAt: now},
+		{cc: domain.CodeChange{Source: "gitlab", SourceRef: "https://git.example/mr/f", Title: "f", Author: "Grant", State: "open"}, host: "gitlab", accountID: 102, username: "gguo", reportedAt: now},
 	}
 	var res FetchResult
 	if err := importCodeChanges(db, changes, Hooks{ResolveAccount: cfg.AccountAuthorID}, &res); err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]string{"a": "", "b": "", "c": "UREAL0007", "d": "", "e": "UREAL0009"}
+	want := map[string]string{"a": "", "b": "", "c": "UREAL0007", "d": "", "e": "UREAL0009", "f": ""}
 	for _, f := range changes {
 		cc, _, _ := sqlite.GetCodeChangeByRef(db, f.cc.Source, f.cc.SourceRef)
 		it, _ := sqlite.GetWorkItemByID(db, cc.WorkItemID)
 		if it.AuthorID != want[f.cc.Title] {
 			t.Errorf("%s: author_id %q, want %q", f.cc.Title, it.AuthorID, want[f.cc.Title])
 		}
+	}
+}
+
+func TestCodeChangeOwnersBindByUsernameKey(t *testing.T) {
+	buf := captureLog(t)
+	db, err := sqlite.InitDB(filepath.Join(t.TempDir(), "bind.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	cfg := config.Config{AuthorIDs: map[string]string{"gitlab:yfma": "UYFMA0001", "github:octo-cat": "UOCTO0001",
+		"gitlab:24": "UID000024", "gitlab:dlee": "UDLEE0001"}}
+	now := time.Now()
+	changes := []fetched{
+		{cc: domain.CodeChange{Source: "gitlab", SourceRef: "https://git.example/mr/a", Title: "a", Author: "Dev Y", State: "open"}, host: "gitlab", accountID: 31, username: "YFMA", reportedAt: now},
+		{cc: domain.CodeChange{Source: "github", SourceRef: "https://git.example/pr/b", Title: "b", Author: "Octo-Cat", State: "open"}, host: "github", accountID: 5, username: "Octo-Cat", reportedAt: now},
+		{cc: domain.CodeChange{Source: "gitlab", SourceRef: "https://git.example/mr/c", Title: "c", Author: "Dana Lee", State: "open"}, host: "gitlab", accountID: 24, username: "dlee", reportedAt: now},
+	}
+	if err := importCodeChanges(db, changes, Hooks{ResolveAccount: cfg.AccountAuthorID}, &FetchResult{}); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"a": "UYFMA0001", "b": "UOCTO0001", "c": "UID000024"}
+	for _, f := range changes {
+		cc, _, _ := sqlite.GetCodeChangeByRef(db, f.cc.Source, f.cc.SourceRef)
+		it, _ := sqlite.GetWorkItemByID(db, cc.WorkItemID)
+		if it.AuthorID != want[f.cc.Title] {
+			t.Errorf("%s: author_id %q, want %q", f.cc.Title, it.AuthorID, want[f.cc.Title])
+		}
+	}
+	if log := buf.String(); !strings.Contains(log, `"gitlab:24"`) || !strings.Contains(log, `"gitlab:dlee"`) {
+		t.Fatalf("conflicting ID and username keys must be warned about: %q", log)
+	}
+}
+
+// End to end with a fake GitLab: the MR's author.username reaches binding.
+func TestFetchBindsGitLabUsername(t *testing.T) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("page") != "1" {
+			w.Write([]byte("[]"))
+			return
+		}
+		json.NewEncoder(w).Encode([]map[string]any{{"title": "speed up export", "web_url": "https://git.example/mr/1",
+			"updated_at": now, "created_at": now, "state": "opened",
+			"author": map[string]any{"id": 31, "username": "yfma", "name": "Dev Y"}}})
+	}))
+	defer srv.Close()
+	db, err := sqlite.InitDB(filepath.Join(t.TempDir(), "fetch.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	// Loaded through config so the key is folded as in production.
+	t.Setenv("CONFIG_PATH", filepath.Join(t.TempDir(), "missing.yaml"))
+	for k, v := range map[string]string{"SLACK_BOT_TOKEN": "xoxb-test", "SLACK_APP_TOKEN": "xapp-test", "TIMEZONE": "UTC",
+		"DECISION_MODEL_URL": "https://api.compat.example/", "DECISION_MODEL_API_KEY": "dm-test", "DECISION_MODEL_NAME": "test-model",
+		"GITLAB_URL": srv.URL, "GITLAB_TOKEN": "test", "GITLAB_GROUP_ID": "g", "AUTHOR_IDS": `{"gitlab:YFMA": "UYFMA0001"}`} {
+		t.Setenv(k, v)
+	}
+	cfg := config.LoadConfig()
+	cfg.GitHubToken = "" // never reach the real GitHub from a test
+	if _, err := FetchAndImportMRs(cfg, db, Hooks{ResolveAccount: cfg.AccountAuthorID}); err != nil {
+		t.Fatal(err)
+	}
+	cc, _, _ := sqlite.GetCodeChangeByRef(db, "gitlab", "https://git.example/mr/1")
+	if it, _ := sqlite.GetWorkItemByID(db, cc.WorkItemID); it.AuthorID != "UYFMA0001" {
+		t.Fatalf("author_id %q, want the username key's Slack ID", it.AuthorID)
 	}
 }
 

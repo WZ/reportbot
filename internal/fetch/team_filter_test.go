@@ -41,7 +41,7 @@ func profileNames(t *testing.T) func([]string) ([]string, error) {
 
 func TestTeamFilter(t *testing.T) {
 	cfg := config.Config{TeamMembers: []string{"Yufan", grantID},
-		AuthorIDs: map[string]string{"gitlab:42": grantID, "github:77": grantID}}
+		AuthorIDs: map[string]string{"gitlab:42": grantID, "github:77": grantID, "gitlab:ggrant": grantID, "github:grant-g": grantID}}
 	f := newTeamFilter(cfg, Hooks{TeamNames: profileNames(t)})
 
 	cases := []struct {
@@ -60,6 +60,9 @@ func TestTeamFilter(t *testing.T) {
 		{"github ID entry via author_ids", "github", 77, "octo", "octo", true},
 		{"author_ids is per host", "github", 42, "octo", "octo", false},
 		{"github non-team", "github", 3, "andyxu", "andyxu", false},
+		{"ID entry via author_ids username key", "gitlab", 5, "Build Bot", "GGrant", true},
+		{"github ID entry via author_ids login key", "github", 5, "Grant-G", "Grant-G", true},
+		{"username keys are per host", "github", 5, "ggrant", "ggrant", false},
 	}
 	for _, c := range cases {
 		if got := f.includes(c.host, c.accountID, c.author, c.handle); got != c.want {

@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -245,9 +246,17 @@ func TestNormalizeAuthorIDs(t *testing.T) {
 	if got, err := normalizeAuthorIDs(map[string]string{" A ": "U0123ABCD"}); err != nil || got["a"] != "U0123ABCD" {
 		t.Fatalf("unexpected %v %v", got, err)
 	}
-	for _, bad := range []string{"gitlab:dlee", "github:", "gitlab:12a"} {
+	for _, bad := range []string{"gitlab:bad name", "gitlab:", "github:", "gitlab:a<b", "github:a/b"} {
 		if _, err := normalizeAuthorIDs(map[string]string{bad: "U0123ABCD"}); err == nil {
 			t.Fatalf("%q must be rejected", bad)
+		}
+	}
+	for _, good := range []string{"gitlab:yfma", "gitlab:24", "github:octo-cat", "gitlab:first.last_2"} {
+		if _, err := normalizeAuthorIDs(map[string]string{good: "U0123ABCD"}); err != nil {
+			t.Fatalf("%q must be accepted: %v", good, err)
+		}
+		if _, err := normalizeAuthorIDs(map[string]string{good: "yfma"}); err == nil {
+			t.Fatalf("%q: a value that is not a Slack user ID must be rejected", good)
 		}
 	}
 	got, err := normalizeAuthorIDs(map[string]string{"GitLab:42": "U0123ABCD", "github:7": "U0777ABCD"})
@@ -255,8 +264,14 @@ func TestNormalizeAuthorIDs(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := Config{AuthorIDs: got}
-	if c.AccountAuthorID("gitlab", 42) != "U0123ABCD" || c.AccountAuthorID("github", 7) != "U0777ABCD" || c.AccountAuthorID("github", 42) != "" {
+	if id, _ := c.AccountAuthorID("gitlab", 42, ""); id != "U0123ABCD" {
 		t.Fatal("account keys bind by host and numeric ID")
+	}
+	if id, _ := c.AccountAuthorID("github", 7, ""); id != "U0777ABCD" {
+		t.Fatal("account keys bind by host and numeric ID")
+	}
+	if id, _ := c.AccountAuthorID("github", 42, ""); id != "" {
+		t.Fatal("account keys are per host")
 	}
 	if c.AuthorID("gitlab:42") != "" {
 		t.Fatal("a report name never reaches an account key")
@@ -271,5 +286,45 @@ func TestLLMIsOptional(t *testing.T) {
 	cfg := LoadConfig()
 	if cfg.LLMConfigured() || cfg.SimilarItemCount != 30 {
 		t.Fatalf("no LLM configured and the default similar-item count: %+v", cfg)
+	}
+}
+
+func TestAccountAuthorIDByUsername(t *testing.T) {
+	got, err := normalizeAuthorIDs(map[string]string{"gitlab:YFMA": "UYFMA0001", "github:octo-cat": "UOCTO0001",
+		"gitlab:24": "UID000024", "gitlab:dlee": "UDLEE0001", "github:12": "UGH0000012"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := Config{AuthorIDs: got}
+	cases := []struct {
+		host     string
+		id       int64
+		username string
+		want     string
+		warn     bool
+	}{
+		{"gitlab", 99, "yfma", "UYFMA0001", false},    // username key, case-insensitive
+		{"gitlab", 0, "YfMa", "UYFMA0001", false},     // no numeric ID needed
+		{"github", 5, "Octo-Cat", "UOCTO0001", false}, // github login
+		{"github", 5, "yfma", "", false},              // username keys are per host
+		{"gitlab", 24, "yfma", "UID000024", true},     // ID key wins over a conflicting username key
+		{"gitlab", 24, "nobody", "UID000024", false},  // ID key alone
+		{"gitlab", 99, "yfm", "", false},              // never a prefix or fuzzy match
+		{"gitlab", 99, "Dana Lee", "", false},         // display names are not usernames
+		{"github", 99, "12", "", false},               // an all-digit login never reaches an ID key
+	}
+	for _, tc := range cases {
+		id, warn := c.AccountAuthorID(tc.host, tc.id, tc.username)
+		if id != tc.want || (warn != "") != tc.warn {
+			t.Errorf("%s:%d/%q: got %q warn %q, want %q warn %v", tc.host, tc.id, tc.username, id, warn, tc.want, tc.warn)
+		}
+	}
+	_, warn := c.AccountAuthorID("gitlab", 24, "yfma")
+	if !strings.Contains(warn, `"gitlab:24"`) || !strings.Contains(warn, `"gitlab:yfma"`) {
+		t.Fatalf("warning must name both keys: %q", warn)
+	}
+	c.AuthorIDs["gitlab:yfma"] = "UID000024"
+	if _, warn := c.AccountAuthorID("gitlab", 24, "yfma"); warn != "" {
+		t.Fatalf("agreeing keys are no conflict: %q", warn)
 	}
 }

@@ -54,7 +54,7 @@ type Config struct {
 	ManagerSlackIDs []string `yaml:"manager_slack_ids"`
 	// AuthorIDs maps owners to Slack user IDs; it is the only way a fetched or imported Work
 	// Item gets an owner. Plain keys are report author names (migrate-v2 import only);
-	// "gitlab:<id>" / "github:<id>" keys are numeric code-hosting account IDs (fetch only).
+	// "gitlab:<id or username>" / "github:<id or login>" keys are code-hosting accounts (fetch only).
 	AuthorIDs         map[string]string `yaml:"author_ids"`
 	TeamMembers       []string          `yaml:"team_members"`
 	NudgeDay          string            `yaml:"nudge_day"`
@@ -348,7 +348,9 @@ func (c Config) IsManagerID(userID string) bool {
 
 var (
 	slackUserIDRe = regexp.MustCompile(`^[UW][A-Z0-9]{8,}$`)
-	accountKeyRe  = regexp.MustCompile(`^(gitlab|github):[0-9]+$`)
+	accountKeyRe  = regexp.MustCompile(`^(gitlab|github):[a-z0-9_.-]+$`)
+	digitsRe      = regexp.MustCompile(`^[0-9]+$`)
+	usernameRe    = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
 )
 
 func IsSlackUserID(s string) bool { return slackUserIDRe.MatchString(s) }
@@ -364,7 +366,7 @@ func normalizeAuthorIDs(in map[string]string) (map[string]string, error) {
 			return nil, fmt.Errorf("empty author name")
 		}
 		if isAccountKey(key) && !accountKeyRe.MatchString(key) {
-			return nil, fmt.Errorf("%q: account keys are gitlab:<numeric id> or github:<numeric id>", name)
+			return nil, fmt.Errorf("%q: account keys are gitlab:<numeric id or username> or github:<numeric id or login>; usernames use only letters, digits, '_', '-' and '.'", name)
 		}
 		if !IsSlackUserID(id) {
 			return nil, fmt.Errorf("%q maps to %q, which is not a Slack user ID", name, id)
@@ -391,13 +393,29 @@ func (c Config) AuthorID(name string) string {
 	return c.AuthorIDs[key]
 }
 
-// AccountAuthorID returns the Slack user ID configured for a code-hosting account
-// ("gitlab" or "github") by its immutable numeric ID, or "".
-func (c Config) AccountAuthorID(host string, accountID int64) string {
-	if accountID <= 0 {
-		return ""
+// IsAccountUsername reports whether s can be an author_ids username key; all digits is a numeric ID.
+func IsAccountUsername(s string) bool { return usernameRe.MatchString(s) && !digitsRe.MatchString(s) }
+
+// AccountAuthorID returns the Slack user ID for a code-hosting account ("gitlab" or "github"):
+// its numeric-ID key wins, else its username key (exact, case-insensitive); "" if neither.
+// warn is set when both keys match but map to different Slack user IDs.
+func (c Config) AccountAuthorID(host string, accountID int64, username string) (slackID, warn string) {
+	var idKey, byID, userKey, byUser string
+	if accountID > 0 {
+		idKey = fmt.Sprintf("%s:%d", host, accountID)
+		byID = c.AuthorIDs[idKey]
 	}
-	return c.AuthorIDs[fmt.Sprintf("%s:%d", host, accountID)]
+	if username = strings.TrimSpace(username); IsAccountUsername(username) {
+		userKey = host + ":" + strings.ToLower(username)
+		byUser = c.AuthorIDs[userKey]
+	}
+	if byID == "" {
+		return byUser, ""
+	}
+	if byUser != "" && byUser != byID {
+		warn = fmt.Sprintf("author_ids %q and %q map to different Slack users; using %q", idKey, userKey, idKey)
+	}
+	return byID, warn
 }
 
 // LLMConfigured reports whether an LLM is set up for Structure Proposals.
