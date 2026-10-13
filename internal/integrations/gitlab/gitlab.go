@@ -33,25 +33,26 @@ type gitlabMRResponse struct {
 
 var markdownHeadingRe = regexp.MustCompile(`^\s*#{1,6}\s+\S`)
 
-func FetchMRs(cfg Config, from, to time.Time) ([]GitLabMR, error) {
-	since := from.Format("2006-01-02T15:04:05Z")
-	groupID := url.PathEscape(cfg.GitLabGroupID)
-	ticketFieldLabel := strings.TrimSpace(cfg.GitLabRefTicketLabel)
+func FetchMRs(src Source, from, to time.Time) ([]GitLabMR, error) {
+	// UTC: a literal Z here would mislabel local wall-clock time and shift the window.
+	since := from.UTC().Format(time.RFC3339)
+	groupID := url.PathEscape(src.GroupID)
+	ticketFieldLabel := strings.TrimSpace(src.RefTicketLabel)
 
 	var allMRs []GitLabMR
 	page := 1
-	log.Printf("gitlab fetch start group=%s since=%s", cfg.GitLabGroupID, since)
+	log.Printf("gitlab fetch start source=%s group=%s since=%s", src.Name, src.GroupID, since)
 
 	for {
 		apiURL := fmt.Sprintf("%s/api/v4/groups/%s/merge_requests?state=all&updated_after=%s&per_page=100&page=%d",
-			strings.TrimRight(cfg.GitLabURL, "/"), groupID, since, page)
+			strings.TrimRight(src.URL, "/"), groupID, since, page)
 		log.Printf("gitlab fetch page=%d", page)
 
 		req, err := http.NewRequest("GET", apiURL, nil)
 		if err != nil {
 			return nil, fmt.Errorf("creating request: %w", err)
 		}
-		req.Header.Set("PRIVATE-TOKEN", cfg.GitLabToken)
+		req.Header.Set("PRIVATE-TOKEN", src.Token)
 
 		resp, err := externalHTTPClient.Do(req)
 		if err != nil {
@@ -132,10 +133,129 @@ func FetchMRs(cfg Config, from, to time.Time) ([]GitLabMR, error) {
 	return allMRs, nil
 }
 
-// ParseTicketIDs reads the ticket field (gitlab_ref_ticket_label) of a merge or pull
+// ParseTicketIDs reads the ticket field (ref_ticket_label of the source) of a merge
 // request description.
 func ParseTicketIDs(description, fieldLabel string) string {
 	return parseTicketIDsFromDescription(description, fieldLabel)
+}
+
+type gitlabCommitResponse struct {
+	ID            string `json:"id"`
+	Title         string `json:"title"`
+	Message       string `json:"message"`
+	AuthorName    string `json:"author_name"`
+	AuthorEmail   string `json:"author_email"`
+	AuthoredDate  string `json:"authored_date"`
+	CommittedDate string `json:"committed_date"`
+	WebURL        string `json:"web_url"`
+}
+
+// mergeCommitRe matches merge and revert commits, which are integration noise
+// rather than reportable work.
+var mergeCommitRe = regexp.MustCompile(`(?i)^(merge( branch| pull request| remote-tracking branch| .+ into .+)?|revert)\b`)
+
+// FetchBranchCommits lists a project branch's commits with committed_date inside
+// [from, to), skipping merge and revert commits. Pagination follows page numbers.
+func FetchBranchCommits(src Source, from, to time.Time) ([]GitLabCommit, error) {
+	// UTC: a literal Z here would mislabel local wall-clock time and shift the window.
+	since := from.UTC().Format(time.RFC3339)
+	project := url.PathEscape(src.Project)
+
+	var all []GitLabCommit
+	page := 1
+	log.Printf("gitlab fetch start source=%s project=%s branch=%s since=%s", src.Name, src.Project, src.Branch, since)
+
+	for {
+		apiURL := fmt.Sprintf("%s/api/v4/projects/%s/repository/commits?ref_name=%s&since=%s&per_page=100&page=%d",
+			strings.TrimRight(src.URL, "/"), project, url.QueryEscape(src.Branch), since, page)
+		log.Printf("gitlab fetch commits page=%d", page)
+
+		req, err := http.NewRequest("GET", apiURL, nil)
+		if err != nil {
+			return nil, fmt.Errorf("creating request: %w", err)
+		}
+		req.Header.Set("PRIVATE-TOKEN", src.Token)
+
+		resp, err := externalHTTPClient.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("fetching commits: %w", err)
+		}
+
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			return nil, fmt.Errorf("reading response: %w", err)
+		}
+		if resp.StatusCode != 200 {
+			return nil, fmt.Errorf("GitLab API returned %d: %s", resp.StatusCode, string(body))
+		}
+
+		var commits []gitlabCommitResponse
+		if err := json.Unmarshal(body, &commits); err != nil {
+			return nil, fmt.Errorf("parsing response: %w", err)
+		}
+
+		for _, cm := range commits {
+			committed := parseRFC3339(cm.CommittedDate)
+			if committed.IsZero() {
+				committed = parseRFC3339(cm.AuthoredDate)
+			}
+			if committed.IsZero() {
+				log.Printf("gitlab fetch: skipping commit %s with unparseable dates %q / %q", cm.ID, cm.CommittedDate, cm.AuthoredDate)
+				continue
+			}
+			if committed.Before(from) || !committed.Before(to) {
+				continue
+			}
+			if mergeCommitRe.MatchString(strings.TrimSpace(cm.Title)) {
+				continue
+			}
+			all = append(all, GitLabCommit{
+				SHA:         cm.ID,
+				Title:       cm.Title,
+				Message:     cm.Message,
+				AuthorName:  cm.AuthorName,
+				AuthorEmail: cm.AuthorEmail,
+				CommittedAt: committed,
+				WebURL:      cm.WebURL,
+			})
+		}
+
+		if len(commits) < 100 {
+			break
+		}
+		page++
+	}
+
+	log.Printf("gitlab fetch commits done total=%d", len(all))
+	return all, nil
+}
+
+// ParseCommitTicketIDs reads ticket IDs from a commit title or message, in the
+// "<label>[- ]<digits>" forms (e.g. "Mantis 0987654: fix" or "Mantis-0987654").
+func ParseCommitTicketIDs(text, fieldLabel string) string {
+	fieldLabel = strings.TrimSpace(fieldLabel)
+	if fieldLabel == "" || strings.TrimSpace(text) == "" {
+		return ""
+	}
+	re := regexp.MustCompile(`(?i)\b` + regexp.QuoteMeta(fieldLabel) + `\s*[-: ]\s*#?(\d+)\b`)
+	var ids []string
+	seen := map[string]bool{}
+	for _, m := range re.FindAllStringSubmatch(text, -1) {
+		if id := m[1]; !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
+	}
+	return strings.Join(ids, ",")
+}
+
+func parseRFC3339(s string) time.Time {
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return time.Time{}
+	}
+	return t
 }
 
 func parseTicketIDsFromDescription(description, fieldLabel string) string {

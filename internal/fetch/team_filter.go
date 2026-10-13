@@ -8,7 +8,7 @@ import (
 )
 
 // teamFilter is an import filter only: it decides which Code Changes are imported,
-// never who owns them (ownership binds solely via author_ids by numeric account ID).
+// never who owns them (ownership binds solely via author_ids account keys).
 type teamFilter struct {
 	cfg       Config
 	names     []string        // name entries, plus Slack profile names of the ID entries
@@ -43,12 +43,14 @@ func newTeamFilter(cfg Config, hooks Hooks) *teamFilter {
 }
 
 // includes reports whether a Code Change author is a team member: by a name entry or a
-// Slack profile name of an ID entry (name or username), or by author_ids mapping to an ID entry.
-func (f *teamFilter) includes(host string, accountID int64, name, username string) bool {
+// Slack profile name of an ID entry (name or username), or by an author_ids account key
+// (numeric ID or username) mapping to an ID entry. server is the gitlab_sources name
+// for GitLab, "" for GitHub.
+func (f *teamFilter) includes(host, server string, accountID int64, name, username string) bool {
 	if len(f.cfg.TeamMembers) == 0 {
 		return true
 	}
-	if f.ids[f.cfg.AccountAuthorID(host, accountID)] {
+	if id, _ := f.cfg.AccountAuthorID(host, server, accountID, username); f.ids[id] {
 		return true
 	}
 	return anyNameMatches(f.names, name) || anyNameMatches(f.names, username)

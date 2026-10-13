@@ -358,20 +358,20 @@ func handleFetchMRs(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashCo
 	}
 
 	if !cfg.GitLabConfigured() && !cfg.GitHubConfigured() {
-		postEphemeral(api, cmd, "Neither GitLab nor GitHub is configured. Set gitlab_* or github_* config fields.")
+		postEphemeral(api, cmd, "Neither GitLab nor GitHub is configured. Set gitlab_sources or github_* config fields.")
 		return
 	}
 
 	monday, nextMonday := ReportWeekRange(cfg, time.Now().In(cfg.Location))
 
 	var sources []string
-	if cfg.GitLabConfigured() {
-		sources = append(sources, "GitLab")
+	for _, src := range cfg.GitLabSources {
+		sources = append(sources, "gitlab@"+src.Label())
 	}
 	if cfg.GitHubConfigured() {
 		sources = append(sources, "GitHub")
 	}
-	postEphemeral(api, cmd, fmt.Sprintf("Fetching MRs/PRs from %s for %s to %s...",
+	postEphemeral(api, cmd, fmt.Sprintf("Fetching MRs/PRs/commits from %s for %s to %s...",
 		strings.Join(sources, " + "),
 		monday.Format("Jan 2"), nextMonday.AddDate(0, 0, -1).Format("Jan 2")))
 

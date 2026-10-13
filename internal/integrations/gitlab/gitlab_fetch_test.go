@@ -104,12 +104,8 @@ func TestFetchMRsFiltersByStateAndWeekRange(t *testing.T) {
 	}))
 	defer server.Close()
 
-	cfg := Config{
-		GitLabURL:     server.URL,
-		GitLabToken:   "glpat-test",
-		GitLabGroupID: "my-group",
-	}
-	mrs, err := FetchMRs(cfg, from, to)
+	src := Source{Name: "test", URL: server.URL, Token: "glpat-test", GroupID: "my-group"}
+	mrs, err := FetchMRs(src, from, to)
 	if err != nil {
 		t.Fatalf("FetchMRs failed: %v", err)
 	}
@@ -186,12 +182,8 @@ func TestFetchMRsPagination(t *testing.T) {
 	}))
 	defer server.Close()
 
-	cfg := Config{
-		GitLabURL:     server.URL,
-		GitLabToken:   "glpat-test",
-		GitLabGroupID: "my-group",
-	}
-	mrs, err := FetchMRs(cfg, from, to)
+	src := Source{Name: "test", URL: server.URL, Token: "glpat-test", GroupID: "my-group"}
+	mrs, err := FetchMRs(src, from, to)
 	if err != nil {
 		t.Fatalf("FetchMRs failed: %v", err)
 	}
@@ -254,13 +246,8 @@ Improve beacon pipeline cache key stability
 	}))
 	defer server.Close()
 
-	cfg := Config{
-		GitLabURL:            server.URL,
-		GitLabToken:          "glpat-test",
-		GitLabGroupID:        "my-group",
-		GitLabRefTicketLabel: "Tracker",
-	}
-	mrs, err := FetchMRs(cfg, from, to)
+	src := Source{Name: "test", URL: server.URL, Token: "glpat-test", GroupID: "my-group", RefTicketLabel: "Tracker"}
+	mrs, err := FetchMRs(src, from, to)
 	if err != nil {
 		t.Fatalf("FetchMRs failed: %v", err)
 	}

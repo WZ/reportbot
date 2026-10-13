@@ -5,6 +5,8 @@ import (
 	"sort"
 	"strings"
 
+	"reportbot/internal/config"
+
 	"github.com/slack-go/slack"
 )
 
@@ -71,15 +73,27 @@ func SuggestAuthorIDs(cfg Config, authors []string, accounts []Account, getUser 
 	for _, name := range names {
 		line(&b, name, "", match(name))
 	}
-	b.WriteString("  # code-hosting accounts by numeric ID (used by fetch)\n")
+	b.WriteString("  # code-hosting accounts by username, numeric ID noted (used by fetch)\n")
 	seenAcct := map[string]bool{}
 	for _, a := range accounts {
-		key := fmt.Sprintf("%s:%d", a.Host, a.ID)
-		if a.ID <= 0 || seenAcct[key] {
+		// GitLab keys carry the source qualifier (gitlab@<server>:…); GitHub keys do not.
+		host := a.Host
+		if a.Host == "gitlab" && a.Server != "" {
+			host = a.Host + "@" + a.Server
+		}
+		// A username without a usable form falls back to its numeric ID key.
+		key, note := fmt.Sprintf("%s:%s", host, a.Username), fmt.Sprintf("  # id %d, %s", a.ID, a.Name)
+		if !config.IsAccountUsername(a.Username) {
+			if a.ID <= 0 {
+				continue
+			}
+			key, note = fmt.Sprintf("%s:%d", host, a.ID), "  # "+a.Name
+		}
+		if seenAcct[strings.ToLower(key)] {
 			continue
 		}
-		seenAcct[key] = true
-		line(&b, key, fmt.Sprintf("  # %s, %s", a.Username, a.Name), match(a.Name, a.Username))
+		seenAcct[strings.ToLower(key)] = true
+		line(&b, key, note, match(a.Name, a.Username))
 	}
 	return b.String(), nil
 }
@@ -87,6 +101,7 @@ func SuggestAuthorIDs(cfg Config, authors []string, accounts []Account, getUser 
 // Account is a code-hosting account seen on a recent MR/PR.
 type Account struct {
 	Host     string // "gitlab" | "github"
+	Server   string // gitlab_sources name for GitLab, "" for GitHub
 	ID       int64
 	Username string
 	Name     string

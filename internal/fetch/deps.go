@@ -13,14 +13,20 @@ import (
 type Config = config.Config
 type WorkItem = domain.WorkItem
 type GitLabMR = domain.GitLabMR
+type GitLabCommit = domain.GitLabCommit
+type GitLabSource = config.GitLabSource
 type GitHubPR = domain.GitHubPR
 
 func ReportWeekRange(cfg Config, now time.Time) (time.Time, time.Time) {
 	return domain.ReportWeekRange(cfg, now)
 }
 
-func FetchMRs(cfg Config, from, to time.Time) ([]GitLabMR, error) {
-	return gl.FetchMRs(cfg, from, to)
+func FetchMRs(src GitLabSource, from, to time.Time) ([]GitLabMR, error) {
+	return gl.FetchMRs(src, from, to)
+}
+
+func FetchBranchCommits(src GitLabSource, from, to time.Time) ([]GitLabCommit, error) {
+	return gl.FetchBranchCommits(src, from, to)
 }
 
 func FetchGitHubPRs(cfg Config, from, to time.Time) ([]GitHubPR, error) {

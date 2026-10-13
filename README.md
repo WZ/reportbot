@@ -2,7 +2,7 @@
 
 A Slack bot that collects a development team's work items and files each one into the team's weekly report **as it arrives**, then publishes that report.
 
-Developers report work via slash commands. The bot also pulls merged/open GitLab MRs and GitHub PRs (manually or on a cron schedule). Every Work Item is filed into the report's Taxonomy (Area → Category → Section, kept in the database) right away:
+Developers report work via slash commands. The bot also pulls merged/open GitLab MRs, GitLab branch commits and GitHub PRs (manually or on a cron schedule). Every Work Item is filed into the report's Taxonomy (Area → Category → Section, kept in the database) right away:
 
 1. A decision model (System One protocol) picks the Section in one request, and in the same request answers the narrow questions code cannot decide — Status, ticket ID, whether a report is an Update to an existing Work Item — with calibrated probabilities.
 2. Confident picks are filed silently; doubtful ones ask the reporter "Where does this go?" with the model's top three Sections.
@@ -16,7 +16,7 @@ The team sees the live Weekly Report in the web UI; managers publish it to Slack
 ### Commands
 
 - `/report` (or `/rpt`) — Report work items; each is filed on arrival and the reply shows where it went
-- `/fetch` — Pull merged and open GitLab MRs and/or GitHub PRs for the current calendar week
+- `/fetch` — Pull merged and open GitLab MRs, branch commits and/or GitHub PRs for the current calendar week
 - `/generate-report` (or `/gen`) — Publish this week's report (team `.md` or boss `.eml`) and upload it to Slack
 - `/list` — View your items on this week's report with inline edit/delete actions (`/list all` for the team view)
 - `/check` — Managers: list missing members with nudge buttons, and merged code changes waiting in testing with Done buttons
@@ -65,7 +65,7 @@ See [docs/agentic-features-overview.md](docs/agentic-features-overview.md) for a
    |---|---|
    | `/report` | Report a work item |
    | `/rpt` | Alias of `/report` |
-   | `/fetch` | Fetch merged and open GitLab MRs and/or GitHub PRs for this week |
+   | `/fetch` | Fetch merged and open GitLab MRs, branch commits and/or GitHub PRs for this week |
    | `/generate-report` | Publish the weekly report (`team`/`boss`) or post latest team report (`post`), optional `private` |
    | `/gen` | Alias of `/generate-report` |
    | `/list` | List your work items for this week (`/list all` for the team view) |
@@ -92,11 +92,30 @@ Create `config.yaml` and edit:
 slack_bot_token: "xoxb-..."
 slack_app_token: "xapp-..."
 
-# GitLab
-gitlab_url: "https://gitlab.example.com"
-gitlab_token: "glpat-..."
-gitlab_group_id: "my-team"
-gitlab_ref_ticket_label: "Jira"   # optional: parse ticket IDs from "Jira:" field in GitLab MR description; empty disables parsing
+# GitLab sources (YAML only). Each entry is one GitLab endpoint:
+#   - group sources (group_id) fetch all MRs in that group
+#   - branch sources (project + branch) fetch commits from that branch; each commit
+#     becomes a Work Item with Status "done", owned via the author_ids plain name key
+#   Merge/revert commits are skipped; one failing source does not abort the others.
+# Tokens may reference environment variables: token: "${MY_GITLAB_TOKEN}"
+# Exactly one source must have default: true (the source unqualified gitlab: author_ids
+# keys resolve against). Names are unique, lowercase letters/digits/_/-.
+gitlab_sources:
+  - name: dops
+    url: "https://gitlab.example.com"
+    token: "${DOPS_GITLAB_TOKEN}"
+    group_id: "my-team"
+    ref_ticket_label: "Jira"      # optional: parse ticket IDs from "Jira:" field in GitLab MR description; empty disables parsing
+    default: true
+  - name: corp
+    url: "https://gitlab.corp.example.com"
+    token: "${CORP_GITLAB_TOKEN}"
+    project: "my-group/my-project"
+    branch: "main"
+    ref_ticket_label: "Jira"      # optional: parse ticket IDs from "Jira <id>:" in commit messages; empty disables parsing
+
+# GitHub (optional)
+github_ref_ticket_label: "Jira"   # optional: parse ticket IDs from "Jira:" field in GitHub PR description; empty disables parsing
 
 # Decision model (System One protocol): files every Work Item
 decision_model_url: "https://api.compat.example"
@@ -122,11 +141,17 @@ team_members:
   - "Member Two"
 
 # Owners of fetched and imported items -> Slack user ID. Plain keys are report author names
-# (migrate-v2 import only); "gitlab:<numeric id>" / "github:<numeric id>" are code-hosting
-# accounts (fetch only). Unmapped items are manager-only. Draft with migrate-v2 --suggest-author-ids.
+# (migrate-v2 import and branch commits); "gitlab@<source name>:<numeric id or username>" are
+# GitLab accounts on that source, "gitlab:<...>" resolves against the default source only,
+# "github:<numeric id or login>" are GitHub accounts (fetch only). Usernames match exactly,
+# ignoring case, and must be updated here if renamed or reused; numeric IDs never change.
+# When an ID key and a username key both match and disagree, the ID key wins (logged).
+# Unmapped items are manager-only. Draft with migrate-v2 --suggest-author-ids.
 author_ids:
-  "Member One": "U02MEMBER1"
-  "gitlab:1234": "U02MEMBER1"
+  "Member One": "U02MEMBER1"          # plain name key (migrate-v2 import, branch commits)
+  "gitlab@dops:mone": "U02MEMBER1"    # GitLab username key on source "dops"
+  "gitlab:asmith": "U02MEMBER1"       # GitLab account on the default source
+  "github:1234": "U02MEMBER1"         # numeric account ID key
 
 # Automatic MR/PR fetching (cron expression, empty to disable)
 auto_fetch_schedule: "0 9 * * 1-5"  # weekdays at 9am
@@ -163,10 +188,11 @@ Set `CONFIG_PATH` env var to load from a different path (default: `./config.yaml
 ```bash
 export SLACK_BOT_TOKEN=xoxb-...
 export SLACK_APP_TOKEN=xapp-...
-export GITLAB_URL=https://gitlab.example.com
-export GITLAB_TOKEN=glpat-...
-export GITLAB_GROUP_ID=my-team
-export GITLAB_REF_TICKET_LABEL=Jira            # Optional: field label used for GitLab MR ticket parsing
+# GitLab sources are YAML-only (config.yaml gitlab_sources); use ${ENV_VAR} placeholders
+# for tokens, e.g. token: "${DOPS_GITLAB_TOKEN}", then export them here:
+export DOPS_GITLAB_TOKEN=glpat-...
+export CORP_GITLAB_TOKEN=glpat-...
+export GITHUB_REF_TICKET_LABEL=Jira            # Optional: field label used for GitHub PR ticket parsing
 export DECISION_MODEL_URL=https://api.compat.example
 export DECISION_MODEL_API_KEY=...
 export DECISION_MODEL_NAME=...
@@ -178,7 +204,7 @@ export OPENAI_API_KEY=
 export OPENAI_BASE_URL=https://api.openai.com/v1
 export LLM_REASONING_EFFORT=low                 # Optional (openai provider): low, medium or high
 export MANAGER_SLACK_IDS="U01ABC123,U02DEF456"  # Comma-separated Slack user IDs
-export AUTHOR_IDS='{"Member One": "U02MEMBER1", "gitlab:1234": "U02MEMBER1"}'  # JSON: report name or gitlab:/github:<numeric id> -> Slack user ID
+export AUTHOR_IDS='{"Member One": "U02MEMBER1", "gitlab@dops:mone": "U02MEMBER1", "gitlab:asmith": "U02MEMBER1", "github:1234": "U02MEMBER1"}'  # JSON: report name or gitlab@<source>:/gitlab:/github:<numeric id or username> -> Slack user ID
 export REPORT_CHANNEL_ID=C01234567
 export EXTERNAL_HTTP_TIMEOUT_SECONDS=90          # Optional: timeout for external API HTTP calls
 export TLS_SKIP_VERIFY=true                      # Optional: skip TLS cert verification
@@ -231,9 +257,9 @@ Run once against the existing database, with the latest published team report:
 ./reportbot migrate-v2 --report reports/TEAM_20260925.md --drop-v1   # back up the DB, then drop V1 tables/columns
 ```
 
-Imported lines get an owner only through `author_ids`. The run prints a binding report (author → Slack user ID, or "unmapped"); review it before `--drop-v1`. To draft `author_ids`, run `./reportbot migrate-v2 --report <latest.md> --suggest-author-ids`: it prints a YAML block, marked unverified, of exact name matches among `manager_slack_ids` and the Slack user IDs in `team_members`: report author names, plus `gitlab:<id>` / `github:<id>` lines for the last four weeks' MR/PR authors (annotated with username and display name). Unmatched entries are commented out. It writes nothing, and prints no suggestions if any roster lookup fails.
+Imported lines get an owner only through `author_ids`. The run prints a binding report (author → Slack user ID, or "unmapped"); review it before `--drop-v1`. To draft `author_ids`, run `./reportbot migrate-v2 --report <latest.md> --suggest-author-ids`: it prints a YAML block, marked unverified, of exact name matches among `manager_slack_ids` and the Slack user IDs in `team_members`: report author names, plus `gitlab@<source>:<username>` / `github:<login>` lines for the last four weeks' MR authors (annotated with the numeric ID and display name, e.g. `"gitlab@dops:dlee": "U02MEMBER1"  # id 24, Dana Lee`; GitHub keys stay unqualified). Unmatched entries are commented out. It writes nothing, and prints no suggestions if any roster lookup fails.
 
-Each step is idempotent. It seeds the Taxonomy from the report's headings, imports its open authored lines as Work Items with a person Placement, promotes existing rows that match a published line (Placement from the latest report showing them; rows still open in V1 but missing from the latest report are closed as done before that report's week, keeping their V1 status text as the Status Note), queues rows reported after that report for filing, and records fetched MRs/PRs as Code Changes (merged when the row was done, otherwise open). `--dry-run` runs all of this on a temporary copy and prints the counts: Sections, open lines, rows promoted and unmatched, old open rows closed as done, Statuses mapped, Code Changes, rows queued for filing, and the binding report. Until it has run, the web report shows only a "run the cut-over import" banner. `--drop-v1` refuses to run until those steps are done, and only after writing `<db>.<timestamp>.backup`.
+Each step is idempotent. It seeds the Taxonomy from the report's headings, imports its open authored lines as Work Items with a person Placement, promotes existing rows that match a published line (Placement from the latest report showing them; rows still open in V1 but missing from the latest report are closed as done before that report's week, keeping their V1 status text as the Status Note), queues rows reported after that report for filing, and records fetched MRs/PRs/commits as Code Changes (merged when the row was done, otherwise open). `--dry-run` runs all of this on a temporary copy and prints the counts: Sections, open lines, rows promoted and unmatched, old open rows closed as done, Statuses mapped, Code Changes, rows queued for filing, and the binding report. Until it has run, the web report shows only a "run the cut-over import" banner. `--drop-v1` refuses to run until those steps are done, and only after writing `<db>.<timestamp>.backup`.
 
 ### 3. Build & Run
 
@@ -267,9 +293,8 @@ docker run -d --name reportbot \
 docker run -d --name reportbot \
   -e SLACK_BOT_TOKEN=xoxb-... \
   -e SLACK_APP_TOKEN=xapp-... \
-  -e GITLAB_URL=https://gitlab.example.com \
-  -e GITLAB_TOKEN=glpat-... \
-  -e GITLAB_GROUP_ID=my-team \
+  -e DOPS_GITLAB_TOKEN=glpat-... \
+  -e CORP_GITLAB_TOKEN=glpat-... \
   -e LLM_PROVIDER=anthropic \
   -e ANTHROPIC_API_KEY=sk-ant-... \
   -e MANAGER="Member One,Member Two" \
@@ -293,7 +318,8 @@ IP addresses on internal networks):
 # 1. Set environment variables
 export SLACK_BOT_TOKEN=xoxb-...
 export SLACK_APP_TOKEN=xapp-...
-export GITLAB_TOKEN=glpat-...
+export DOPS_GITLAB_TOKEN=glpat-...
+export CORP_GITLAB_TOKEN=glpat-...
 export OPENAI_API_KEY=sk-...
 export WEB_HOST=https://192.168.1.100          # your server IP or domain
 export WEB_CLIENT_SECRET=your-slack-secret     # from Slack app Basic Information
@@ -342,17 +368,17 @@ Status is taken from the trailing parenthetical when it is one of `in progress`,
 
 Once the Work Item is saved, the reply says "Saved — filing it…" (or shows the error), then shows where it was filed (Section, the report line, Status, tickets) or asks "Where does this go?".
 
-### Fetching MRs/PRs
+### Fetching MRs/PRs/commits
 
-Manager only. Pulls all merged and open GitLab MRs and/or GitHub PRs for the current calendar week (Monday–Sunday):
+Manager only. Pulls merged and open GitLab MRs, GitLab branch commits and/or GitHub PRs for the current calendar week (Monday–Sunday), from every configured `gitlab_sources` entry (in config order, one failing source does not abort the others) plus GitHub:
 
 ```
 /fetch
 ```
 
-Already-tracked MRs/PRs are updated, not duplicated; a merge moves a linked `in progress` Work Item to `in testing`. Closed-unmerged ones are skipped. Non-team authors are filtered out. An author is on the team if a name entry in `team_members` matches their name or username, or, for a Slack user ID entry, if `author_ids` maps their `gitlab:<id>` / `github:<id>` account to that ID or that user's Slack real or display name matches (looked up via `users.info`, cached for an hour; on a lookup failure the filter uses name entries and `author_ids` only and logs a warning). This filter only decides what is imported; owners still come only from `author_ids`.
+Already-tracked MRs/PRs/commits are updated, not duplicated; a merge moves a linked `in progress` Work Item to `in testing`. Closed-unmerged ones are skipped. Branch commits become Work Items with Status `done`, owned via the `author_ids` plain name key (commit author name — a self-reported value, unlike the account ID an MR/PR carries; binding it is an accepted trust decision), with tickets parsed from `<ref_ticket_label>: <id>` in the message; merge/revert commits are skipped. Non-team authors are filtered out. An author is on the team if a name entry in `team_members` matches their name or username, or, for a Slack user ID entry, if `author_ids` maps their `gitlab@<source>:` / `gitlab:` / `github:` account key (numeric ID or username; unqualified `gitlab:` resolves against the default source) to that ID or that user's Slack real or display name matches (looked up via `users.info`, cached for an hour; on a lookup failure the filter uses name entries and `author_ids` only and logs a warning). This filter only decides what is imported; owners still come only from `author_ids`.
 
-**Automatic fetching**: Set `auto_fetch_schedule` to a cron expression and MRs/PRs will be imported on a schedule, with a summary posted to `report_channel_id`. Examples:
+**Automatic fetching**: Set `auto_fetch_schedule` to a cron expression and MRs/PRs/commits will be imported on a schedule, with a per-source summary posted to `report_channel_id`. Examples:
 
 ```yaml
 auto_fetch_schedule: "0 9 * * *"     # daily at 9am
@@ -410,7 +436,7 @@ Managers and members can use `/list all` to see the full team list:
 ```
 
 `/list` now includes inline actions:
-- Members can edit/delete only their own items, matched by Slack user ID (never by name). Fetched and imported items get an owner only through `author_ids` (code changes by numeric GitLab/GitHub account ID); items without one are manager-only.
+- Members can edit/delete only their own items, matched by Slack user ID (never by name). Fetched and imported items get an owner only through `author_ids` (code changes by GitLab/GitHub numeric account ID or username, `gitlab@<source>` qualified for multi-server setups; branch commits by plain name key; never a display name); items without one are manager-only.
 - Managers can edit/delete all items.
 - Delete uses a confirmation modal.
 - Edit opens a modal with the description, Status, Status Note and Section. Choosing a Section is a person Placement; changing only the text files the item again.
@@ -457,7 +483,7 @@ reportbot/
   internal/httpx/           Shared external HTTP client/timeout config
   internal/integrations/slack/   Socket Mode bot, slash commands, member resolution helpers
   internal/integrations/github/  GitHub Search API client for merged/open PRs
-  internal/integrations/gitlab/  GitLab API client for merged/open MRs
+  internal/integrations/gitlab/  GitLab API client for merged/open MRs and branch commits
   internal/integrations/llm/     LLM prompts and parsing for Structure Proposals
   internal/integrations/decision/ Decision-model client (System One protocol) with retries
   internal/filing/          Filing on arrival: decision-model request, job queue, sweep, 24 h fallback, re-classification
