@@ -73,7 +73,7 @@ func TestDelegatedReportBindsOnlyViaAuthorIDs(t *testing.T) {
 	if got["Dev A"] != "" || got["Dev B"] != "UDEVB0001" {
 		t.Fatalf("unexpected bindings: %v", got)
 	}
-	if hooks := FetchHooks(cfg); hooks.ResolveAccount("gitlab", 1) != "" {
+	if hooks := FetchHooks(api, cfg); hooks.ResolveAccount("gitlab", 1) != "" {
 		t.Fatal("fetch binds only gitlab:/github: account keys")
 	}
 }

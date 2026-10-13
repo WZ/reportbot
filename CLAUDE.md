@@ -41,7 +41,7 @@ Configuration is layered: `config.yaml` is loaded first, then environment variab
 - **LLM (optional, Structure Proposals only)**: `llm_provider` ("anthropic" or "openai"; empty = no LLM), `llm_model`, `anthropic_api_key` or `openai_api_key`, `openai_base_url`, `llm_reasoning_effort` (low/medium/high for OpenAI-compatible reasoning models; empty sends none)
 - **Decision model**: `decision_model_url` (requests go to `{url}/v1/systemone`), `decision_model_api_key`, `decision_model_name`, `decision_model_confidence` (Section Choice confidence needed to file without asking; default 0.85), `similar_item_count` (similar past Work Items it sees; default 30); env `DECISION_MODEL_URL`, `DECISION_MODEL_API_KEY`, `DECISION_MODEL_NAME`, `DECISION_MODEL_CONFIDENCE`, `SIMILAR_ITEM_COUNT`
 - **Permissions**: `manager_slack_ids` (list of Slack user IDs) — controls access to `/fetch`, `/generate-report`, `/check`, `/retrospect`, `/stats`
-- **Nudge**: `team_members` (list of Slack full names or user IDs; used by `/check` and scheduled nudge), `nudge_day` (Monday-Sunday), `nudge_time` (HH:MM 24h format)
+- **Nudge**: `team_members` (list of Slack full names or user IDs; used by `/check`, scheduled nudge and the fetch team filter, which matches ID entries via `author_ids` account keys and the users' Slack profile names), `nudge_day` (Monday-Sunday), `nudge_time` (HH:MM 24h format)
 - **Author binding**: `author_ids` (env `AUTHOR_IDS` as JSON; values must be Slack user IDs) is the only way fetched or imported Work Items get an owner (`author_id` grants edit rights and receives DMs). Plain keys are report author names, used only by the `migrate-v2` import (exact after trim + case-fold); `gitlab:<numeric id>` / `github:<numeric id>` keys are code-hosting accounts, used only by fetch, which binds by the immutable account ID and never by display name or username. Delegated `/report {Name}` uses the plain keys. Unmapped items are manager-only. `migrate-v2 --suggest-author-ids` prints an unverified suggestion from roster names (fails closed); `/report` items use the command's own user ID
 - **Auto-fetch**: `auto_fetch_schedule` (5-field cron expression, e.g. `"0 9 * * 1-5"` for weekdays at 9am; empty to disable)
 - **Network**: `tls_skip_verify` (bool, skip TLS cert verification for internal/corporate CAs; default false)
@@ -148,6 +148,7 @@ Test files (unit tests never make live model calls; the gateway and the LLM are 
 - **internal/cutover/cutover_test.go** — markdown parser on synthetic reports, import/promotion idempotency, backup-before-drop
 - **internal/integrations/slack/filing_flow_test.go** — `/report` save-then-queue, replies via `response_url`, placement/Update/Undo/Done buttons, edit modal, publish warning
 - **internal/fetch/auto_fetch_test.go** — Code Change linking, merge → in testing, closed skipped
+- **internal/fetch/team_filter_test.go** — team filter: name entries, Slack-ID entries via `author_ids` and profile names, lookup-failure fallback and warning
 - **internal/publish/publish_test.go**, **internal/report/report_builder_test.go** — Published Report snapshot, view building and rendering
 - **internal/web/handlers/*_test.go** — live report, permissions, edit/move, Taxonomy editor, publish
 

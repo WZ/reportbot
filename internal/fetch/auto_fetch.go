@@ -33,7 +33,9 @@ type Hooks struct {
 	// ResolveAccount returns the Slack user ID configured for a code-hosting account
 	// ("gitlab" or "github", numeric account ID), "" if none. Names never bind an owner.
 	ResolveAccount func(host string, accountID int64) string
-	Wake           func() // start filing new Work Items now
+	// TeamNames returns the Slack profile names of the given Slack user IDs, for the team filter only.
+	TeamNames func(slackIDs []string) ([]string, error)
+	Wake      func() // start filing new Work Items now
 }
 
 // FetchAndImportMRs fetches GitLab MRs and/or GitHub PRs for the current report
@@ -49,6 +51,7 @@ func FetchAndImportMRs(cfg Config, db *sql.DB, hooks Hooks) (FetchResult, error)
 
 	var result FetchResult
 	var changes []fetched
+	team := newTeamFilter(cfg, hooks)
 
 	if cfg.GitLabConfigured() {
 		mrs, err := FetchMRs(cfg, monday, nextMonday)
@@ -59,8 +62,8 @@ func FetchAndImportMRs(cfg Config, db *sql.DB, hooks Hooks) (FetchResult, error)
 			log.Printf("auto-fetch gitlab fetched=%d", len(mrs))
 			result.TotalFetched += len(mrs)
 			for _, mr := range mrs {
-				// A filter only: it decides what is imported, never who owns it.
-				if len(cfg.TeamMembers) > 0 && !anyNameMatches(cfg.TeamMembers, mr.AuthorName) && !anyNameMatches(cfg.TeamMembers, mr.Author) {
+				// Import filter only: it decides what is imported, never who owns it.
+				if !team.includes("gitlab", mr.AuthorID, mr.AuthorName, mr.Author) {
 					log.Printf("auto-fetch skipped non-team gitlab author=%s username=%s", mr.AuthorName, mr.Author)
 					result.SkippedNonTeam++
 					continue
@@ -81,8 +84,8 @@ func FetchAndImportMRs(cfg Config, db *sql.DB, hooks Hooks) (FetchResult, error)
 			log.Printf("auto-fetch github fetched=%d", len(prs))
 			result.TotalFetched += len(prs)
 			for _, pr := range prs {
-				// A filter only: it decides what is imported, never who owns it.
-				if len(cfg.TeamMembers) > 0 && !anyNameMatches(cfg.TeamMembers, pr.AuthorName) && !anyNameMatches(cfg.TeamMembers, pr.Author) {
+				// Import filter only: it decides what is imported, never who owns it.
+				if !team.includes("github", pr.AuthorID, pr.AuthorName, pr.Author) {
 					log.Printf("auto-fetch skipped non-team github author=%s", pr.Author)
 					result.SkippedNonTeam++
 					continue
@@ -93,6 +96,8 @@ func FetchAndImportMRs(cfg Config, db *sql.DB, hooks Hooks) (FetchResult, error)
 			}
 		}
 	}
+
+	team.warnSkipped(result.SkippedNonTeam)
 
 	if len(result.Errors) > 0 && len(changes) == 0 && result.TotalFetched == 0 {
 		return result, fmt.Errorf("all fetches failed: %s", strings.Join(result.Errors, "; "))

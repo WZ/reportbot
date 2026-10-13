@@ -86,7 +86,7 @@ func Main() {
 	}
 
 	nudge.StartNudgeScheduler(cfg, db, api)
-	fetch.StartAutoFetchScheduler(cfg, db, api, fetch.Hooks{ResolveAccount: cfg.AccountAuthorID, Wake: queue.Wake})
+	fetch.StartAutoFetchScheduler(cfg, db, api, fetch.Hooks{ResolveAccount: cfg.AccountAuthorID, TeamNames: slackbot.TeamProfileNames(api.GetUserInfo), Wake: queue.Wake})
 
 	// Start web UI if enabled — verify bind before proceeding
 	var webSrv *http.Server

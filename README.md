@@ -116,7 +116,7 @@ openai_base_url: "https://api.openai.com/v1"  # optional: OpenAI-compatible base
 manager_slack_ids:
   - "U01ABC123"
 
-# Team members (Slack full names or user IDs) - used by /check and scheduled nudge
+# Team members (Slack full names or user IDs) - used by /check, scheduled nudge and the /fetch team filter
 team_members:
   - "Member One"
   - "Member Two"
@@ -350,7 +350,7 @@ Manager only. Pulls all merged and open GitLab MRs and/or GitHub PRs for the cur
 /fetch
 ```
 
-Already-tracked MRs/PRs are updated, not duplicated; a merge moves a linked `in progress` Work Item to `in testing`. Closed-unmerged ones are skipped. Non-team authors (not in `team_members`) are filtered out.
+Already-tracked MRs/PRs are updated, not duplicated; a merge moves a linked `in progress` Work Item to `in testing`. Closed-unmerged ones are skipped. Non-team authors are filtered out. An author is on the team if a name entry in `team_members` matches their name or username, or, for a Slack user ID entry, if `author_ids` maps their `gitlab:<id>` / `github:<id>` account to that ID or that user's Slack real or display name matches (looked up via `users.info`, cached for an hour; on a lookup failure the filter uses name entries and `author_ids` only and logs a warning). This filter only decides what is imported; owners still come only from `author_ids`.
 
 **Automatic fetching**: Set `auto_fetch_schedule` to a cron expression and MRs/PRs will be imported on a schedule, with a summary posted to `report_channel_id`. Examples:
 
