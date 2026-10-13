@@ -26,9 +26,10 @@ func NewNotifier(api *slack.Client, db *sql.DB, cfg Config) *Notifier {
 	return &Notifier{API: api, DB: db, Cfg: cfg}
 }
 
-// FetchHooks binds Code Change authors by numeric account ID through author_ids, and wakes filing.
-func FetchHooks(cfg Config) fetch.Hooks {
-	return fetch.Hooks{ResolveAccount: cfg.AccountAuthorID, Wake: func() { wakeFiling() }}
+// FetchHooks binds Code Change authors by numeric account ID through author_ids, gives the
+// team filter Slack profile names, and wakes filing.
+func FetchHooks(api *slack.Client, cfg Config) fetch.Hooks {
+	return fetch.Hooks{ResolveAccount: cfg.AccountAuthorID, TeamNames: TeamProfileNames(api.GetUserInfo), Wake: func() { wakeFiling() }}
 }
 
 func liveReportLink(cfg Config) string {

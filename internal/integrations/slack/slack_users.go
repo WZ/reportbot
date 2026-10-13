@@ -1,6 +1,8 @@
 package slackbot
 
 import (
+	"errors"
+	"fmt"
 	"log"
 	"regexp"
 	"strings"
@@ -33,6 +35,49 @@ func getCachedUsers(api *slack.Client) ([]slack.User, error) {
 	userCache.users = users
 	userCache.fetchedAt = time.Now()
 	return users, nil
+}
+
+const teamNamesTTL = time.Hour
+
+var teamNamesCache struct {
+	sync.Mutex
+	byID map[string]teamNamesEntry
+}
+
+type teamNamesEntry struct {
+	names []string
+	at    time.Time
+}
+
+// TeamProfileNames looks up Slack users' real and display names (users.info), cached per ID
+// for teamNamesTTL. It returns the names it resolved and an error naming any failed IDs.
+func TeamProfileNames(getUser func(id string) (*slack.User, error)) func(ids []string) ([]string, error) {
+	return func(ids []string) ([]string, error) {
+		var names []string
+		var errs []error
+		for _, id := range ids {
+			teamNamesCache.Lock()
+			e, ok := teamNamesCache.byID[id]
+			teamNamesCache.Unlock()
+			if !ok || time.Since(e.at) >= teamNamesTTL {
+				u, err := getUser(id)
+				if err != nil {
+					errs = append(errs, fmt.Errorf("users.info %s: %w", id, err))
+					continue
+				}
+				e = teamNamesEntry{names: uniqueStrings([]string{
+					strings.TrimSpace(u.RealName), strings.TrimSpace(u.Profile.RealName), strings.TrimSpace(u.Profile.DisplayName)}), at: time.Now()}
+				teamNamesCache.Lock()
+				if teamNamesCache.byID == nil {
+					teamNamesCache.byID = map[string]teamNamesEntry{}
+				}
+				teamNamesCache.byID[id] = e
+				teamNamesCache.Unlock()
+			}
+			names = append(names, e.names...)
+		}
+		return names, errors.Join(errs...)
+	}
 }
 
 func resolveUserIDs(api *slack.Client, identifiers []string) ([]string, []string, error) {

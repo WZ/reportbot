@@ -375,7 +375,7 @@ func handleFetchMRs(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashCo
 		strings.Join(sources, " + "),
 		monday.Format("Jan 2"), nextMonday.AddDate(0, 0, -1).Format("Jan 2")))
 
-	result, err := FetchAndImportMRs(cfg, db, FetchHooks(cfg))
+	result, err := FetchAndImportMRs(cfg, db, FetchHooks(api, cfg))
 	if err != nil {
 		postEphemeral(api, cmd, fmt.Sprintf("Error: %v", err))
 		log.Printf("fetch error: %v", err)
