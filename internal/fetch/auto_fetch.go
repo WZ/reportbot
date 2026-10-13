@@ -306,7 +306,7 @@ func moveToTesting(db *sql.DB, itemID int64, result *FetchResult) error {
 func FormatFetchSummary(result FetchResult) string {
 	breakdown := sourceBreakdown(result)
 	if len(result.Errors) > 0 && result.TotalFetched == 0 {
-		return fmt.Sprintf("Error fetching MRs/PRs:\n%s", strings.Join(result.Errors, "\n"))
+		return fmt.Sprintf("Error fetching MRs/PRs/commits:\n%s", strings.Join(result.Errors, "\n"))
 	}
 
 	if result.Inserted == 0 && result.Linked == 0 && result.MovedToTesting == 0 {

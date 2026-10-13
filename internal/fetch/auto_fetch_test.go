@@ -26,7 +26,7 @@ func TestFormatFetchSummary_AllFailed(t *testing.T) {
 		Errors:       []string{"GitLab: connection refused"},
 	}
 	got := FormatFetchSummary(result)
-	want := "Error fetching MRs/PRs:\nGitLab: connection refused"
+	want := "Error fetching MRs/PRs/commits:\nGitLab: connection refused"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
