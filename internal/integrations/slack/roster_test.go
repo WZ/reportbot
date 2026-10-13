@@ -36,14 +36,16 @@ func TestSuggestAuthorIDs(t *testing.T) {
 	}
 	cfg := Config{ManagerSlackIDs: []string{"UROSTER001"}, TeamMembers: []string{"UROSTER002", "UROSTER003", "Some Name"}}
 	accounts := []Account{{Host: "gitlab", ID: 42, Username: "dlee", Name: "Dana Lee"}, {Host: "github", ID: 9, Username: "tkim", Name: "tkim"},
-		{Host: "gitlab", ID: 42, Username: "dlee", Name: "Dana Lee"}, {Host: "gitlab", ID: 51, Username: "", Name: "Sam Park"}}
+		{Host: "gitlab", ID: 42, Username: "dlee", Name: "Dana Lee"}, {Host: "gitlab", ID: 51, Username: "", Name: "Sam Park"},
+		{Host: "gitlab", Server: "corp", ID: 42, Username: "dlee", Name: "Dana Lee"}}
 	out, err := SuggestAuthorIDs(cfg, []string{"Dana Lee", "Sam", "Taylor", "dana lee"}, accounts, lookup(workspace))
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{"unverified", `"Dana Lee": "UROSTER001"`, `# "Sam": several roster members`, `# "Taylor": no roster member`,
 		`"gitlab:dlee": "UROSTER001"  # id 42, Dana Lee`, `# "github:tkim": no roster member has this exact name  # id 9, tkim`,
-		`"gitlab:51": "UROSTER002"  # Sam Park`} {
+		`"gitlab:51": "UROSTER002"  # Sam Park`,
+		`"gitlab@corp:dlee": "UROSTER001"  # id 42, Dana Lee`} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in:\n%s", want, out)
 		}
@@ -78,7 +80,7 @@ func TestDelegatedReportBindsOnlyViaAuthorIDs(t *testing.T) {
 	if got["Dev A"] != "" || got["Dev B"] != "UDEVB0001" {
 		t.Fatalf("unexpected bindings: %v", got)
 	}
-	if id, _ := FetchHooks(api, cfg).ResolveAccount("gitlab", 1, "dev b"); id != "" {
+	if id, _ := FetchHooks(api, cfg).ResolveAccount("gitlab", "", 1, "dev b"); id != "" {
 		t.Fatal("fetch binds only gitlab:/github: account keys")
 	}
 }

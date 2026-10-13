@@ -76,13 +76,18 @@ func SuggestAuthorIDs(cfg Config, authors []string, accounts []Account, getUser 
 	b.WriteString("  # code-hosting accounts by username, numeric ID noted (used by fetch)\n")
 	seenAcct := map[string]bool{}
 	for _, a := range accounts {
+		// GitLab keys carry the source qualifier (gitlab@<server>:…); GitHub keys do not.
+		host := a.Host
+		if a.Host == "gitlab" && a.Server != "" {
+			host = a.Host + "@" + a.Server
+		}
 		// A username without a usable form falls back to its numeric ID key.
-		key, note := fmt.Sprintf("%s:%s", a.Host, a.Username), fmt.Sprintf("  # id %d, %s", a.ID, a.Name)
+		key, note := fmt.Sprintf("%s:%s", host, a.Username), fmt.Sprintf("  # id %d, %s", a.ID, a.Name)
 		if !config.IsAccountUsername(a.Username) {
 			if a.ID <= 0 {
 				continue
 			}
-			key, note = fmt.Sprintf("%s:%d", a.Host, a.ID), "  # "+a.Name
+			key, note = fmt.Sprintf("%s:%d", host, a.ID), "  # "+a.Name
 		}
 		if seenAcct[strings.ToLower(key)] {
 			continue
@@ -96,6 +101,7 @@ func SuggestAuthorIDs(cfg Config, authors []string, accounts []Account, getUser 
 // Account is a code-hosting account seen on a recent MR/PR.
 type Account struct {
 	Host     string // "gitlab" | "github"
+	Server   string // gitlab_sources name for GitLab, "" for GitHub
 	ID       int64
 	Username string
 	Name     string

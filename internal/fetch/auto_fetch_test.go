@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -13,6 +14,11 @@ import (
 	"reportbot/internal/domain"
 	"reportbot/internal/storage/sqlite"
 )
+
+// defaultSource makes unqualified gitlab: author_ids keys resolve, as in production.
+func defaultSource() []config.GitLabSource {
+	return []config.GitLabSource{{Name: "dops", Default: true}}
+}
 
 func TestFormatFetchSummary_AllFailed(t *testing.T) {
 	result := FetchResult{
@@ -33,7 +39,7 @@ func TestFormatFetchSummary_NoneToAdd(t *testing.T) {
 		SkippedNonTeam: 3,
 	}
 	got := FormatFetchSummary(result)
-	want := "Found 10 MRs/PRs (merged+open), none to add (7 already tracked, 3 non-team)."
+	want := "Found 10 MRs/PRs/commits, none to add (7 already tracked, 3 non-team)."
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
@@ -45,7 +51,7 @@ func TestFormatFetchSummary_NoneToAddOnlyTracked(t *testing.T) {
 		AlreadyTracked: 5,
 	}
 	got := FormatFetchSummary(result)
-	want := "Found 5 MRs/PRs (merged+open), none to add (5 already tracked)."
+	want := "Found 5 MRs/PRs/commits, none to add (5 already tracked)."
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
@@ -59,7 +65,7 @@ func TestFormatFetchSummary_SomeInserted(t *testing.T) {
 		SkippedNonTeam: 2,
 	}
 	got := FormatFetchSummary(result)
-	want := "Fetched 15 MRs/PRs (merged+open): 8 new, 5 already tracked, 2 non-team"
+	want := "Fetched 15 MRs/PRs/commits: 8 new, 5 already tracked, 2 non-team"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
@@ -72,7 +78,7 @@ func TestFormatFetchSummary_InsertedWithWarnings(t *testing.T) {
 		Errors:       []string{"GitHub: rate limited"},
 	}
 	got := FormatFetchSummary(result)
-	want := "Fetched 10 MRs/PRs (merged+open): 3 new\nWarnings:\nGitHub: rate limited"
+	want := "Fetched 10 MRs/PRs/commits: 3 new\nWarnings:\nGitHub: rate limited"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
@@ -83,7 +89,7 @@ func TestFormatFetchSummary_ZeroFetchedNoErrors(t *testing.T) {
 		TotalFetched: 0,
 	}
 	got := FormatFetchSummary(result)
-	want := "Found 0 MRs/PRs (merged+open), none to add."
+	want := "Found 0 MRs/PRs/commits, none to add."
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
@@ -115,7 +121,7 @@ func TestImportCodeChangesLinkMergeAndOwnItems(t *testing.T) {
 		{cc: domain.CodeChange{Source: "gitlab", SourceRef: "https://git.example/mr/2", Title: "new exporter", Author: "Dev B", State: "merged"}, host: "gitlab", accountID: 42, reportedAt: now},
 		{cc: domain.CodeChange{Source: "github", SourceRef: "https://git.example/pr/3", Title: "abandoned", Author: "Dev B", State: "closed"}, reportedAt: now},
 	}
-	cfg := config.Config{AuthorIDs: map[string]string{"gitlab:42": "UDEVB0001"}}
+	cfg := config.Config{AuthorIDs: map[string]string{"gitlab:42": "UDEVB0001"}, GitLabSources: defaultSource()}
 	hooks := Hooks{ResolveAccount: cfg.AccountAuthorID}
 	var res FetchResult
 	if err := importCodeChanges(db, changes, hooks, &res); err != nil {
@@ -151,7 +157,7 @@ func TestCodeChangeOwnersBindOnlyByAccountID(t *testing.T) {
 	defer db.Close()
 	// Plain keys are report names; a code-hosting display name or username equal to one must not bind,
 	// nor may a display name equal to a username key.
-	cfg := config.Config{AuthorIDs: map[string]string{"dana lee": "UDANA0001", "dlee": "UDANA0001",
+	cfg := config.Config{GitLabSources: defaultSource(), AuthorIDs: map[string]string{"dana lee": "UDANA0001", "dlee": "UDANA0001",
 		"gitlab:7": "UREAL0007", "github:9": "UREAL0009", "gitlab:grant": "UGRANT0001"}}
 	now := time.Now()
 	changes := []fetched{
@@ -183,7 +189,7 @@ func TestCodeChangeOwnersBindByUsernameKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	cfg := config.Config{AuthorIDs: map[string]string{"gitlab:yfma": "UYFMA0001", "github:octo-cat": "UOCTO0001",
+	cfg := config.Config{GitLabSources: defaultSource(), AuthorIDs: map[string]string{"gitlab:yfma": "UYFMA0001", "github:octo-cat": "UOCTO0001",
 		"gitlab:24": "UID000024", "gitlab:dlee": "UDLEE0001"}}
 	now := time.Now()
 	changes := []fetched{
@@ -225,11 +231,16 @@ func TestFetchBindsGitLabUsername(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	// Loaded through config so the key is folded as in production.
-	t.Setenv("CONFIG_PATH", filepath.Join(t.TempDir(), "missing.yaml"))
+	// Loaded through config so the keys fold as in production.
+	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+	configYAML := "gitlab_sources:\n  - name: dops\n    url: " + srv.URL + "\n    token: test\n    group_id: g\n    default: true\n"
+	if err := os.WriteFile(cfgPath, []byte(configYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CONFIG_PATH", cfgPath)
 	for k, v := range map[string]string{"SLACK_BOT_TOKEN": "xoxb-test", "SLACK_APP_TOKEN": "xapp-test", "TIMEZONE": "UTC",
 		"DECISION_MODEL_URL": "https://api.compat.example/", "DECISION_MODEL_API_KEY": "dm-test", "DECISION_MODEL_NAME": "test-model",
-		"GITLAB_URL": srv.URL, "GITLAB_TOKEN": "test", "GITLAB_GROUP_ID": "g", "AUTHOR_IDS": `{"gitlab:YFMA": "UYFMA0001"}`} {
+		"AUTHOR_IDS": `{"gitlab:YFMA": "UYFMA0001"}`} {
 		t.Setenv(k, v)
 	}
 	cfg := config.LoadConfig()
@@ -252,5 +263,97 @@ func TestGitHubTicketIDs(t *testing.T) {
 	}
 	if got := githubTicketIDs(GitHubPR{Title: "bump to 7.6.3 build 1459"}, "Jira"); got != "" {
 		t.Fatalf("no ticket in a version bump, got %q", got)
+	}
+}
+
+// End to end: a failing source is reported and the other sources still fetch.
+func TestFetchContinuesWhenOneSourceFails(t *testing.T) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	mrs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode([]map[string]any{{"title": "healthy change", "web_url": "https://git.example/mr/1",
+			"updated_at": now, "created_at": now, "state": "opened",
+			"author": map[string]any{"id": 1, "username": "yliu", "name": "Yufan Liu"}}})
+	}))
+	defer mrs.Close()
+	broken := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "unauthorized", 401)
+	}))
+	defer broken.Close()
+
+	db, err := sqlite.InitDB(filepath.Join(t.TempDir(), "fetch.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	cfg := config.Config{Location: time.UTC,
+		GitLabSources: []config.GitLabSource{
+			{Name: "dops", URL: mrs.URL, Token: "test", GroupID: "g", Default: true},
+			{Name: "corp", URL: broken.URL, Token: "bad", Project: "my-group/my-project", Branch: "br_8-0"},
+		},
+		TeamMembers: []string{"Yufan Liu"}}
+	res, err := FetchAndImportMRs(cfg, db, Hooks{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Inserted != 1 {
+		t.Fatalf("healthy source must still import: %+v", res)
+	}
+	if len(res.Errors) != 1 || !strings.Contains(res.Errors[0], "corp/") {
+		t.Fatalf("broken source must be reported with its label: %+v", res.Errors)
+	}
+	summary := FormatFetchSummary(res)
+	if !strings.Contains(summary, "Warnings:") || !strings.Contains(summary, "corp/") {
+		t.Fatalf("summary must warn per source: %q", summary)
+	}
+}
+
+// End to end: branch commits become done Work Items owned via the plain name key.
+func TestFetchCommitsBecomeDoneWorkItems(t *testing.T) {
+	now := time.Now().UTC()
+	in := now.Format(time.RFC3339)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.Path, "/repository/commits") {
+			http.Error(w, "unexpected path", 404)
+			return
+		}
+		_ = json.NewEncoder(w).Encode([]map[string]any{
+			{"id": "aaa111", "title": "Mantis 0987654: fix unified image build", "message": "Mantis 0987654: fix unified image build",
+				"author_name": "Dana Lee", "author_email": "dlee@example.com", "committed_date": in, "authored_date": in,
+				"web_url": "https://corp.example/my-group/my-project/-/commit/aaa111"},
+			{"id": "bbb222", "title": "Merge branch 'x' into br_8-0", "message": "merge",
+				"author_name": "Dana Lee", "author_email": "dlee@example.com", "committed_date": in, "authored_date": in,
+				"web_url": "https://corp.example/my-group/my-project/-/commit/bbb222"},
+		})
+	}))
+	defer srv.Close()
+
+	db, err := sqlite.InitDB(filepath.Join(t.TempDir(), "fetch.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	cfg := config.Config{Location: time.UTC,
+		GitLabSources: []config.GitLabSource{{Name: "corp", URL: srv.URL, Token: "test", Project: "my-group/my-project", Branch: "br_8-0", RefTicketLabel: "Mantis", Default: true}},
+		TeamMembers:   []string{"Dana"}, AuthorIDs: map[string]string{"dana lee": "UDANA0001"}} // keys are case-folded, as LoadConfig does
+	res, err := FetchAndImportMRs(cfg, db, Hooks{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Inserted != 1 {
+		t.Fatalf("only the real commit imports (merge commit skipped): %+v", res)
+	}
+	cc, ok, _ := sqlite.GetCodeChangeByRef(db, "gitlab", "https://corp.example/my-group/my-project/-/commit/aaa111")
+	if !ok {
+		t.Fatal("commit must be tracked as a Code Change")
+	}
+	it, _ := sqlite.GetWorkItemByID(db, cc.WorkItemID)
+	if it.Status != domain.StatusDone {
+		t.Fatalf("commit Work Item status %q, want done", it.Status)
+	}
+	if it.AuthorID != "UDANA0001" {
+		t.Fatalf("commit binds by plain name key, got %q", it.AuthorID)
+	}
+	if it.TicketIDs != "0987654" {
+		t.Fatalf("commit ticket IDs %q, want 0987654", it.TicketIDs)
 	}
 }

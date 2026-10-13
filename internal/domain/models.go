@@ -119,6 +119,19 @@ type GitLabMR struct {
 	ProjectPath string
 }
 
+// GitLabCommit is a commit on a project branch, fetched as a Code Change.
+// The commits API returns only the author's display name and email, so unlike a
+// merge request it cannot bind an owner by account key.
+type GitLabCommit struct {
+	SHA         string
+	Title       string
+	Message     string
+	AuthorName  string
+	AuthorEmail string
+	CommittedAt time.Time
+	WebURL      string
+}
+
 type GitHubPR struct {
 	Title        string
 	Author       string // GitHub login (username)

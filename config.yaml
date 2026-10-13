@@ -6,18 +6,37 @@
 slack_bot_token: "xoxb-your-bot-token"
 slack_app_token: "xapp-your-app-token"
 
-# GitLab access (optional — set to fetch MRs via /fetch)
-gitlab_url: "https://gitlab.example.com"
-gitlab_token: "glpat-your-gitlab-token"
-gitlab_group_id: "my-team-group"
-# GitLab MR description field label used to parse ticket IDs (e.g. "Jira:")
-# Leave empty to disable ticket parsing from MR descriptions.
-gitlab_ref_ticket_label: "Jira"
+# GitLab sources (optional — set any to fetch via /fetch). Each entry is one GitLab endpoint:
+#   - group sources (group_id) fetch all MRs in that group
+#   - branch sources (project + branch) fetch commits from that branch;
+#     each commit becomes a Work Item with Status "done", owned via the author_ids
+#     plain name key, with tickets parsed from "<ref_ticket_label>: <id>" in the message
+#   Merge/revert commits are skipped; one failing source does not abort the others.
+# Tokens may reference environment variables: token: "${MY_GITLAB_TOKEN}"
+# Exactly one source must have default: true (the source unqualified gitlab: author_ids
+# keys resolve against). Name may contain only lowercase letters, digits, _ and -.
+gitlab_sources:
+  - name: dops
+    url: "https://gitlab.example.com"
+    token: "${DOPS_GITLAB_TOKEN}"
+    group_id: "my-team-group"
+    # MR description field label used to parse ticket IDs (e.g. "Jira:")
+    ref_ticket_label: "Jira"
+    default: true
+  - name: corp
+    url: "https://gitlab.corp.example.com"
+    token: "${CORP_GITLAB_TOKEN}"
+    project: "my-group/my-project"  # project path with slashes
+    branch: "main"
+    # Commit message label used to parse ticket IDs (e.g. "Jira 1234567: fix")
+    ref_ticket_label: "Jira"
 
 # GitHub access (optional — set to fetch PRs via /fetch)
 github_token: ""
 github_org: "my-github-org"
 github_repos: []  # optional: limit to specific repos, e.g. ["org/repo1", "org/repo2"]
+# GitHub PR description field label used to parse ticket IDs; empty disables parsing
+github_ref_ticket_label: "Jira"
 
 # Decision model (System One protocol). It files every Work Item: it picks the Section and,
 # when code cannot decide, the Status, ticket ID and Update, with calibrated probabilities.
@@ -56,16 +75,20 @@ manager_slack_ids:
 
 # Owners of fetched and imported Work Items (who may edit them and receives their DMs).
 # Unmapped items are manager-only; names are never matched at run time.
-# - Plain keys are report author names, used only by the migrate-v2 import.
-# - "gitlab:<numeric id or username>" / "github:<numeric id or login>" are code-hosting accounts,
-#   used only by fetch. Usernames match exactly, ignoring case; a renamed username must be
-#   updated here (numeric IDs never change). If both keys match one author, the ID key wins.
+# - Plain keys are report author names, used by the migrate-v2 import and by branch commits
+#   (commit author name).
+# - "gitlab@<source name>:<numeric id or username>" are GitLab accounts on that source;
+#   "gitlab:<numeric id or username>" resolves against the default source only.
+# - "github:<numeric id or login>" are GitHub accounts.
+# Usernames match exactly, ignoring case; a renamed username must be
+# updated here (numeric IDs never change). If both keys match one author, the ID key wins.
 # Draft a reviewed starting point with: reportbot migrate-v2 --report <latest.md> --suggest-author-ids
-# Env override: AUTHOR_IDS='{"Alice Smith": "U01ALICE00", "gitlab:asmith": "U01ALICE00"}'
+# Env override: AUTHOR_IDS='{"Alice Smith": "U01ALICE00", "gitlab@corp:asmith": "U01ALICE00"}'
 author_ids:
   "Alice Smith": "U01ALICE00"
-  "gitlab:asmith": "U01ALICE00"   # by username
-  "github:5678": "U01ALICE00"     # by numeric account ID
+  "gitlab@corp:asmith": "U01ALICE00"  # GitLab account on source "corp", by username
+  "gitlab:asmith": "U01ALICE00"       # GitLab account on the default source, by username
+  "github:5678": "U01ALICE00"         # by numeric account ID
 
 # Team member full names (as shown in Slack)
 team_members:

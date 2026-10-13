@@ -40,32 +40,33 @@ func profileNames(t *testing.T) func([]string) ([]string, error) {
 }
 
 func TestTeamFilter(t *testing.T) {
-	cfg := config.Config{TeamMembers: []string{"Yufan", grantID},
+	// The single source "dops" is the default, so unqualified gitlab keys resolve.
+	cfg := config.Config{TeamMembers: []string{"Yufan", grantID}, GitLabSources: []config.GitLabSource{{Name: "dops", Default: true}},
 		AuthorIDs: map[string]string{"gitlab:42": grantID, "github:77": grantID, "gitlab:ggrant": grantID, "github:grant-g": grantID}}
 	f := newTeamFilter(cfg, Hooks{TeamNames: profileNames(t)})
 
 	cases := []struct {
 		name           string
-		host           string
+		host, server   string
 		accountID      int64
 		author, handle string
 		want           bool
 	}{
-		{"name entry", "gitlab", 1, "Yufan Liu", "yliu", true},
-		{"ID entry via Slack profile real name", "gitlab", 2, "Grant Guo", "gguo", true},
-		{"ID entry via author_ids", "gitlab", 42, "Build Bot", "bot", true},
-		{"non-team", "gitlab", 3, "Andy Xu", "axu", false},
-		{"github name entry", "github", 1, "yufan", "yufan", true},
-		{"github ID entry via Slack profile display name", "github", 2, "grantg", "grantg", true},
-		{"github ID entry via author_ids", "github", 77, "octo", "octo", true},
-		{"author_ids is per host", "github", 42, "octo", "octo", false},
-		{"github non-team", "github", 3, "andyxu", "andyxu", false},
-		{"ID entry via author_ids username key", "gitlab", 5, "Build Bot", "GGrant", true},
-		{"github ID entry via author_ids login key", "github", 5, "Grant-G", "Grant-G", true},
-		{"username keys are per host", "github", 5, "ggrant", "ggrant", false},
+		{"name entry", "gitlab", "dops", 1, "Yufan Liu", "yliu", true},
+		{"ID entry via Slack profile real name", "gitlab", "dops", 2, "Grant Guo", "gguo", true},
+		{"ID entry via author_ids", "gitlab", "dops", 42, "Build Bot", "bot", true},
+		{"non-team", "gitlab", "dops", 3, "Andy Xu", "axu", false},
+		{"github name entry", "github", "", 1, "yufan", "yufan", true},
+		{"github ID entry via Slack profile display name", "github", "", 2, "grantg", "grantg", true},
+		{"github ID entry via author_ids", "github", "", 77, "octo", "octo", true},
+		{"author_ids is per host", "github", "", 42, "octo", "octo", false},
+		{"github non-team", "github", "", 3, "andyxu", "andyxu", false},
+		{"ID entry via author_ids username key", "gitlab", "dops", 5, "Build Bot", "GGrant", true},
+		{"github ID entry via author_ids login key", "github", "", 5, "Grant-G", "Grant-G", true},
+		{"username keys are per host", "github", "", 5, "ggrant", "ggrant", false},
 	}
 	for _, c := range cases {
-		if got := f.includes(c.host, c.accountID, c.author, c.handle); got != c.want {
+		if got := f.includes(c.host, c.server, c.accountID, c.author, c.handle); got != c.want {
 			t.Errorf("%s: includes = %v, want %v", c.name, got, c.want)
 		}
 	}
@@ -76,20 +77,20 @@ func TestTeamFilterEmptyTeamIncludesAll(t *testing.T) {
 		t.Fatal("no lookup without team_members")
 		return nil, nil
 	}})
-	if !f.includes("gitlab", 3, "Andy Xu", "axu") {
+	if !f.includes("gitlab", "", 3, "Andy Xu", "axu") {
 		t.Fatal("empty team_members imports everyone")
 	}
 }
 
 func TestTeamFilterLookupErrorFallsBackToNamesAndAuthorIDs(t *testing.T) {
 	buf := captureLog(t)
-	cfg := config.Config{TeamMembers: []string{"Yufan", grantID}, AuthorIDs: map[string]string{"gitlab:42": grantID}}
+	cfg := config.Config{TeamMembers: []string{"Yufan", grantID}, AuthorIDs: map[string]string{"gitlab:42": grantID}, GitLabSources: defaultSource()}
 	f := newTeamFilter(cfg, Hooks{TeamNames: func([]string) ([]string, error) { return nil, errors.New("slack down") }})
 
-	if !f.includes("gitlab", 1, "Yufan Liu", "yliu") || !f.includes("gitlab", 42, "Build Bot", "bot") {
+	if !f.includes("gitlab", "", 1, "Yufan Liu", "yliu") || !f.includes("gitlab", "", 42, "Build Bot", "bot") {
 		t.Fatal("name entries and author_ids still apply when the lookup fails")
 	}
-	if f.includes("gitlab", 2, "Grant Guo", "gguo") {
+	if f.includes("gitlab", "", 2, "Grant Guo", "gguo") {
 		t.Fatal("profile names are unknown when the lookup fails")
 	}
 	if !strings.Contains(buf.String(), "slack down") {
@@ -121,7 +122,7 @@ func TestFetchWarnsWhenLookupFailedAndMRsSkipped(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	cfg := config.Config{Location: time.UTC, GitLabURL: srv.URL, GitLabToken: "test", GitLabGroupID: "g",
+	cfg := config.Config{Location: time.UTC, GitLabSources: []config.GitLabSource{{Name: "dops", URL: srv.URL, Token: "test", GroupID: "g", Default: true}},
 		TeamMembers: []string{"Yufan", grantID}, AuthorIDs: map[string]string{"gitlab:42": grantID}}
 	hooks := Hooks{TeamNames: func([]string) ([]string, error) { return nil, errors.New("slack down") }}
 

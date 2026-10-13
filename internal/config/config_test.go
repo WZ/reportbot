@@ -53,9 +53,6 @@ func TestLoadConfigFromEnvWithDefaults(t *testing.T) {
 	if cfg.TeamName != "My Team" {
 		t.Fatalf("unexpected team name default: %q", cfg.TeamName)
 	}
-	if cfg.GitLabRefTicketLabel != "" {
-		t.Fatalf("unexpected gitlab ref ticket label default: %q", cfg.GitLabRefTicketLabel)
-	}
 	if cfg.DecisionModelConfidence != 0.85 {
 		t.Fatalf("unexpected decision model confidence default: %v", cfg.DecisionModelConfidence)
 	}
@@ -100,7 +97,6 @@ external_http_timeout_seconds: 75
 	t.Setenv("TEAM_NAME", "Env Team")
 	t.Setenv("DB_PATH", "/tmp/env.db")
 	t.Setenv("EXTERNAL_HTTP_TIMEOUT_SECONDS", "120")
-	t.Setenv("GITLAB_REF_TICKET_LABEL", "Jira")
 
 	cfg := LoadConfig()
 
@@ -125,9 +121,6 @@ external_http_timeout_seconds: 75
 	if cfg.ExternalHTTPTimeoutSeconds != 120 {
 		t.Fatalf("expected external HTTP timeout from env override, got %d", cfg.ExternalHTTPTimeoutSeconds)
 	}
-	if cfg.GitLabRefTicketLabel != "Jira" {
-		t.Fatalf("expected ticket field label from env override, got %q", cfg.GitLabRefTicketLabel)
-	}
 	if cfg.AuthorID("dana lee") != "U0123ABCD" || cfg.AuthorID("DANA.LEE") != "U0123ABCD" || cfg.AuthorID("Dana") != "" {
 		t.Fatalf("author_ids lookup is exact after trimming and case-folding: %v", cfg.AuthorIDs)
 	}
@@ -136,17 +129,6 @@ external_http_timeout_seconds: 75
 	}
 	if cfg.DecisionModelConfidence != 0.55 {
 		t.Fatalf("expected decision model confidence from env override, got %v", cfg.DecisionModelConfidence)
-	}
-}
-
-func TestLoadConfigAllowsEmptyGitLabRefTicketLabelEnv(t *testing.T) {
-	t.Setenv("CONFIG_PATH", filepath.Join(t.TempDir(), "missing-config.yaml"))
-	setMinimalValidConfigEnv(t)
-	t.Setenv("GITLAB_REF_TICKET_LABEL", "")
-
-	cfg := LoadConfig()
-	if cfg.GitLabRefTicketLabel != "" {
-		t.Fatalf("expected empty gitlab ref ticket label, got %q", cfg.GitLabRefTicketLabel)
 	}
 }
 
@@ -263,18 +245,31 @@ func TestNormalizeAuthorIDs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := Config{AuthorIDs: got}
-	if id, _ := c.AccountAuthorID("gitlab", 42, ""); id != "U0123ABCD" {
+	c := Config{AuthorIDs: got, GitLabSources: []GitLabSource{{Name: "dops", Default: true}}}
+	if id, _ := c.AccountAuthorID("gitlab", "", 42, ""); id != "U0123ABCD" {
 		t.Fatal("account keys bind by host and numeric ID")
 	}
-	if id, _ := c.AccountAuthorID("github", 7, ""); id != "U0777ABCD" {
+	if id, _ := c.AccountAuthorID("github", "", 7, ""); id != "U0777ABCD" {
 		t.Fatal("account keys bind by host and numeric ID")
 	}
-	if id, _ := c.AccountAuthorID("github", 42, ""); id != "" {
+	if id, _ := c.AccountAuthorID("github", "", 42, ""); id != "" {
 		t.Fatal("account keys are per host")
 	}
 	if c.AuthorID("gitlab:42") != "" {
 		t.Fatal("a report name never reaches an account key")
+	}
+	// A plain name starting with a host word stays a plain name, not a broken account key.
+	got2, err := normalizeAuthorIDs(map[string]string{"Github Chen": "U0123ABCD", "gitlab fan": "U0777ABCD"})
+	if err != nil {
+		t.Fatalf("host-prefixed plain names must load: %v", err)
+	}
+	c2 := Config{AuthorIDs: got2}
+	if c2.AuthorID("Github Chen") != "U0123ABCD" {
+		t.Fatal("host-prefixed plain names bind as names")
+	}
+	// A malformed qualified account key (no colon) is still rejected.
+	if _, err := normalizeAuthorIDs(map[string]string{"gitlab@dops": "U0123ABCD"}); err == nil {
+		t.Fatal("a qualified key without a colon must be rejected")
 	}
 }
 
@@ -295,36 +290,191 @@ func TestAccountAuthorIDByUsername(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := Config{AuthorIDs: got}
+	c := Config{AuthorIDs: got, GitLabSources: []GitLabSource{{Name: "dops", Default: true}}}
 	cases := []struct {
-		host     string
-		id       int64
-		username string
-		want     string
-		warn     bool
+		host, server string
+		id           int64
+		username     string
+		want         string
+		warn         bool
 	}{
-		{"gitlab", 99, "yfma", "UYFMA0001", false},    // username key, case-insensitive
-		{"gitlab", 0, "YfMa", "UYFMA0001", false},     // no numeric ID needed
-		{"github", 5, "Octo-Cat", "UOCTO0001", false}, // github login
-		{"github", 5, "yfma", "", false},              // username keys are per host
-		{"gitlab", 24, "yfma", "UID000024", true},     // ID key wins over a conflicting username key
-		{"gitlab", 24, "nobody", "UID000024", false},  // ID key alone
-		{"gitlab", 99, "yfm", "", false},              // never a prefix or fuzzy match
-		{"gitlab", 99, "Dana Lee", "", false},         // display names are not usernames
-		{"github", 99, "12", "", false},               // an all-digit login never reaches an ID key
+		{"gitlab", "", 99, "yfma", "UYFMA0001", false},    // default-source username key, case-insensitive
+		{"gitlab", "", 0, "YfMa", "UYFMA0001", false},     // no numeric ID needed
+		{"github", "", 5, "Octo-Cat", "UOCTO0001", false}, // github login
+		{"github", "", 5, "yfma", "", false},              // username keys are per host
+		{"gitlab", "", 24, "yfma", "UID000024", true},     // ID key wins over a conflicting username key
+		{"gitlab", "", 24, "nobody", "UID000024", false},  // ID key alone
+		{"gitlab", "dops", 24, "yfma", "UID000024", true}, // the default server resolves unqualified too
+		{"gitlab", "corp", 24, "yfma", "", false},         // a non-default server never sees unqualified keys
+		{"gitlab", "", 99, "yfm", "", false},              // never a prefix or fuzzy match
+		{"gitlab", "", 99, "Dana Lee", "", false},         // display names are not usernames
+		{"github", "", 99, "12", "", false},               // an all-digit login never reaches an ID key
 	}
 	for _, tc := range cases {
-		id, warn := c.AccountAuthorID(tc.host, tc.id, tc.username)
+		id, warn := c.AccountAuthorID(tc.host, tc.server, tc.id, tc.username)
 		if id != tc.want || (warn != "") != tc.warn {
 			t.Errorf("%s:%d/%q: got %q warn %q, want %q warn %v", tc.host, tc.id, tc.username, id, warn, tc.want, tc.warn)
 		}
 	}
-	_, warn := c.AccountAuthorID("gitlab", 24, "yfma")
+	_, warn := c.AccountAuthorID("gitlab", "", 24, "yfma")
 	if !strings.Contains(warn, `"gitlab:24"`) || !strings.Contains(warn, `"gitlab:yfma"`) {
 		t.Fatalf("warning must name both keys: %q", warn)
 	}
 	c.AuthorIDs["gitlab:yfma"] = "UID000024"
-	if _, warn := c.AccountAuthorID("gitlab", 24, "yfma"); warn != "" {
+	if _, warn := c.AccountAuthorID("gitlab", "", 24, "yfma"); warn != "" {
 		t.Fatalf("agreeing keys are no conflict: %q", warn)
+	}
+}
+
+func TestGitLabSourcesValidation(t *testing.T) {
+	good := GitLabSource{Name: "dops", URL: "https://dops.example", Token: "t", GroupID: "g", Default: true}
+	if err := validateGitLabSource(good); err != nil {
+		t.Fatalf("group source must validate: %v", err)
+	}
+	commits := GitLabSource{Name: "corp", URL: "https://corp.example", Token: "t", Project: "my-group/my-project", Branch: "br_8-0"}
+	if err := validateGitLabSource(commits); err != nil {
+		t.Fatalf("commit source must validate: %v", err)
+	}
+	for _, bad := range []GitLabSource{
+		{Name: "", URL: "https://x", Token: "t", GroupID: "g"},
+		{Name: "Dops", URL: "https://x", Token: "t", GroupID: "g"},     // uppercase
+		{Name: "dops:bad", URL: "https://x", Token: "t", GroupID: "g"}, // colon in name
+		{Name: "dops", URL: "", Token: "t", GroupID: "g"},
+		{Name: "dops", URL: "https://x", Token: "", GroupID: "g"},
+		{Name: "dops", URL: "https://x", Token: "t"},                            // neither group nor branch
+		{Name: "dops", URL: "https://x", Token: "t", GroupID: "g", Branch: "b"}, // both
+		// An empty ref_name would silently fetch the project's default branch.
+		{Name: "dops", URL: "https://x", Token: "t", Project: "my-group/my-project"},
+		{Name: "dops", URL: "https://x", Token: "t", Branch: "br_8-0"},
+	} {
+		if err := validateGitLabSource(bad); err == nil {
+			t.Fatalf("%+v must be rejected", bad)
+		}
+	}
+	if err := validateGitLabSourceNames([]GitLabSource{good, commits}); err != nil {
+		t.Fatalf("one default among two sources must validate: %v", err)
+	}
+	if err := validateGitLabSourceNames([]GitLabSource{{Name: "a", URL: "x", Token: "t", GroupID: "g"}, {Name: "b", URL: "x", Token: "t", GroupID: "g"}}); err == nil {
+		t.Fatal("no default source must be rejected")
+	}
+	two := good
+	two.Name = "corp"
+	if err := validateGitLabSourceNames([]GitLabSource{good, two}); err == nil {
+		t.Fatal("two defaults must be rejected")
+	}
+	dup := good
+	dup.Default = false
+	dup2 := dup
+	if err := validateGitLabSourceNames([]GitLabSource{dup, dup2}); err == nil {
+		t.Fatal("duplicate names must be rejected")
+	}
+}
+
+func TestLoadGitLabSourcesFromYAMLWithEnvToken(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+	content := `
+gitlab_sources:
+  - name: dops
+    url: "https://dops.example"
+    token: ${DOPS_GITLAB_TOKEN}
+    group_id: "my-group"
+    ref_ticket_label: "Mantis"
+    default: true
+  - name: corp
+    url: "https://corp.example"
+    token: "plain-token"
+    project: "my-group/my-project"
+    branch: "br_8-0_feature"
+`
+	if err := os.WriteFile(cfgPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CONFIG_PATH", cfgPath)
+	t.Setenv("DOPS_GITLAB_TOKEN", "glpat-env")
+	setMinimalValidConfigEnv(t)
+
+	cfg := LoadConfig()
+	if len(cfg.GitLabSources) != 2 {
+		t.Fatalf("expected 2 sources, got %d", len(cfg.GitLabSources))
+	}
+	dops, corp := cfg.GitLabSources[0], cfg.GitLabSources[1]
+	if dops.Token != "glpat-env" {
+		t.Fatalf("${DOPS_GITLAB_TOKEN} must interpolate, got %q", dops.Token)
+	}
+	if corp.Token != "plain-token" {
+		t.Fatalf("plain token stays, got %q", corp.Token)
+	}
+	if !dops.Default || corp.Default {
+		t.Fatalf("default flags: %+v %+v", dops, corp)
+	}
+	if dops.GroupID != "my-group" || dops.RefTicketLabel != "Mantis" {
+		t.Fatalf("group source fields: %+v", dops)
+	}
+	if corp.Project != "my-group/my-project" || corp.Branch != "br_8-0_feature" {
+		t.Fatalf("commit source fields: %+v", corp)
+	}
+	// A server-qualified key binds only its server; the unqualified form only the default.
+	cfg.AuthorIDs = map[string]string{
+		"gitlab@corp:yfma": "UCORP00001", "gitlab:yfma": "UDOPS00001", "gitlab@dops:24": "UDOPS00024",
+	}
+	if id, _ := cfg.AccountAuthorID("gitlab", "corp", 0, "YFMA"); id != "UCORP00001" {
+		t.Fatalf("qualified corp key: got %q", id)
+	}
+	if id, _ := cfg.AccountAuthorID("gitlab", "dops", 0, "yfma"); id != "UDOPS00001" {
+		t.Fatalf("default server sees the unqualified key: got %q", id)
+	}
+	if id, _ := cfg.AccountAuthorID("gitlab", "corp", 24, "yfma"); id != "UCORP00001" {
+		t.Fatalf("corp binds its qualified username key: got %q", id)
+	}
+	if id, _ := cfg.AccountAuthorID("gitlab", "corp", 24, ""); id != "" {
+		t.Fatalf("corp must not see dops' unqualified ID key: got %q", id)
+	}
+	if id, _ := cfg.AccountAuthorID("gitlab", "dops", 24, ""); id != "UDOPS00024" {
+		t.Fatalf("qualified dops ID key: got %q", id)
+	}
+}
+
+func TestLoadConfigFatalOnLegacyGitLabKeys(t *testing.T) {
+	if os.Getenv("TEST_LEGACY_GITLAB_FATAL") == "1" {
+		_ = os.Setenv("CONFIG_PATH", filepath.Join(os.TempDir(), "legacy-config.yaml"))
+		content := "gitlab_url: https://gitlab.example.com\ngitlab_token: t\ngitlab_group_id: g\n"
+		_ = os.WriteFile(os.Getenv("CONFIG_PATH"), []byte(content), 0o644)
+		LoadConfig()
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=TestLoadConfigFatalOnLegacyGitLabKeys")
+	cmd.Env = append(os.Environ(), "TEST_LEGACY_GITLAB_FATAL=1",
+		"SLACK_BOT_TOKEN=xoxb-test", "SLACK_APP_TOKEN=xapp-test",
+		"DECISION_MODEL_URL=https://api.compat.example", "DECISION_MODEL_API_KEY=dm-test", "DECISION_MODEL_NAME=test-model",
+		"TIMEZONE=UTC")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected subprocess to exit with failure, output: %s", out)
+	}
+	if !strings.Contains(string(out), "gitlab_sources") || !strings.Contains(string(out), "gitlab_url") {
+		t.Fatalf("fatal error must name the replacement: %s", out)
+	}
+}
+
+// A token placeholder whose env var is not set must fail startup, not fetch time.
+func TestLoadConfigFatalOnMissingEnvToken(t *testing.T) {
+	if os.Getenv("TEST_MISSING_ENV_TOKEN_FATAL") == "1" {
+		_ = os.Setenv("CONFIG_PATH", filepath.Join(os.TempDir(), "missing-env-token.yaml"))
+		content := "gitlab_sources:\n  - name: dops\n    url: https://gitlab.example.com\n    token: ${UNSET_TOKEN}\n    group_id: g\n    default: true\n"
+		_ = os.WriteFile(os.Getenv("CONFIG_PATH"), []byte(content), 0o644)
+		LoadConfig()
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=TestLoadConfigFatalOnMissingEnvToken")
+	cmd.Env = append(os.Environ(), "TEST_MISSING_ENV_TOKEN_FATAL=1",
+		"SLACK_BOT_TOKEN=xoxb-test", "SLACK_APP_TOKEN=xapp-test",
+		"DECISION_MODEL_URL=https://api.compat.example", "DECISION_MODEL_API_KEY=dm-test", "DECISION_MODEL_NAME=test-model",
+		"TIMEZONE=UTC")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected subprocess to exit with failure, output: %s", out)
+	}
+	if !strings.Contains(string(out), "token is required") {
+		t.Fatalf("fatal error must name the missing token: %s", out)
 	}
 }

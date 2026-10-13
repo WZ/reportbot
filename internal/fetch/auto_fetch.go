@@ -26,21 +26,44 @@ type FetchResult struct {
 	SkippedNonTeam int
 	SkippedClosed  int // closed without merging
 	Errors         []string
+	// Sources breaks the counters down per source, in fetch order.
+	Sources []SourceResult
+}
+
+// SourceResult is one source's share of a fetch. New counts items that became
+// their own Work Items; Linked counts ones linked to an Open Work Item.
+type SourceResult struct {
+	Label   string
+	Fetched int
+	New     int
+	Linked  int
+}
+
+// sourceResult returns the per-source entry for label, appending it if absent.
+func (r *FetchResult) sourceResult(label string) *SourceResult {
+	for i := range r.Sources {
+		if r.Sources[i].Label == label {
+			return &r.Sources[i]
+		}
+	}
+	r.Sources = append(r.Sources, SourceResult{Label: label})
+	return &r.Sources[len(r.Sources)-1]
 }
 
 // Hooks connect fetching to the rest of the bot without importing it.
 type Hooks struct {
 	// ResolveAccount returns the Slack user ID configured for a code-hosting account by numeric
 	// ID or username, "" if none, and a warning when those disagree. Display names never bind.
-	ResolveAccount func(host string, accountID int64, username string) (slackID, warn string)
+	// server is the gitlab_sources name for GitLab ("gitlab@<server>:..." keys), "" for GitHub.
+	ResolveAccount func(host, server string, accountID int64, username string) (slackID, warn string)
 	// TeamNames returns the Slack profile names of the given Slack user IDs, for the team filter only.
 	TeamNames func(slackIDs []string) ([]string, error)
 	Wake      func() // start filing new Work Items now
 }
 
-// FetchAndImportMRs fetches GitLab MRs and/or GitHub PRs for the current report
-// week and records them as Code Changes: linked to an Open Work Item by exact
-// ticket, or as their own Work Item queued for filing.
+// FetchAndImportMRs fetches GitLab MRs, GitLab branch commits and/or GitHub PRs
+// for the current report week and records them as Code Changes: linked to an
+// Open Work Item by exact ticket, or as their own Work Item queued for filing.
 func FetchAndImportMRs(cfg Config, db *sql.DB, hooks Hooks) (FetchResult, error) {
 	if !cfg.GitLabConfigured() && !cfg.GitHubConfigured() {
 		return FetchResult{}, fmt.Errorf("neither GitLab nor GitHub is configured")
@@ -53,24 +76,53 @@ func FetchAndImportMRs(cfg Config, db *sql.DB, hooks Hooks) (FetchResult, error)
 	var changes []fetched
 	team := newTeamFilter(cfg, hooks)
 
-	if cfg.GitLabConfigured() {
-		mrs, err := FetchMRs(cfg, monday, nextMonday)
-		if err != nil {
-			log.Printf("auto-fetch gitlab error: %v", err)
-			result.Errors = append(result.Errors, fmt.Sprintf("GitLab: %v", err))
-		} else {
-			log.Printf("auto-fetch gitlab fetched=%d", len(mrs))
+	// GitLab sources fetch sequentially in config order; one failing source
+	// (bad token, instance down) is reported and the rest still fetch.
+	for _, src := range cfg.GitLabSources {
+		switch {
+		case strings.TrimSpace(src.GroupID) != "":
+			mrs, err := FetchMRs(src, monday, nextMonday)
+			if err != nil {
+				log.Printf("auto-fetch gitlab@%s error: %v", src.Name, err)
+				result.Errors = append(result.Errors, fmt.Sprintf("%s: %v", src.Label(), err))
+				continue
+			}
+			log.Printf("auto-fetch gitlab@%s fetched=%d", src.Name, len(mrs))
 			result.TotalFetched += len(mrs)
+			result.sourceResult(src.Label()).Fetched += len(mrs)
 			for _, mr := range mrs {
 				// Import filter only: it decides what is imported, never who owns it.
-				if !team.includes("gitlab", mr.AuthorID, mr.AuthorName, mr.Author) {
-					log.Printf("auto-fetch skipped non-team gitlab author=%s username=%s", mr.AuthorName, mr.Author)
+				if !team.includes("gitlab", src.Name, mr.AuthorID, mr.AuthorName, mr.Author) {
+					log.Printf("auto-fetch skipped non-team gitlab@%s author=%s username=%s", src.Name, mr.AuthorName, mr.Author)
 					result.SkippedNonTeam++
 					continue
 				}
 				changes = append(changes, fetched{cc: domain.CodeChange{Source: "gitlab", SourceRef: mr.WebURL, Title: mr.Title,
 					Author: mr.AuthorName, TicketIDs: mr.TicketIDs, State: codeChangeState(mr.State), MergedAt: mr.MergedAt},
-					host: "gitlab", accountID: mr.AuthorID, username: mr.Author, reportedAt: mrReportedAt(mr, cfg.Location)})
+					host: "gitlab", server: src.Name, label: src.Label(), accountID: mr.AuthorID, username: mr.Author, reportedAt: mrReportedAt(mr, cfg.Location)})
+			}
+		default:
+			commits, err := FetchBranchCommits(src, monday, nextMonday)
+			if err != nil {
+				log.Printf("auto-fetch gitlab@%s error: %v", src.Name, err)
+				result.Errors = append(result.Errors, fmt.Sprintf("%s: %v", src.Label(), err))
+				continue
+			}
+			log.Printf("auto-fetch gitlab@%s fetched=%d commits", src.Name, len(commits))
+			result.TotalFetched += len(commits)
+			result.sourceResult(src.Label()).Fetched += len(commits)
+			for _, cm := range commits {
+				// Import filter only: it decides what is imported, never who owns it.
+				if !team.includes("gitlab", src.Name, 0, cm.AuthorName, "") {
+					log.Printf("auto-fetch skipped non-team gitlab@%s commit author=%s", src.Name, cm.AuthorName)
+					result.SkippedNonTeam++
+					continue
+				}
+				// The commits API returns no username or account ID, so commits bind
+				// their owner by plain author_ids name key, and land as done work.
+				changes = append(changes, fetched{cc: domain.CodeChange{Source: "gitlab", SourceRef: cm.WebURL, Title: cm.Title,
+					Author: cm.AuthorName, AuthorID: cfg.AuthorID(cm.AuthorName), TicketIDs: commitTicketIDs(cm, src), State: "merged", MergedAt: cm.CommittedAt},
+					host: "gitlab", server: src.Name, label: src.Label(), status: domain.StatusDone, reportedAt: cm.CommittedAt.In(cfg.Location)})
 			}
 		}
 	}
@@ -83,16 +135,17 @@ func FetchAndImportMRs(cfg Config, db *sql.DB, hooks Hooks) (FetchResult, error)
 		} else {
 			log.Printf("auto-fetch github fetched=%d", len(prs))
 			result.TotalFetched += len(prs)
+			result.sourceResult("GitHub").Fetched += len(prs)
 			for _, pr := range prs {
 				// Import filter only: it decides what is imported, never who owns it.
-				if !team.includes("github", pr.AuthorID, pr.AuthorName, pr.Author) {
+				if !team.includes("github", "", pr.AuthorID, pr.AuthorName, pr.Author) {
 					log.Printf("auto-fetch skipped non-team github author=%s", pr.Author)
 					result.SkippedNonTeam++
 					continue
 				}
 				changes = append(changes, fetched{cc: domain.CodeChange{Source: "github", SourceRef: pr.HTMLURL, Title: pr.Title,
-					Author: pr.AuthorName, TicketIDs: githubTicketIDs(pr, cfg.GitLabRefTicketLabel), State: codeChangeState(pr.State), MergedAt: pr.MergedAt},
-					host: "github", accountID: pr.AuthorID, username: pr.Author, reportedAt: prReportedAt(pr, cfg.Location)})
+					Author: pr.AuthorName, TicketIDs: githubTicketIDs(pr, cfg.GitHubRefTicketLabel), State: codeChangeState(pr.State), MergedAt: pr.MergedAt},
+					host: "github", label: "GitHub", accountID: pr.AuthorID, username: pr.Author, reportedAt: prReportedAt(pr, cfg.Location)})
 			}
 		}
 	}
@@ -121,11 +174,20 @@ func githubTicketIDs(pr GitHubPR, fieldLabel string) string {
 	return strings.Join(certain, ",")
 }
 
+// commitTicketIDs parses "<label>[- ]?<digits>" from a commit's title or message;
+// the label comes from the source's ref_ticket_label.
+func commitTicketIDs(cm GitLabCommit, src GitLabSource) string {
+	return gl.ParseCommitTicketIDs(cm.Title+"\n"+cm.Message, strings.TrimSpace(src.RefTicketLabel))
+}
+
 type fetched struct {
 	cc         domain.CodeChange
 	host       string // "gitlab" | "github"
+	server     string // gitlab_sources name for GitLab, "" for GitHub
+	label      string // source label for the per-source summary
 	accountID  int64
 	username   string // GitLab username or GitHub login
+	status     string // WorkItem status override; empty derives from the Code Change state
 	reportedAt time.Time
 }
 
@@ -174,9 +236,10 @@ func importCodeChanges(db *sql.DB, changes []fetched, hooks Hooks, result *Fetch
 			result.SkippedClosed++
 			continue
 		}
-		if hooks.ResolveAccount != nil {
+		src := result.sourceResult(f.label)
+		if hooks.ResolveAccount != nil && f.status == "" {
 			var warn string
-			cc.AuthorID, warn = hooks.ResolveAccount(f.host, f.accountID, f.username)
+			cc.AuthorID, warn = hooks.ResolveAccount(f.host, f.server, f.accountID, f.username)
 			if warn != "" {
 				log.Printf("auto-fetch WARNING: %s", warn)
 			}
@@ -187,6 +250,7 @@ func importCodeChanges(db *sql.DB, changes []fetched, hooks Hooks, result *Fetch
 				return err
 			}
 			result.Linked++
+			src.Linked++
 			if cc.State == "merged" {
 				if err := moveToTesting(db, target, result); err != nil {
 					return err
@@ -194,12 +258,17 @@ func importCodeChanges(db *sql.DB, changes []fetched, hooks Hooks, result *Fetch
 			}
 			continue
 		}
+		status := f.status
+		if status == "" {
+			status = statusForCodeChange(cc.State)
+		}
 		item := WorkItem{Description: cc.Title, Author: cc.Author, AuthorID: cc.AuthorID, Source: cc.Source,
-			Status: statusForCodeChange(cc.State), TicketIDs: cc.TicketIDs, ReportedAt: f.reportedAt}
+			Status: status, TicketIDs: cc.TicketIDs, ReportedAt: f.reportedAt}
 		if _, _, err := sqlite.InsertCodeChangeWithItem(db, cc, item, filing.Payload{Kind: filing.KindCodeChange}.JSON()); err != nil {
 			return err
 		}
 		result.Inserted++
+		src.New++
 	}
 	return nil
 }
@@ -235,6 +304,7 @@ func moveToTesting(db *sql.DB, itemID int64, result *FetchResult) error {
 
 // FormatFetchSummary returns a human-readable summary of a FetchResult.
 func FormatFetchSummary(result FetchResult) string {
+	breakdown := sourceBreakdown(result)
 	if len(result.Errors) > 0 && result.TotalFetched == 0 {
 		return fmt.Sprintf("Error fetching MRs/PRs:\n%s", strings.Join(result.Errors, "\n"))
 	}
@@ -250,11 +320,14 @@ func FormatFetchSummary(result FetchResult) string {
 		if result.SkippedClosed > 0 {
 			reasons = append(reasons, fmt.Sprintf("%d closed unmerged", result.SkippedClosed))
 		}
-		msg := fmt.Sprintf("Found %d MRs/PRs (merged+open), none to add", result.TotalFetched)
+		msg := fmt.Sprintf("Found %d MRs/PRs/commits, none to add", result.TotalFetched)
 		if len(reasons) > 0 {
 			msg += fmt.Sprintf(" (%s)", strings.Join(reasons, ", "))
 		}
 		msg += "."
+		if breakdown != "" {
+			msg += "\n" + breakdown
+		}
 		if len(result.Errors) > 0 {
 			msg += fmt.Sprintf("\nWarnings:\n%s", strings.Join(result.Errors, "\n"))
 		}
@@ -275,12 +348,28 @@ func FormatFetchSummary(result FetchResult) string {
 	if result.SkippedNonTeam > 0 {
 		summary = append(summary, fmt.Sprintf("%d non-team", result.SkippedNonTeam))
 	}
-	msg := fmt.Sprintf("Fetched %d MRs/PRs (merged+open): %s",
+	msg := fmt.Sprintf("Fetched %d MRs/PRs/commits: %s",
 		result.TotalFetched, strings.Join(summary, ", "))
+	if breakdown != "" {
+		msg += "\n" + breakdown
+	}
 	if len(result.Errors) > 0 {
 		msg += fmt.Sprintf("\nWarnings:\n%s", strings.Join(result.Errors, "\n"))
 	}
 	return msg
+}
+
+// sourceBreakdown renders one line per fetched source; New and Linked reconcile
+// with the headline counters.
+func sourceBreakdown(result FetchResult) string {
+	if len(result.Sources) < 2 {
+		return ""
+	}
+	var lines []string
+	for _, s := range result.Sources {
+		lines = append(lines, fmt.Sprintf("  %s: %d fetched, %d new, %d linked", s.Label, s.Fetched, s.New, s.Linked))
+	}
+	return strings.Join(lines, "\n")
 }
 
 // StartAutoFetchScheduler starts a cron-based scheduler that periodically
@@ -306,8 +395,8 @@ func StartAutoFetchScheduler(cfg Config, db *sql.DB, api *slack.Client, hooks Ho
 	}
 
 	var sources []string
-	if cfg.GitLabConfigured() {
-		sources = append(sources, "GitLab")
+	for _, src := range cfg.GitLabSources {
+		sources = append(sources, "gitlab@"+src.Label())
 	}
 	if cfg.GitHubConfigured() {
 		sources = append(sources, "GitHub")

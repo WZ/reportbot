@@ -7,6 +7,8 @@ import (
 )
 
 type Config = config.Config
+type Source = config.GitLabSource
 type GitLabMR = domain.GitLabMR
+type GitLabCommit = domain.GitLabCommit
 
 var externalHTTPClient = httpx.ExternalHTTPClient()

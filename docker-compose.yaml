@@ -1,6 +1,6 @@
 # export SLACK_BOT_TOKEN=xxxx
 # export SLACK_APP_TOKEN=xxxx
-# export GITLAB_TOKEN=xxxx
+# export DOPS_GITLAB_TOKEN=xxxx                 # ${...} tokens in gitlab_sources interpolate from these
 # export OPENAI_API_KEY=xxxx
 # export WEB_HOST=https://192.168.1.100      # IP or domain for HTTPS
 # export WEB_CLIENT_SECRET=xxxx             # Slack OAuth client secret
@@ -35,7 +35,7 @@ services:
     environment:
       SLACK_BOT_TOKEN: "${SLACK_BOT_TOKEN}"
       SLACK_APP_TOKEN: "${SLACK_APP_TOKEN}"
-      GITLAB_TOKEN: "${GITLAB_TOKEN}"
+      DOPS_GITLAB_TOKEN: "${DOPS_GITLAB_TOKEN}"
       OPENAI_API_KEY: "${OPENAI_API_KEY}"
       DECISION_MODEL_API_KEY: "${DECISION_MODEL_API_KEY}"
       WEB_CLIENT_SECRET: "${WEB_CLIENT_SECRET}"

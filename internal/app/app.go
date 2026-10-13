@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -186,13 +187,16 @@ func recentAccounts(cfg config.Config) ([]slackbot.Account, error) {
 	to := time.Now().In(cfg.Location)
 	from := to.AddDate(0, 0, -28)
 	var out []slackbot.Account
-	if cfg.GitLabConfigured() {
-		mrs, err := gitlab.FetchMRs(cfg, from, to)
+	for _, src := range cfg.GitLabSources {
+		if strings.TrimSpace(src.GroupID) == "" {
+			continue
+		}
+		mrs, err := gitlab.FetchMRs(src, from, to)
 		if err != nil {
-			return nil, fmt.Errorf("fetching GitLab MRs: %w", err)
+			return nil, fmt.Errorf("fetching GitLab MRs from %s: %w", src.Name, err)
 		}
 		for _, mr := range mrs {
-			out = append(out, slackbot.Account{Host: "gitlab", ID: mr.AuthorID, Username: mr.Author, Name: mr.AuthorName})
+			out = append(out, slackbot.Account{Host: "gitlab", Server: src.Name, ID: mr.AuthorID, Username: mr.Author, Name: mr.AuthorName})
 		}
 	}
 	if cfg.GitHubConfigured() {
