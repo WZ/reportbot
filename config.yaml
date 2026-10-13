@@ -10,7 +10,8 @@ slack_app_token: "xapp-your-app-token"
 #   - group sources (group_id) fetch all MRs in that group
 #   - branch sources (project + branch) fetch commits from that branch;
 #     each commit becomes a Work Item with Status "done", owned via the author_ids
-#     plain name key, with tickets parsed from "<ref_ticket_label>: <id>" in the message
+#     plain name key (a self-reported commit author name — binding it is an accepted
+#     trust decision), with tickets parsed from "<ref_ticket_label>: <id>" in the message
 #   Merge/revert commits are skipped; one failing source does not abort the others.
 # Tokens may reference environment variables: token: "${MY_GITLAB_TOKEN}"
 # Exactly one source must have default: true (the source unqualified gitlab: author_ids
