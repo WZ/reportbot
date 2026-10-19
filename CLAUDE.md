@@ -99,7 +99,7 @@ Every edit in the web Taxonomy editor (and an approved Structure Proposal) queue
 
 ### Calendar Week Calculation
 
-`ReportWeekRange()` returns Monday 00:00 and next Monday 00:00 for the reporting week; before `monday_cutoff_time` on a Monday it is the previous week. Timestamps are stored with mixed UTC offsets, so queries compare them with `julianday()`.
+`ReportWeekRange()` returns `[Monday cutoff, next Monday cutoff)` for the reporting week (what the report, `/list`, `/stats`, web and publish display); before `monday_cutoff_time` on a Monday it is the previous week, also cutoff-anchored, so Work Items done between Sunday midnight and the cutoff belong to the week still on display. `FetchWeekRange()` is the fetch window of the displayed week, midnight-anchored (`[Monday 00:00, next Monday 00:00)`; a cutoff-anchored fetch window would leave Monday-morning commits between the last pre-cutoff run and the cutoff unfetchable). Timestamps are stored with mixed UTC offsets, so queries compare them with `julianday()`.
 
 ### Nudge Reminders
 

@@ -29,6 +29,10 @@ func ReportWeekRange(cfg Config, now time.Time) (time.Time, time.Time) {
 	return domain.ReportWeekRange(cfg, now)
 }
 
+func FetchWeekRange(cfg Config, now time.Time) (time.Time, time.Time) {
+	return domain.FetchWeekRange(cfg, now)
+}
+
 func FridayOfWeek(monday time.Time) time.Time {
 	return domain.FridayOfWeek(monday)
 }
