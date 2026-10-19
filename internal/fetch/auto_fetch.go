@@ -69,7 +69,8 @@ func FetchAndImportMRs(cfg Config, db *sql.DB, hooks Hooks) (FetchResult, error)
 		return FetchResult{}, fmt.Errorf("neither GitLab nor GitHub is configured")
 	}
 
-	monday, nextMonday := ReportWeekRange(cfg, time.Now().In(cfg.Location))
+	// Midnight-anchored fetch window of the displayed week; see FetchWeekRange.
+	monday, nextMonday := FetchWeekRange(cfg, time.Now().In(cfg.Location))
 	log.Printf("auto-fetch range %s - %s", monday.Format("2006-01-02"), nextMonday.Format("2006-01-02"))
 
 	var result FetchResult

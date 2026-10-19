@@ -159,7 +159,7 @@ auto_fetch_schedule: "0 9 * * 1-5"  # weekdays at 9am
 # Day and time for scheduled nudge (configured timezone)
 nudge_day: "Friday"
 nudge_time: "10:00"
-monday_cutoff_time: "12:00"  # Monday before this time uses previous week
+monday_cutoff_time: "12:00"  # Monday before this time uses previous week; the week runs cutoff-to-cutoff (Mon 12:00 -> next Mon 12:00)
 
 # Timezone for week range and scheduled nudge (IANA format)
 timezone: "America/Los_Angeles"
@@ -457,7 +457,7 @@ The nudge DM lists the member's Open Work Items with Done / status buttons.
 /nudge U123ABC456      # Manager only: target a Slack user ID directly
 ```
 
-On Monday before `monday_cutoff_time` (default `12:00`) in configured `timezone`, report commands use the previous calendar week.
+On Monday before `monday_cutoff_time` (default `12:00`) in configured `timezone`, report commands use the previous calendar week. The reporting week runs cutoff-to-cutoff (Monday `monday_cutoff_time` to the same time next Monday): Work Items done between Sunday midnight and the cutoff belong to the week still on display, and fetch windows stay midnight-anchored so Monday-morning commits are never skipped.
 
 Accepts any day name: `Monday`, `Tuesday`, ..., `Sunday`.
 

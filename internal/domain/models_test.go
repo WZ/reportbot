@@ -21,6 +21,56 @@ func TestReportWeekRangeMondayCutoff(t *testing.T) {
 	if from.Format("20060102") != "20260209" || to.Format("20060102") != "20260216" {
 		t.Fatalf("expected current week for Monday afternoon, got %s -> %s", from.Format("20060102"), to.Format("20060102"))
 	}
+
+	// The week follows the cutoff, not midnight: every day of the displayed
+	// week runs to the next Monday's cutoff.
+	wednesday := time.Date(2026, 2, 11, 10, 0, 0, 0, loc)
+	from, to = ReportWeekRange(cfg, wednesday)
+	if from.Format("20060102 15:04") != "20260209 12:00" || to.Format("20060102 15:04") != "20260216 12:00" {
+		t.Fatalf("midweek: expected Mon 12:00 -> next Mon 12:00, got %s -> %s", from.Format("20060102 15:04"), to.Format("20060102 15:04"))
+	}
+
+	// Sunday evening (before the Monday cutoff) is still the displayed week.
+	sunday := time.Date(2026, 2, 15, 20, 0, 0, 0, loc)
+	from, to = ReportWeekRange(cfg, sunday)
+	if from.Format("20060102 15:04") != "20260209 12:00" || to.Format("20060102 15:04") != "20260216 12:00" {
+		t.Fatalf("sunday evening: expected Mon 12:00 -> next Mon 12:00, got %s -> %s", from.Format("20060102 15:04"), to.Format("20060102 15:04"))
+	}
+
+	// Before the cutoff on a Monday the displayed week is the previous one,
+	// which must span last Monday's cutoff to this Monday's cutoff.
+	mondayMorning = time.Date(2026, 2, 9, 8, 0, 0, 0, loc)
+	from, to = ReportWeekRange(cfg, mondayMorning)
+	if from.Format("20060102 15:04") != "20260202 12:00" || to.Format("20060102 15:04") != "20260209 12:00" {
+		t.Fatalf("monday morning: expected Mon 12:00 -> Mon 12:00, got %s -> %s", from.Format("20060102 15:04"), to.Format("20060102 15:04"))
+	}
+}
+
+func TestFetchWeekRange(t *testing.T) {
+	loc := time.FixedZone("UTC+0", 0)
+	cfg := config.Config{MondayCutoffTime: "12:00"}
+
+	// Midweek fetch window is midnight-anchored: [Mon 00:00, next Mon 00:00).
+	wednesday := time.Date(2026, 2, 11, 10, 0, 0, 0, loc)
+	from, to := FetchWeekRange(cfg, wednesday)
+	if from.Format("20060102 15:04") != "20260209 00:00" || to.Format("20060102 15:04") != "20260216 00:00" {
+		t.Fatalf("midweek fetch: expected Mon 00:00 -> next Mon 00:00, got %s -> %s", from.Format("20060102 15:04"), to.Format("20060102 15:04"))
+	}
+
+	// Monday before the cutoff re-fetches the week just ending, so the
+	// cutoff-anchored report window never misses a Monday 07:00-11:00 commit.
+	mondayMorning := time.Date(2026, 2, 9, 8, 0, 0, 0, loc)
+	from, to = FetchWeekRange(cfg, mondayMorning)
+	if from.Format("20060102 15:04") != "20260202 00:00" || to.Format("20060102 15:04") != "20260209 00:00" {
+		t.Fatalf("monday morning fetch: expected previous week 00:00-anchored, got %s -> %s", from.Format("20060102 15:04"), to.Format("20060102 15:04"))
+	}
+
+	// After the cutoff the fetch window is the new week.
+	mondayAfternoon := time.Date(2026, 2, 9, 13, 0, 0, 0, loc)
+	from, to = FetchWeekRange(cfg, mondayAfternoon)
+	if from.Format("20060102 15:04") != "20260209 00:00" || to.Format("20060102 15:04") != "20260216 00:00" {
+		t.Fatalf("monday afternoon fetch: expected current week 00:00-anchored, got %s -> %s", from.Format("20060102 15:04"), to.Format("20060102 15:04"))
+	}
 }
 
 func TestFridayOfWeek(t *testing.T) {

@@ -362,7 +362,7 @@ func handleFetchMRs(api *slack.Client, db *sql.DB, cfg Config, cmd slack.SlashCo
 		return
 	}
 
-	monday, nextMonday := ReportWeekRange(cfg, time.Now().In(cfg.Location))
+	monday, nextMonday := FetchWeekRange(cfg, time.Now().In(cfg.Location))
 
 	var sources []string
 	for _, src := range cfg.GitLabSources {

@@ -105,7 +105,10 @@ auto_fetch_schedule: "0 7,20 * * *"
 nudge_day: "Friday"
 nudge_time: "10:00"
 
-# If command is run on Monday before this time, use previous week
+# On Monday before this time the previous week is still on display; the
+# reporting week runs from this time on a Monday to the same time next Monday
+# (so items done between Sunday midnight and the cutoff count to the
+# displayed week; fetch windows stay midnight-anchored)
 monday_cutoff_time: "12:00"
 
 # Timezone used by week boundary and scheduler

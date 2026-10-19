@@ -164,12 +164,41 @@ func FridayOfWeek(monday time.Time) time.Time {
 	return monday.AddDate(0, 0, 4)
 }
 
+// ReportWeekRange returns the reporting week [Mon cutoff, next Mon cutoff):
+// the week on display in the report, /list, /stats, web and publish. Anchoring
+// both ends at the cutoff means Work Items marked done between Sunday midnight
+// and the Monday cutoff belong to the week still on display, and successive
+// weeks tile without overlap.
 func ReportWeekRange(cfg config.Config, now time.Time) (time.Time, time.Time) {
 	hour, min, err := parseClock(cfg.MondayCutoffTime)
 	if err != nil {
 		return CurrentWeekRangeAt(now)
 	}
 
+	if now.Weekday() == time.Monday {
+		cutoff := time.Date(now.Year(), now.Month(), now.Day(), hour, min, 0, 0, now.Location())
+		if now.Before(cutoff) {
+			return cutoffWeek(now.AddDate(0, 0, -7), hour, min), cutoffWeek(now, hour, min)
+		}
+	}
+	from, next := CurrentWeekRangeAt(now)
+	return cutoffWeek(from, hour, min), cutoffWeek(next, hour, min)
+}
+
+// cutoffWeek shifts a Monday 00:00 to the same day at the cutoff clock time.
+func cutoffWeek(monday time.Time, hour, min int) time.Time {
+	return time.Date(monday.Year(), monday.Month(), monday.Day(), hour, min, 0, 0, monday.Location())
+}
+
+// FetchWeekRange returns the fetch window [Mon 00:00, next Mon 00:00) of the
+// week on display. Fetch windows stay midnight-anchored: a cutoff-anchored
+// window would leave Monday morning commits between the last pre-cutoff run
+// and the cutoff unfetchable, while midnight windows tile under any schedule.
+func FetchWeekRange(cfg config.Config, now time.Time) (time.Time, time.Time) {
+	hour, min, err := parseClock(cfg.MondayCutoffTime)
+	if err != nil {
+		return CurrentWeekRangeAt(now)
+	}
 	if now.Weekday() == time.Monday {
 		cutoff := time.Date(now.Year(), now.Month(), now.Day(), hour, min, 0, 0, now.Location())
 		if now.Before(cutoff) {

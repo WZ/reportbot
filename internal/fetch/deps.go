@@ -21,6 +21,10 @@ func ReportWeekRange(cfg Config, now time.Time) (time.Time, time.Time) {
 	return domain.ReportWeekRange(cfg, now)
 }
 
+func FetchWeekRange(cfg Config, now time.Time) (time.Time, time.Time) {
+	return domain.FetchWeekRange(cfg, now)
+}
+
 func FetchMRs(src GitLabSource, from, to time.Time) ([]GitLabMR, error) {
 	return gl.FetchMRs(src, from, to)
 }
