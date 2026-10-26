@@ -85,7 +85,7 @@ cmd/internal layout; the executable is `cmd/reportbot`, core logic is under `int
 
 ### Taxonomy edits
 
-Every edit in the web Taxonomy editor (and an approved Structure Proposal) queues one coalesced `reclassify` job: one Section Choice request per Open Work Item (bounded by the decision client's concurrency); confident changes move (person-placed ones too, with an Undo DM).
+The web Taxonomy editor adds, renames, reorders, retires, merges and splits nodes, and promotes a Category to an Area (`sqlite.PromoteCategoryToArea`: its Sections become the Area's Categories; a Category without Sections moves under a new Area of the same name; node IDs are kept, so placed Work Items stay put). Every edit (and an approved Structure Proposal) queues one coalesced `reclassify` job: one Section Choice request per Open Work Item (bounded by the decision client's concurrency); confident changes move (person-placed ones too, with an Undo DM).
 
 ### Weekly Report and publishing
 
@@ -151,7 +151,7 @@ Test files (unit tests never make live model calls; the gateway and the LLM are 
 - **internal/fetch/team_filter_test.go** — team filter: name entries, Slack-ID entries via `author_ids` and profile names, lookup-failure fallback and warning
 - **internal/integrations/gitlab/commit_fetch_test.go** — branch commit fetching (escaped project path, week filter, merge/revert skip) and commit ticket parsing
 - **internal/publish/publish_test.go**, **internal/report/report_builder_test.go** — Published Report snapshot, view building and rendering
-- **internal/web/handlers/*_test.go** — live report, permissions, edit/move, Taxonomy editor, publish
+- **internal/web/handlers/*_test.go** — live report, permissions, edit/move, Taxonomy editor (incl. promote Category → Area), publish
 
 Manual testing for Slack integration:
 

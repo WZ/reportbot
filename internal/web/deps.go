@@ -26,6 +26,7 @@ var (
 	RetireTaxonomyNode = sqlite.RetireTaxonomyNode
 	MergeSections      = sqlite.MergeSections
 	SplitSection       = sqlite.SplitSection
+	PromoteCategory    = sqlite.PromoteCategoryToArea
 	EnqueueReclassify  = sqlite.EnqueueReclassify
 	PendingReclassify  = sqlite.PendingReclassify
 	GetPublishedReport = sqlite.GetPublishedReport

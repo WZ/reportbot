@@ -181,3 +181,13 @@ func SplitTaxonomySection(db *sql.DB, wake func()) http.HandlerFunc {
 		return web.SplitSection(db, n.ID, parts)
 	})
 }
+
+func PromoteTaxonomyCategory(db *sql.DB, wake func()) http.HandlerFunc {
+	return taxonomyEdit(db, wake, func(r *http.Request, tax domain.Taxonomy) error {
+		n, err := pathNode(r, tax)
+		if err != nil {
+			return err
+		}
+		return web.PromoteCategory(db, n.ID)
+	})
+}

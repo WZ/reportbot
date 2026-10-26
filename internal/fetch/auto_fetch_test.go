@@ -240,7 +240,7 @@ func TestFetchBindsGitLabUsername(t *testing.T) {
 	t.Setenv("CONFIG_PATH", cfgPath)
 	for k, v := range map[string]string{"SLACK_BOT_TOKEN": "xoxb-test", "SLACK_APP_TOKEN": "xapp-test", "TIMEZONE": "UTC",
 		"DECISION_MODEL_URL": "https://api.compat.example/", "DECISION_MODEL_API_KEY": "dm-test", "DECISION_MODEL_NAME": "test-model",
-		"AUTHOR_IDS": `{"gitlab:YFMA": "UYFMA0001"}`} {
+		"AUTHOR_IDS": `{"gitlab:YFMA": "UYFMA0001"}`, "MONDAY_CUTOFF_TIME": "00:00"} {
 		t.Setenv(k, v)
 	}
 	cfg := config.LoadConfig()
