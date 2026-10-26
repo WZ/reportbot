@@ -103,6 +103,12 @@ templ taxNode(node TaxNodeData, data TaxonomyPageData) {
 					<button type="submit" class="btn btn-secondary">Split</button>
 				</form>
 			}
+			if node.Level == "category" {
+				<form method="post" action={ templ.SafeURL(fmt.Sprintf("/taxonomy/nodes/%d/promote", node.ID)) } onsubmit="return confirm('Make this Category an Area? Its Sections become Categories.')">
+					@csrfField(data.CSRFToken)
+					<button type="submit" class="btn btn-secondary">Promote to Area</button>
+				</form>
+			}
 			<form method="post" action={ templ.SafeURL(fmt.Sprintf("/taxonomy/nodes/%d/retire", node.ID)) } onsubmit="return confirm('Retire this node and everything under it?')">
 				@csrfField(data.CSRFToken)
 				<button type="submit" class="btn btn-secondary">Retire</button>

@@ -87,6 +87,7 @@ func NewServer(cfg web.Config, db *sql.DB, wake func(), hooks web.PublishHooks) 
 			r.Post("/taxonomy/nodes/{id}/retire", RetireTaxonomyNode(db, wake))
 			r.Post("/taxonomy/nodes/{id}/merge", MergeTaxonomySection(db, wake))
 			r.Post("/taxonomy/nodes/{id}/split", SplitTaxonomySection(db, wake))
+			r.Post("/taxonomy/nodes/{id}/promote", PromoteTaxonomyCategory(db, wake))
 		})
 	})
 

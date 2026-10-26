@@ -3,6 +3,7 @@ package sqlite
 import (
 	"database/sql"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -363,5 +364,52 @@ func TestFindOpenItemsByTicketIsExact(t *testing.T) {
 	}
 	if items, _ := FindOpenItemsByTicket(db, "456"); len(items) != 1 {
 		t.Fatal("an exact ticket must match")
+	}
+}
+
+func TestPromoteCategoryToArea(t *testing.T) {
+	db := newTestDB(t)
+	ids := seedSmallTaxonomy(t, db)
+	release := ids[SeedKey("Product A", "Release", "")]
+	infra := ids[SeedKey("Product A", "Infrastructure", "")]
+	s763 := ids[SeedKey("Product A", "Release", "7.6.3")]
+
+	if err := PromoteCategoryToArea(db, s763); err == nil {
+		t.Fatal("a Section cannot be promoted")
+	}
+
+	// A Category with Sections becomes the Area; its Sections become its Categories,
+	// keeping their IDs so placed Work Items stay where they are.
+	if err := PromoteCategoryToArea(db, release); err != nil {
+		t.Fatal(err)
+	}
+	tax, _ := LoadTaxonomy(db)
+	var paths []string
+	for _, s := range tax.Sections() {
+		paths = append(paths, s.Path())
+	}
+	want := "Product A › Infrastructure,Release › 7.6.3,Release › 7.4.7"
+	if got := strings.Join(paths, ","); got != want {
+		t.Fatalf("sections after promoting Release: got %s, want %s", got, want)
+	}
+	if s, ok := tax.Section(s763); !ok || s.AreaID != release || s.CategoryID != s763 {
+		t.Fatalf("7.6.3 keeps its ID as a Category of the Release Area: %+v", s)
+	}
+
+	// A Category that is itself the Section moves under a new Area of the same name.
+	if err := PromoteCategoryToArea(db, infra); err != nil {
+		t.Fatal(err)
+	}
+	tax, _ = LoadTaxonomy(db)
+	s, ok := tax.Section(infra)
+	if !ok || s.Path() != "Infrastructure › Infrastructure" || s.AreaID == ids[SeedKey("Product A", "", "")] {
+		t.Fatalf("Infrastructure stays fileable under a new Area: %+v ok=%v", s, ok)
+	}
+	if areas := tax.Areas(); len(areas) != 3 || areas[2].ID != s.AreaID {
+		t.Fatalf("the new Area is appended last: %+v", areas)
+	}
+
+	if err := PromoteCategoryToArea(db, release); err == nil {
+		t.Fatal("an Area cannot be promoted")
 	}
 }

@@ -584,6 +584,25 @@ func TestTaxonomyMerge(t *testing.T) {
 	expectCode(t, e.do(http.MethodPost, fmt.Sprintf("/taxonomy/nodes/%d/merge", e.sec["Ingest"]), manager, url.Values{"into": {fmt.Sprint(e.sec["Query"])}}), http.StatusBadRequest)
 }
 
+func TestTaxonomyPromote(t *testing.T) {
+	e := newEnv(t)
+	rr := e.do(http.MethodPost, fmt.Sprintf("/taxonomy/nodes/%d/promote", e.sec["Storage"]), manager, nil)
+	expectCode(t, rr, http.StatusSeeOther)
+	e.expectReclassifyQueued("promote")
+	if n := e.node(e.sec["Storage"]); n.Level != domain.LevelArea || n.ParentID != 0 {
+		t.Errorf("expected Storage promoted to an Area, got %+v", n)
+	}
+	if n := e.node(e.sec["Ingest"]); n.Level != domain.LevelCategory {
+		t.Errorf("expected Ingest to become a Category, got %+v", n)
+	}
+	if !strings.Contains(e.do(http.MethodGet, "/taxonomy", manager, nil).Body.String(), fmt.Sprintf("/taxonomy/nodes/%d/promote", e.sec["Ops"])) {
+		t.Error("expected a Promote to Area action on the remaining Category")
+	}
+
+	expectCode(t, e.do(http.MethodPost, fmt.Sprintf("/taxonomy/nodes/%d/promote", e.sec["Storage"]), manager, nil), http.StatusBadRequest)
+	expectCode(t, e.do(http.MethodPost, fmt.Sprintf("/taxonomy/nodes/%d/promote", e.sec["Ops"]), bob, nil), http.StatusForbidden)
+}
+
 func TestLivePage_CutoverBannerWithoutTaxonomy(t *testing.T) {
 	e := newEnv(t)
 	if _, err := e.db.Exec(`DELETE FROM taxonomy_nodes`); err != nil {

@@ -216,6 +216,50 @@ func MergeSections(db *sql.DB, from, into int64, actorID string) (int, error) {
 	return len(ids), tx.Commit()
 }
 
+// PromoteCategoryToArea turns a Category into an Area, keeping every node ID so placed
+// Work Items stay put: its Sections become the new Area's Categories. A Category that is
+// itself the Section has nothing to become a Category, so it moves under a new Area of
+// the same name instead.
+func PromoteCategoryToArea(db *sql.DB, id int64) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var level, name, description string
+	if err := tx.QueryRow(`SELECT level, name, description FROM taxonomy_nodes WHERE id = ? AND retired_at IS NULL`, id).Scan(&level, &name, &description); err != nil {
+		return err
+	}
+	if level != domain.LevelCategory {
+		return fmt.Errorf("only a Category can become an Area")
+	}
+	var sections int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM taxonomy_nodes WHERE parent_id = ? AND retired_at IS NULL`, id).Scan(&sections); err != nil {
+		return err
+	}
+	if sections == 0 {
+		areaID, err := insertNode(tx, 0, domain.LevelArea, name, description)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`UPDATE taxonomy_nodes SET parent_id = ?, sort_order = 10, updated_at = ? WHERE id = ?`, areaID, time.Now(), id); err != nil {
+			return err
+		}
+		return tx.Commit()
+	}
+	var next int
+	if err := tx.QueryRow(`SELECT COALESCE(MAX(sort_order), 0) + 10 FROM taxonomy_nodes WHERE parent_id IS NULL`).Scan(&next); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`UPDATE taxonomy_nodes SET level = ?, parent_id = NULL, sort_order = ?, updated_at = ? WHERE id = ?`, domain.LevelArea, next, time.Now(), id); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`UPDATE taxonomy_nodes SET level = ?, updated_at = ? WHERE parent_id = ?`, domain.LevelCategory, time.Now(), id); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // SeedTaxonomy inserts a whole tree in one transaction; it refuses when a Taxonomy exists.
 func SeedTaxonomy(db *sql.DB, areas []SeedArea) (map[string]int64, error) {
 	tx, err := db.Begin()
