@@ -109,6 +109,9 @@ func markdownToEmailPlain(body string) string {
 	prevBlank := false
 	for _, line := range strings.Split(strings.ReplaceAll(body, "\r\n", "\n"), "\n") {
 		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "### ") && len(out) > 0 {
+			out = append(out, "")
+		}
 		if strings.HasPrefix(trimmed, "### ") || strings.HasPrefix(trimmed, "#### ") {
 			line = strings.TrimSpace(strings.TrimLeft(trimmed, "# "))
 		}
@@ -135,6 +138,7 @@ func markdownToEmailHTML(body string) string {
 	b.WriteString(`<html><body style="font-family: Calibri, Arial, sans-serif; font-size: 11pt; color: #1f1f1f; line-height: 1.35;">`)
 	levelHasOpenLI := make([]bool, 0, 4)
 	currentLevel := -1
+	wroteContent := false
 
 	closeToLevel := func(target int) {
 		for currentLevel > target {
@@ -173,7 +177,16 @@ func markdownToEmailHTML(body string) string {
 		if strings.HasPrefix(trimmed, "### ") || strings.HasPrefix(trimmed, "#### ") {
 			closeAllLists()
 			text := renderInlineBold(strings.TrimSpace(strings.TrimLeft(trimmed, "# ")))
-			b.WriteString(`<div style="font-weight: 700; margin: 12px 0 6px 0;">` + text + `</div>`)
+			style := "font-weight: 700;"
+			if strings.HasPrefix(trimmed, "### ") {
+				// An Area: underlined, with an extra blank line unless it opens the email.
+				style += " text-decoration: underline;"
+				if wroteContent {
+					b.WriteString(`<div style="height: 10px;"></div>`)
+				}
+			}
+			b.WriteString(`<div style="` + style + ` margin: 12px 0 6px 0;">` + text + `</div>`)
+			wroteContent = true
 			continue
 		}
 
@@ -209,12 +222,14 @@ func markdownToEmailHTML(body string) string {
 			}
 			b.WriteString(`<li style="margin: 2px 0;">` + text)
 			levelHasOpenLI[currentLevel] = true
+			wroteContent = true
 			continue
 		}
 
 		closeAllLists()
 		text := renderInlineBold(strings.TrimSpace(content))
 		b.WriteString(`<div style="margin: 2px 0;">` + text + `</div>`)
+		wroteContent = true
 	}
 	closeAllLists()
 	b.WriteString(`</body></html>`)

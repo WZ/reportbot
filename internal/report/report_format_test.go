@@ -190,3 +190,28 @@ func TestSanitizeFilename(t *testing.T) {
 		})
 	}
 }
+
+func TestEmailHTMLAreaHeadings(t *testing.T) {
+	body := "### Platform\n\n#### Storage (Alice)\n\n- item one (done)\n\n### Ops Area\n\n#### Deploys (Bob)\n\n- item two (done)\n"
+	html := markdownToEmailHTML(body)
+
+	area := `<div style="font-weight: 700; text-decoration: underline; margin: 12px 0 6px 0;">`
+	if strings.Count(html, area) != 2 {
+		t.Fatalf("expected both Areas underlined: %s", html)
+	}
+	if strings.Contains(html, `text-decoration: underline; margin: 12px 0 6px 0;">Storage`) {
+		t.Fatalf("Category headings stay plain bold: %s", html)
+	}
+	spacer := `<div style="height: 10px;"></div>`
+	if !strings.Contains(html, spacer+spacer+area+"Ops Area") {
+		t.Fatalf("expected an extra blank line before a following Area: %s", html)
+	}
+	if strings.Contains(html, `<body style="font-family: Calibri, Arial, sans-serif; font-size: 11pt; color: #1f1f1f; line-height: 1.35;">`+spacer) {
+		t.Fatalf("no blank line at the top before the first Area: %s", html)
+	}
+
+	plain := markdownToEmailPlain(body)
+	if !strings.Contains(plain, "item one (done)\n\n\nOps Area") {
+		t.Fatalf("expected an extra blank line before a following Area in plain text: %q", plain)
+	}
+}
